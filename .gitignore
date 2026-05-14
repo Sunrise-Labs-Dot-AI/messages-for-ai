@@ -5,3 +5,8 @@ bin/imessage-mcp
 bun.lock
 bun.lockb
 .*.bun-build
+
+# Swift / SPM
+menubar/.build/
+menubar/.swiftpm/
+menubar/Package.resolved

@@ -7,6 +7,9 @@ local JSON files. **Drafts never auto-send.**
 - P0 — read iMessage threads, messages, and search.
 - P1 — stage drafts under `~/.imessage-mcp/drafts/`.
 - P2 — approval-gated send of staged drafts via AppleScript automation.
+- P3 — companion **menu bar app** (`menubar/`) that shows pending drafts
+  with Send / Discard buttons. Turns "draft" into a real human-review
+  surface rather than a JSON file on disk.
 - Designed for **local MCP clients** (Claude Desktop, Claude Code, Codex
   CLI). No network listener. No cloud component.
 
@@ -28,7 +31,7 @@ already do."
 | `list_imessage_drafts` | List staged drafts, newest first. |
 | `get_imessage_draft` | Read one staged draft. |
 | `discard_imessage_draft` | Delete a staged draft. |
-| `send_imessage_draft` | **Destructive.** Send a staged draft via Messages.app. Refuses duplicate sends. |
+| `send_imessage_draft` | **Destructive.** Send a staged draft via Messages.app. Refuses duplicate sends. (Or send via the menu bar app — see below.) |
 | `get_imessage_current_time` | UTC + LA-local timestamps, for building `since` filters. |
 
 Hard guardrails:
@@ -175,6 +178,72 @@ bun run install:bin
 
 After this, **restart Claude Desktop** (and any other MCP client) so the
 client picks up the new binary on its next stdio spawn.
+
+## Menu bar app (P3)
+
+The MCP server stages drafts as JSON files. The companion app at
+`menubar/` is a SwiftUI `MenuBarExtra` that surfaces pending drafts with
+Send / Discard buttons — so you actually review what an agent wants to
+send before it goes out, rather than rubber-stamping a tool call that
+shows only a draft UUID.
+
+### Build + install
+
+```sh
+cd menubar
+bash scripts/install.sh
+# → produces ~/Applications/iMessage Drafts.app
+```
+
+Requires Swift 5.9+ (Xcode 15 / macOS 14+ ships it). The script wraps the
+SPM-built executable in a proper `.app` bundle with `LSUIElement = true`
+so it lives in the menu bar with no Dock icon, and code-signs it with a
+stable bundle ID so the macOS Automation grant survives rebuilds.
+
+Then:
+
+```sh
+open ~/Applications/iMessage\ Drafts.app
+```
+
+The first Send will trigger a macOS Automation prompt — "iMessage Drafts
+wants to control Messages" — click OK.
+
+Optionally add to **System Settings → General → Login Items** so it
+runs in the background whenever you're logged in.
+
+### How it works
+
+- Watches `~/.imessage-mcp/drafts` via `DispatchSourceFileSystemObject`,
+  so drafts staged by the MCP server appear in the popover within
+  ~100ms.
+- Sends through the same AppleScript path the MCP server uses
+  (`osascript` + `tell application "Messages"`). The duplication is
+  intentional — it avoids inventing IPC to the stdio MCP server.
+- On send, atomically updates the same draft JSON with `sent_at` +
+  `send_service`. Recently-sent drafts (within the last hour) appear in
+  a faded "Recently sent" section as a confirmation breadcrumb.
+- **Race trade-off**: both the MCP `send_imessage_draft` tool and the
+  menu bar app's Send button check `sent_at` before sending, but a true
+  simultaneous click on both isn't atomic — you could double-send. For
+  a single-user single-recipient flow this is acceptable; if you ever
+  scale this up, add an `flock` on the draft file in both code paths.
+
+### Project layout
+
+```
+menubar/
+  Package.swift
+  Sources/iMessageDraftsMenu/
+    App.swift              # @main, MenuBarExtra scene, AppDelegate
+    DraftStore.swift       # ObservableObject + FS watcher
+    DraftSender.swift      # osascript wrapper
+    Models/Draft.swift     # Codable; mirrors src/storage/drafts.ts
+    Views/
+      DraftListView.swift  # Pending + Recently-sent sections
+      DraftRowView.swift   # Per-draft Send / Discard
+  scripts/install.sh       # build → .app bundle → codesign
+```
 
 ## Tests
 

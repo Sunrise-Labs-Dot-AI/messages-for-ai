@@ -1,0 +1,49 @@
+import SwiftUI
+import AppKit
+
+@main
+struct iMessageDraftsMenuApp: App {
+  @StateObject private var store = DraftStore()
+  @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+  var body: some Scene {
+    MenuBarExtra {
+      DraftListView()
+        .environmentObject(store)
+    } label: {
+      // Dynamic label: badge count when there are pending drafts.
+      // SF Symbols + Text composed via Image+Text in a HStack would not
+      // render in MenuBarExtra; use a single Label or just the symbol.
+      MenuBarLabel(pending: store.drafts.filter { !$0.isSent }.count)
+    }
+    .menuBarExtraStyle(.window)
+  }
+}
+
+private struct MenuBarLabel: View {
+  let pending: Int
+  var body: some View {
+    if pending == 0 {
+      Image(systemName: "message")
+    } else {
+      // System symbol "<x>.badge" doesn't accept dynamic counts; pair an
+      // icon with a small numeric Text instead. macOS will render this in
+      // the menu bar at the icon's height.
+      Label {
+        Text("\(pending)")
+      } icon: {
+        Image(systemName: "message.fill")
+      }
+    }
+  }
+}
+
+// LSUIElement is set in Info.plist (see install.sh wrapping), which hides
+// the Dock icon for SwiftUI apps built via SPM. We also call
+// setActivationPolicy(.accessory) at launch as a belt-and-suspenders
+// fallback for ad hoc / unbundled runs (e.g. `swift run`).
+final class AppDelegate: NSObject, NSApplicationDelegate {
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    NSApp.setActivationPolicy(.accessory)
+  }
+}
