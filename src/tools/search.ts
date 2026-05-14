@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SearchShape, requireSinceOrContactFilter } from "../schema.ts";
 import { searchMessages } from "../chatdb/queries.ts";
 import { errorResult, jsonResult } from "./_result.ts";
+import { wrapBodyInPlace } from "./_untrusted.ts";
 
 export function registerSearchTool(server: McpServer): void {
   server.registerTool(
@@ -22,7 +23,7 @@ export function registerSearchTool(server: McpServer): void {
           sinceIso: args.since,
           contactFilter: args.contact_filter,
         });
-        return jsonResult({ query: args.query, hits: rows });
+        return jsonResult({ query: args.query, hits: rows.map(wrapBodyInPlace) });
       } catch (e) {
         return errorResult(`search_imessages failed: ${(e as Error).message}`);
       }

@@ -60,17 +60,12 @@ struct DraftRowView: View {
 
   private var actions: some View {
     HStack(spacing: 8) {
-      Button(action: { Task { await send() } }) {
-        if sending {
-          ProgressView().controlSize(.small).frame(width: 50)
-        } else {
-          Text("Send").frame(minWidth: 50)
-        }
+      // Hold-to-fire Send. Prevents misclick sends from the popover.
+      // The 1.0s threshold is short enough not to feel like a chore
+      // but long enough to be a clear commitment.
+      HoldToFireButton(duration: 1.0, isSending: sending) {
+        Task { await send() }
       }
-      .buttonStyle(.borderedProminent)
-      .controlSize(.regular)
-      .disabled(sending)
-      .keyboardShortcut(.return, modifiers: [.command])
 
       Button("Discard") {
         do { try store.discard(id: draft.id) }

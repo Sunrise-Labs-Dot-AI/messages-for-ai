@@ -13,6 +13,18 @@ local JSON files. **Drafts never auto-send.**
 - Designed for **local MCP clients** (Claude Desktop, Claude Code, Codex
   CLI). No network listener. No cloud component.
 
+## Security
+
+This server gives a local binary three macOS-level privileges (Full Disk
+Access, Automation control of Messages.app, optional Open-at-Login). The
+trust profile is non-trivial. Read **[SECURITY.md](SECURITY.md)** before
+installing — it covers the full threat model, the mitigations in place
+(prompt-injection wrapping, minimum staged-age, daily send cap, audit
+log, SQL parameterization, etc.), the configuration knobs, and the
+recommended user-side practices.
+
+For vulnerability reports: open a GitHub Security Advisory on the repo.
+
 ## Why this exists
 
 The agents calling this server run on the same Mac as the Messages data.

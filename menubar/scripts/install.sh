@@ -70,9 +70,12 @@ cat > "${APP}/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-echo "› clearing xattrs + re-signing with stable identifier (${BUNDLE_ID})"
+echo "› clearing xattrs + re-signing with stable identifier (${BUNDLE_ID}) + hardened runtime"
 xattr -cr "$APP"
-codesign --force --deep --sign - --identifier "${BUNDLE_ID}" "$APP"
+# Hardened Runtime: enforces library validation, blocks dyld injection,
+# disables several other class of gadget attacks. Even though we're
+# adhoc-signing, the runtime flags still kick in.
+codesign --force --deep --sign - --identifier "${BUNDLE_ID}" --options=runtime "$APP"
 
 echo "› verifying signature"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature" || true

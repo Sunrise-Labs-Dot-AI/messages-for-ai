@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ListThreadsShape, GetThreadShape, requireSinceOrContactFilter } from "../schema.ts";
 import { listThreads, getThreadMessages } from "../chatdb/queries.ts";
 import { errorResult, jsonResult } from "./_result.ts";
+import { wrapUntrusted, wrapBodyInPlace } from "./_untrusted.ts";
 
 export function registerThreadTools(server: McpServer): void {
   server.registerTool(
@@ -22,7 +23,16 @@ export function registerThreadTools(server: McpServer): void {
           beforeIso: args.before,
           contactFilter: args.contact_filter,
         });
-        return jsonResult(result);
+        // Spotlight last_message_preview as untrusted data — it's an
+        // arbitrary string from a peer's iMessage.
+        const wrapped = {
+          ...result,
+          threads: result.threads.map((t) => ({
+            ...t,
+            last_message_preview: wrapUntrusted(t.last_message_preview),
+          })),
+        };
+        return jsonResult(wrapped);
       } catch (e) {
         return errorResult(`list_imessage_threads failed: ${(e as Error).message}`);
       }
@@ -44,7 +54,7 @@ export function registerThreadTools(server: McpServer): void {
           limit: args.limit,
           beforeIso: args.before,
         });
-        return jsonResult({ thread_id: args.thread_id, messages: rows });
+        return jsonResult({ thread_id: args.thread_id, messages: rows.map(wrapBodyInPlace) });
       } catch (e) {
         return errorResult(`get_imessage_thread failed: ${(e as Error).message}`);
       }

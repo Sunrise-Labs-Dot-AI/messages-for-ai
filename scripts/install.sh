@@ -34,8 +34,14 @@ bun build src/index.ts --compile --outfile "$BIN_SRC"
 echo "› clearing xattrs on build output"
 xattr -c "$BIN_SRC"
 
-echo "› re-signing with stable identifier ($IDENTIFIER)"
-codesign --force --sign - --identifier "$IDENTIFIER" "$BIN_SRC"
+echo "› re-signing with stable identifier ($IDENTIFIER) + hardened runtime"
+# `--options=runtime` enables the Hardened Runtime: macOS now enforces
+# library validation, blocks dyld_insert_libraries attacks, refuses
+# unsigned framework loads, and disables several other gadget classes
+# even when the binary is adhoc-signed. Without this, any process
+# running as the user could LD_PRELOAD a malicious dylib into our
+# process and inherit our FDA + Automation grants.
+codesign --force --sign - --identifier "$IDENTIFIER" --options=runtime "$BIN_SRC"
 
 echo "› atomic-mv into $BIN_DEST"
 mkdir -p "$(dirname "$BIN_DEST")"
