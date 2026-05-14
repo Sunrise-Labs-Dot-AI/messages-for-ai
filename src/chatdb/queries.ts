@@ -28,6 +28,17 @@ export interface ThreadMessage {
   has_attachments: boolean;
 }
 
+// Lighter-weight shape we embed in staged drafts so the menu bar app can
+// render thread context without reading chat.db itself. No message_id /
+// thread_id / read state — the reviewer doesn't need those.
+export interface DraftContextMessage {
+  from_me: boolean;
+  sender_handle: string | null;
+  sender_name: string | null;
+  body: string | null;
+  sent_at: string | null;
+}
+
 function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
@@ -285,6 +296,92 @@ export function getThreadMessages(args: GetThreadArgs): ThreadMessage[] {
     body: truncateBody(bestMessageBody(r.text, r.attributedBody)),
     is_read: r.is_read === 1,
     has_attachments: r.cache_has_attachments === 1,
+  }));
+}
+
+// Embedded in staged drafts so the menu bar app can render thread context
+// without reading chat.db itself. Either a `threadId` (when the agent
+// knows which thread to reply into) or a recipient `handle` (we find the
+// best matching 1:1 thread). Failures (no FDA, no matching thread) return
+// an empty array — never throw.
+export interface RecentContextArgs {
+  recipientHandle?: string | undefined;
+  threadId?: number | undefined;
+  limit: number;
+}
+
+export function recentContextForRecipient(args: RecentContextArgs): DraftContextMessage[] {
+  const { recipientHandle, threadId, limit } = args;
+  if (limit <= 0) return [];
+
+  const db = openChatDb();
+  let chatId: number | null = threadId ?? null;
+
+  if (chatId == null && recipientHandle) {
+    // Resolve the recipient to chat.db `handle.ROWID`s with a canonical
+    // (last-10-digits for phones, lowercased for emails) match.
+    const canon = canonChatHandle(recipientHandle);
+    const matched = loadChatHandles().filter((h) => h.canon === canon).map((h) => h.rowid);
+    if (matched.length === 0) return [];
+
+    const placeholders = matched.map(() => "?").join(",");
+    // Pick the chat with this handle as a participant, preferring 1:1
+    // chats over groups, then most-recent activity. Recency uses MAX(
+    // message_id) — same cheap proxy listThreads uses, avoiding the
+    // correlated MAX(date) scan.
+    const row = db.query<{ chat_id: number }, number[]>(
+      `WITH cand AS (
+         SELECT DISTINCT chj.chat_id FROM chat_handle_join chj WHERE chj.handle_id IN (${placeholders})
+       ),
+       counts AS (
+         SELECT chj.chat_id, COUNT(*) AS participant_count
+         FROM chat_handle_join chj
+         WHERE chj.chat_id IN (SELECT chat_id FROM cand)
+         GROUP BY chj.chat_id
+       ),
+       recency AS (
+         SELECT cmj.chat_id, MAX(cmj.message_id) AS last_msg
+         FROM chat_message_join cmj
+         WHERE cmj.chat_id IN (SELECT chat_id FROM cand)
+         GROUP BY cmj.chat_id
+       )
+       SELECT counts.chat_id AS chat_id
+       FROM counts JOIN recency ON recency.chat_id = counts.chat_id
+       ORDER BY (counts.participant_count = 1) DESC, recency.last_msg DESC
+       LIMIT 1`
+    ).get(...matched) ?? null;
+
+    if (row) chatId = row.chat_id;
+  }
+
+  if (chatId == null) return [];
+
+  const rows = db.query<MessageRowLite, [number, number]>(
+    `SELECT m.ROWID AS ROWID,
+            m.text AS text,
+            m.attributedBody AS attributedBody,
+            m.date AS date,
+            m.is_from_me AS is_from_me,
+            m.is_read AS is_read,
+            m.cache_has_attachments AS cache_has_attachments,
+            m.handle_id AS handle_id,
+            h.id AS sender_handle,
+            cmj.chat_id AS thread_id
+     FROM chat_message_join cmj
+     JOIN message m ON m.ROWID = cmj.message_id
+     LEFT JOIN handle h ON h.ROWID = m.handle_id
+     WHERE cmj.chat_id = ?
+     ORDER BY m.date DESC
+     LIMIT ?`
+  ).all(chatId, limit);
+
+  // Chronological order for UI rendering (oldest first, newest last).
+  return rows.reverse().map((r) => ({
+    from_me: r.is_from_me === 1,
+    sender_handle: r.is_from_me ? null : r.sender_handle,
+    sender_name: r.is_from_me ? null : r.sender_handle ? resolveHandle(r.sender_handle) : null,
+    body: truncateBody(bestMessageBody(r.text, r.attributedBody)),
+    sent_at: appleDateToIsoUtc(r.date),
   }));
 }
 

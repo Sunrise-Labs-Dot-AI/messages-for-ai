@@ -7,6 +7,8 @@ import {
   SendDraftShape,
 } from "../schema.ts";
 import { stageDraft, listDrafts, getDraft, discardDraft, markDraftSent, draftsDir } from "../storage/drafts.ts";
+import { recentContextForRecipient } from "../chatdb/queries.ts";
+import type { DraftContextMessage } from "../chatdb/queries.ts";
 import { sendIMessage } from "../imessage/send.ts";
 import { errorResult, jsonResult } from "./_result.ts";
 
@@ -23,11 +25,27 @@ export function registerDraftTools(server: McpServer): void {
     },
     async (args) => {
       try {
+        // Best-effort thread-context lookup. Failures (no FDA, no matching
+        // thread, no AddressBook) produce null rather than blocking the
+        // stage — drafting must work even if chat.db is unreachable.
+        let context: DraftContextMessage[] | null = null;
+        try {
+          const found = recentContextForRecipient({
+            recipientHandle: args.to_handle,
+            threadId: args.in_reply_to_thread_id,
+            limit: 5,
+          });
+          context = found.length > 0 ? found : null;
+        } catch {
+          context = null;
+        }
+
         const result = stageDraft({
           to_handle: args.to_handle,
           body: args.body,
           in_reply_to_thread_id: args.in_reply_to_thread_id ?? null,
           source: args.source ?? null,
+          context_messages: context,
         });
         return jsonResult({ ok: true, draft_id: result.draft.id, path: result.path, draft: result.draft });
       } catch (e) {

@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { DraftContextMessage } from "../chatdb/queries.ts";
 
 // Compute the drafts directory on every access rather than caching it at
 // module load. This is mostly for symmetry — the real test-seam below
@@ -36,6 +37,11 @@ export interface Draft {
   // personal-assistant", "evening recap cron". Shown in the menu bar app
   // so a human reviewer can tell which agent staged the draft.
   source: string | null;
+  // Snapshot of the last few messages in the recipient's thread, captured
+  // at stage time. Embedded so the menu bar app (or any other reviewer)
+  // can display thread context without needing chat.db access. Null when
+  // no matching thread was found, or when the lookup failed (no FDA).
+  context_messages: DraftContextMessage[] | null;
 }
 
 function ensureDir(): void {
@@ -52,6 +58,7 @@ export interface StageDraftArgs {
   body: string;
   in_reply_to_thread_id?: number | null;
   source?: string | null;
+  context_messages?: DraftContextMessage[] | null;
 }
 
 export function stageDraft(args: StageDraftArgs): { draft: Draft; path: string } {
@@ -65,6 +72,7 @@ export function stageDraft(args: StageDraftArgs): { draft: Draft; path: string }
     sent_at: null,
     send_service: null,
     source: args.source ?? null,
+    context_messages: args.context_messages ?? null,
   };
   const path = draftPath(draft.id);
   writeFileSync(path, JSON.stringify(draft, null, 2), { mode: 0o600 });
@@ -119,6 +127,7 @@ function normalizeDraft(raw: Partial<Draft>): Draft | null {
     sent_at: raw.sent_at ?? null,
     send_service: raw.send_service ?? null,
     source: raw.source ?? null,
+    context_messages: raw.context_messages ?? null,
   };
 }
 

@@ -28,6 +28,12 @@ struct DraftListView: View {
           .padding(.vertical, 8)
       }
 
+      // ScrollView inside MenuBarExtra(.window) collapses to ~0 height
+      // when its parent has no concrete height to grant — there's no
+      // implicit minimum, so it'd render an empty band between header
+      // and footer even with pending rows present. We give it an
+      // explicit height range here and rely on macOS to cap by screen
+      // height if needed.
       ScrollView {
         VStack(spacing: 8) {
           if pending.isEmpty {
@@ -43,8 +49,9 @@ struct DraftListView: View {
           }
         }
         .padding(12)
+        .frame(maxWidth: .infinity)
       }
-      .frame(maxHeight: 480)
+      .frame(minHeight: 220, maxHeight: 480)
 
       Divider()
       footer
