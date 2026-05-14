@@ -169,11 +169,26 @@ Automation → (your parent app) → Messages → toggle off.
 ## Re-deploying after edits
 
 ```sh
+bun test           # 54 tests, ~200ms — pure-function + in-memory SQL
 bun run install:bin
 ```
 
 After this, **restart Claude Desktop** (and any other MCP client) so the
 client picks up the new binary on its next stdio spawn.
+
+## Tests
+
+```sh
+bun test
+```
+
+Coverage:
+
+- `decode.test.ts` — attributedBody typedstream decoder (short/long lengths, UTF-8, malformed input).
+- `open.test.ts` — Apple-epoch ↔ ISO-8601 round-trips for both nanosecond (High Sierra+) and seconds (legacy) forms.
+- `schema.test.ts` — Zod input validation: 2-year deep-history reject, 2-char minimums, handle format, body length cap.
+- `storage/drafts.test.ts` — staging, list ordering, mark-sent persistence, backward-compat normalization for drafts written before `sent_at` existed.
+- `chatdb/queries.test.ts` — end-to-end SQL against an in-memory chat.db fixture, covering pagination (strict `before`), the Catesby contact-name widening, and `attributedBody` decode in search. Uses test seams `_setChatDbForTesting` + `_setContactsForTesting` to inject fixtures.
 
 ## What this does NOT do
 

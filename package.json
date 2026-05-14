@@ -8,6 +8,7 @@
     "build": "bun build src/index.ts --compile --outfile bin/imessage-mcp",
     "install:bin": "bash scripts/install.sh",
     "dev": "bun run src/index.ts",
+    "test": "bun test",
     "typecheck": "bun --bun tsc --noEmit"
   },
   "dependencies": {

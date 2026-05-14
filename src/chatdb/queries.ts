@@ -46,6 +46,12 @@ function canonChatHandle(id: string): string {
 // is a one-time scan.
 interface ChatHandleEntry { rowid: number; id: string; canon: string }
 let chatHandlesCache: ChatHandleEntry[] | null = null;
+
+// Test-only: drop the cached handle list. Used between fixtures so test B
+// doesn't see test A's chat.db handles.
+export function _resetChatHandlesCacheForTesting(): void {
+  chatHandlesCache = null;
+}
 function loadChatHandles(): ChatHandleEntry[] {
   if (chatHandlesCache) return chatHandlesCache;
   const db = openChatDb();

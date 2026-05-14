@@ -14,6 +14,13 @@ export function openChatDb(): Database {
   return db;
 }
 
+// Test seam: inject a pre-built in-memory SQLite handle so unit tests can
+// exercise the query layer without macOS TCC / Full Disk Access. Production
+// code paths never call this — it's only wired from `*.test.ts`.
+export function _setChatDbForTesting(db: Database | null): void {
+  dbInstance = db;
+}
+
 export function chatDbPath(): string {
   return CHAT_DB_PATH;
 }
