@@ -1,0 +1,111 @@
+// Send an iMessage via the Messages.app AppleScript automation surface.
+//
+// This is the *only* outbound side of the iMessage MCP server. It is gated
+// at three layers in defense-in-depth:
+//
+//   1) The MCP tool itself is annotated `destructiveHint: true` /
+//      `idempotentHint: false` so any MCP client surfaces a confirmation
+//      prompt before the call.
+//   2) The tool refuses to fire ad hoc — it requires a draft_id pointing at
+//      an already-staged draft. That forces every send through the
+//      `stage_imessage_draft` step, so the draft text is observable in the
+//      conversation transcript before the send tool is invoked.
+//   3) Once `sent_at` is set on a draft, re-sending is rejected. The agent
+//      cannot loop send-the-same-message on retry.
+//
+// macOS adds a fourth: the first AppleScript send triggers a TCC
+// "Allow <parent app> to control Messages.app?" prompt. Whichever app
+// spawned imessage-mcp must be granted that permission.
+//
+// ⛔ If this server is ever exposed over a network transport (HTTP / WS /
+// tunnel), this tool MUST be removed from the public surface — the trust
+// boundary collapses the moment a non-local caller can invoke it.
+
+import { spawn } from "node:child_process";
+
+export interface SendResult {
+  ok: boolean;
+  service: "iMessage" | "SMS" | null;
+  error: string | null;
+  duration_ms: number;
+}
+
+const SEND_TIMEOUT_MS = 20_000;
+
+// Use multiple -e fragments rather than embedding a multiline string — keeps
+// the script readable and dodges shell-quoting traps. argv is passed as
+// trailing positional args (osascript routes them to `on run argv`).
+//
+// We try iMessage first; if Messages.app reports the buddy is unreachable
+// via iMessage, we fall through to SMS (which requires iPhone Continuity to
+// be configured). The `errNumber` in the AppleScript error catch identifies
+// the failure mode; we return service=null on hard failure.
+const SCRIPT = `
+on run argv
+  set theAddress to item 1 of argv
+  set theMessage to item 2 of argv
+  tell application "Messages"
+    try
+      set theService to first service whose service type is iMessage
+      set theBuddy to buddy theAddress of theService
+      send theMessage to theBuddy
+      return "iMessage"
+    on error errMsg number errNum
+      try
+        set smsService to first service whose service type is SMS
+        set smsBuddy to buddy theAddress of smsService
+        send theMessage to smsBuddy
+        return "SMS"
+      on error smsErr number smsNum
+        return "ERROR: iMessage=" & errMsg & " (errNum=" & errNum & "); SMS=" & smsErr & " (errNum=" & smsNum & ")"
+      end try
+    end try
+  end tell
+end run
+`;
+
+export async function sendIMessage(toHandle: string, body: string): Promise<SendResult> {
+  const started = Date.now();
+  return new Promise<SendResult>((resolve) => {
+    const child = spawn("osascript", ["-e", SCRIPT, toHandle, body], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+
+    const finish = (result: Omit<SendResult, "duration_ms">) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ ...result, duration_ms: Date.now() - started });
+    };
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish({ ok: false, service: null, error: `osascript timed out after ${SEND_TIMEOUT_MS}ms` });
+    }, SEND_TIMEOUT_MS);
+
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+
+    child.on("error", (err) => {
+      finish({ ok: false, service: null, error: `osascript spawn failed: ${err.message}` });
+    });
+
+    child.on("close", (code) => {
+      const out = stdout.trim();
+      if (code !== 0) {
+        finish({ ok: false, service: null, error: stderr.trim() || `osascript exited with code ${code}` });
+        return;
+      }
+      if (out === "iMessage") {
+        finish({ ok: true, service: "iMessage", error: null });
+        return;
+      }
+      if (out === "SMS") {
+        finish({ ok: true, service: "SMS", error: null });
+        return;
+      }
+      finish({ ok: false, service: null, error: out || "unknown osascript output" });
+    });
+  });
+}

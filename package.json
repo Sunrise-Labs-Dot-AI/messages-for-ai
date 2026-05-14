@@ -1,0 +1,21 @@
+{
+  "name": "imessage-mcp",
+  "version": "0.1.0",
+  "description": "Local MCP server exposing read-only access to macOS iMessages and a draft-staging API.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/index.ts --compile --outfile bin/imessage-mcp",
+    "install:bin": "bash scripts/install.sh",
+    "dev": "bun run src/index.ts",
+    "typecheck": "bun --bun tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.13",
+    "typescript": "^5.6.0"
+  }
+}
