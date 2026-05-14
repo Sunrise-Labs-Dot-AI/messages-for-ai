@@ -180,10 +180,22 @@ struct DraftListView: View {
       }
 
       // Action row.
-      HStack {
+      HStack(spacing: 12) {
         Button("Refresh") { store.refresh() }
           .buttonStyle(.plain)
           .foregroundStyle(.secondary)
+
+        // Plain mailto link. NSWorkspace.open delegates to the user's
+        // default mail handler (Mail.app, Gmail-via-browser, etc.); no
+        // dependency on a specific client. Text-only to match the
+        // surrounding footer chrome.
+        Button("Feedback") {
+          if let url = URL(string: "mailto:support@sunriselabs.ai") {
+            NSWorkspace.shared.open(url)
+          }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
 
         Spacer()
 
