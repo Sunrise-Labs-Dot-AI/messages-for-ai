@@ -141,7 +141,8 @@ struct DraftRowView: View {
           .foregroundStyle(.secondary)
       }
 
-      // Thread context bubbles
+      // Thread context bubbles (when present) or a diagnostic-aware
+      // "why is context empty" message (when absent).
       if let ctx = draft.context_messages, !ctx.isEmpty {
         Divider()
         VStack(alignment: .leading, spacing: 4) {
@@ -152,11 +153,27 @@ struct DraftRowView: View {
         }
       } else {
         Divider()
-        Text("No prior thread with this recipient.")
-          .font(.caption)
-          .foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Recent thread context")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+          Text(contextEmptyReason)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
     }
+  }
+
+  // Human-readable explanation of why context_messages is null/empty.
+  // Pulls from the structured `context_diagnostic` when present; falls
+  // back to a generic message for older drafts.
+  private var contextEmptyReason: String {
+    if let diag = draft.context_diagnostic {
+      return diag.humanExplanation
+    }
+    return "No prior thread context attached (this draft predates the context-lookup feature)."
   }
 
   // Suppress the sender label for consecutive incoming messages from

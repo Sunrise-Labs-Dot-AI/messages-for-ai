@@ -310,79 +310,181 @@ export interface RecentContextArgs {
   limit: number;
 }
 
-export function recentContextForRecipient(args: RecentContextArgs): DraftContextMessage[] {
+// Structured breadcrumb of what happened during a context lookup. Embedded
+// in the draft so when `context_messages` is null we can see *why* without
+// needing to re-run the query or attach a debugger.
+export interface ContextLookupDiagnostic {
+  // Reason context_messages came back empty / null. "ok" means messages
+  // were found and returned — diagnostic is informational, not an error.
+  status:
+    | "ok"
+    | "no_input"               // neither threadId nor recipientHandle passed
+    | "no_handle_match"        // canonicalized recipient didn't match any chat.db handle
+    | "no_chat_for_handle"     // handle matched but no chat contains it
+    | "empty_thread"           // chat exists but has zero messages (rare)
+    | "error";                 // exception thrown — see `error` field
+  canonical_recipient: string | null;  // what canonChatHandle produced
+  matched_handle_ids: number[];         // handle.ROWID values matched (empty for status no_handle_match)
+  chat_id: number | null;               // the chat we ended up querying
+  message_count: number;                // length of the returned messages array
+  error: string | null;                 // populated only on status="error"
+}
+
+export interface ContextLookupResult {
+  messages: DraftContextMessage[];
+  diagnostic: ContextLookupDiagnostic;
+}
+
+export function recentContextForRecipient(args: RecentContextArgs): ContextLookupResult {
   const { recipientHandle, threadId, limit } = args;
-  if (limit <= 0) return [];
-
-  const db = openChatDb();
-  let chatId: number | null = threadId ?? null;
-
-  if (chatId == null && recipientHandle) {
-    // Resolve the recipient to chat.db `handle.ROWID`s with a canonical
-    // (last-10-digits for phones, lowercased for emails) match.
-    const canon = canonChatHandle(recipientHandle);
-    const matched = loadChatHandles().filter((h) => h.canon === canon).map((h) => h.rowid);
-    if (matched.length === 0) return [];
-
-    const placeholders = matched.map(() => "?").join(",");
-    // Pick the chat with this handle as a participant, preferring 1:1
-    // chats over groups, then most-recent activity. Recency uses MAX(
-    // message_id) — same cheap proxy listThreads uses, avoiding the
-    // correlated MAX(date) scan.
-    const row = db.query<{ chat_id: number }, number[]>(
-      `WITH cand AS (
-         SELECT DISTINCT chj.chat_id FROM chat_handle_join chj WHERE chj.handle_id IN (${placeholders})
-       ),
-       counts AS (
-         SELECT chj.chat_id, COUNT(*) AS participant_count
-         FROM chat_handle_join chj
-         WHERE chj.chat_id IN (SELECT chat_id FROM cand)
-         GROUP BY chj.chat_id
-       ),
-       recency AS (
-         SELECT cmj.chat_id, MAX(cmj.message_id) AS last_msg
-         FROM chat_message_join cmj
-         WHERE cmj.chat_id IN (SELECT chat_id FROM cand)
-         GROUP BY cmj.chat_id
-       )
-       SELECT counts.chat_id AS chat_id
-       FROM counts JOIN recency ON recency.chat_id = counts.chat_id
-       ORDER BY (counts.participant_count = 1) DESC, recency.last_msg DESC
-       LIMIT 1`
-    ).get(...matched) ?? null;
-
-    if (row) chatId = row.chat_id;
+  if (limit <= 0) {
+    return {
+      messages: [],
+      diagnostic: emptyDiagnostic("no_input", null),
+    };
   }
 
-  if (chatId == null) return [];
+  if (threadId == null && !recipientHandle) {
+    return {
+      messages: [],
+      diagnostic: emptyDiagnostic("no_input", null),
+    };
+  }
 
-  const rows = db.query<MessageRowLite, [number, number]>(
-    `SELECT m.ROWID AS ROWID,
-            m.text AS text,
-            m.attributedBody AS attributedBody,
-            m.date AS date,
-            m.is_from_me AS is_from_me,
-            m.is_read AS is_read,
-            m.cache_has_attachments AS cache_has_attachments,
-            m.handle_id AS handle_id,
-            h.id AS sender_handle,
-            cmj.chat_id AS thread_id
-     FROM chat_message_join cmj
-     JOIN message m ON m.ROWID = cmj.message_id
-     LEFT JOIN handle h ON h.ROWID = m.handle_id
-     WHERE cmj.chat_id = ?
-     ORDER BY m.date DESC
-     LIMIT ?`
-  ).all(chatId, limit);
+  try {
+    const db = openChatDb();
+    let chatId: number | null = threadId ?? null;
+    let canon: string | null = null;
+    let matchedHandleIds: number[] = [];
 
-  // Chronological order for UI rendering (oldest first, newest last).
-  return rows.reverse().map((r) => ({
-    from_me: r.is_from_me === 1,
-    sender_handle: r.is_from_me ? null : r.sender_handle,
-    sender_name: r.is_from_me ? null : r.sender_handle ? resolveHandle(r.sender_handle) : null,
-    body: truncateBody(bestMessageBody(r.text, r.attributedBody)),
-    sent_at: appleDateToIsoUtc(r.date),
-  }));
+    if (chatId == null && recipientHandle) {
+      canon = canonChatHandle(recipientHandle);
+      matchedHandleIds = loadChatHandles()
+        .filter((h) => h.canon === canon)
+        .map((h) => h.rowid);
+
+      if (matchedHandleIds.length === 0) {
+        return {
+          messages: [],
+          diagnostic: {
+            status: "no_handle_match",
+            canonical_recipient: canon,
+            matched_handle_ids: [],
+            chat_id: null,
+            message_count: 0,
+            error: null,
+          },
+        };
+      }
+
+      const placeholders = matchedHandleIds.map(() => "?").join(",");
+      const row = db.query<{ chat_id: number }, number[]>(
+        `WITH cand AS (
+           SELECT DISTINCT chj.chat_id FROM chat_handle_join chj WHERE chj.handle_id IN (${placeholders})
+         ),
+         counts AS (
+           SELECT chj.chat_id, COUNT(*) AS participant_count
+           FROM chat_handle_join chj
+           WHERE chj.chat_id IN (SELECT chat_id FROM cand)
+           GROUP BY chj.chat_id
+         ),
+         recency AS (
+           SELECT cmj.chat_id, MAX(cmj.message_id) AS last_msg
+           FROM chat_message_join cmj
+           WHERE cmj.chat_id IN (SELECT chat_id FROM cand)
+           GROUP BY cmj.chat_id
+         )
+         SELECT counts.chat_id AS chat_id
+         FROM counts JOIN recency ON recency.chat_id = counts.chat_id
+         ORDER BY (counts.participant_count = 1) DESC, recency.last_msg DESC
+         LIMIT 1`
+      ).get(...matchedHandleIds) ?? null;
+
+      if (!row) {
+        return {
+          messages: [],
+          diagnostic: {
+            status: "no_chat_for_handle",
+            canonical_recipient: canon,
+            matched_handle_ids: matchedHandleIds,
+            chat_id: null,
+            message_count: 0,
+            error: null,
+          },
+        };
+      }
+      chatId = row.chat_id;
+    }
+
+    if (chatId == null) {
+      return {
+        messages: [],
+        diagnostic: emptyDiagnostic("no_input", canon),
+      };
+    }
+
+    const rows = db.query<MessageRowLite, [number, number]>(
+      `SELECT m.ROWID AS ROWID,
+              m.text AS text,
+              m.attributedBody AS attributedBody,
+              m.date AS date,
+              m.is_from_me AS is_from_me,
+              m.is_read AS is_read,
+              m.cache_has_attachments AS cache_has_attachments,
+              m.handle_id AS handle_id,
+              h.id AS sender_handle,
+              cmj.chat_id AS thread_id
+       FROM chat_message_join cmj
+       JOIN message m ON m.ROWID = cmj.message_id
+       LEFT JOIN handle h ON h.ROWID = m.handle_id
+       WHERE cmj.chat_id = ?
+       ORDER BY m.date DESC
+       LIMIT ?`
+    ).all(chatId, limit);
+
+    const messages: DraftContextMessage[] = rows.reverse().map((r) => ({
+      from_me: r.is_from_me === 1,
+      sender_handle: r.is_from_me ? null : r.sender_handle,
+      sender_name: r.is_from_me ? null : r.sender_handle ? resolveHandle(r.sender_handle) : null,
+      body: truncateBody(bestMessageBody(r.text, r.attributedBody)),
+      sent_at: appleDateToIsoUtc(r.date),
+    }));
+
+    return {
+      messages,
+      diagnostic: {
+        status: messages.length > 0 ? "ok" : "empty_thread",
+        canonical_recipient: canon,
+        matched_handle_ids: matchedHandleIds,
+        chat_id: chatId,
+        message_count: messages.length,
+        error: null,
+      },
+    };
+  } catch (e) {
+    return {
+      messages: [],
+      diagnostic: {
+        status: "error",
+        canonical_recipient: null,
+        matched_handle_ids: [],
+        chat_id: null,
+        message_count: 0,
+        error: (e as Error).message,
+      },
+    };
+  }
+}
+
+function emptyDiagnostic(status: ContextLookupDiagnostic["status"], canon: string | null): ContextLookupDiagnostic {
+  return {
+    status,
+    canonical_recipient: canon,
+    matched_handle_ids: [],
+    chat_id: null,
+    message_count: 0,
+    error: null,
+  };
 }
 
 export interface SearchArgs {

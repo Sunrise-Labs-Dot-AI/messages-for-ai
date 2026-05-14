@@ -65,7 +65,8 @@ final class DraftStore: ObservableObject {
       sent_at: Self.isoString(sentAt),
       send_service: service,
       source: existing.source,
-      context_messages: existing.context_messages
+      context_messages: existing.context_messages,
+      context_diagnostic: existing.context_diagnostic
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted]

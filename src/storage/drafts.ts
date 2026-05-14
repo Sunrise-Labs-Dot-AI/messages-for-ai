@@ -2,7 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { DraftContextMessage } from "../chatdb/queries.ts";
+import type { DraftContextMessage, ContextLookupDiagnostic } from "../chatdb/queries.ts";
 
 // Compute the drafts directory on every access rather than caching it at
 // module load. This is mostly for symmetry — the real test-seam below
@@ -42,6 +42,10 @@ export interface Draft {
   // can display thread context without needing chat.db access. Null when
   // no matching thread was found, or when the lookup failed (no FDA).
   context_messages: DraftContextMessage[] | null;
+  // Structured breadcrumb of how the context lookup went. Populated even
+  // on success (status: "ok") so the menu bar app can show "no_chat_for_handle"
+  // vs "error" vs "no_handle_match" when context_messages is null/empty.
+  context_diagnostic: ContextLookupDiagnostic | null;
 }
 
 function ensureDir(): void {
@@ -59,6 +63,7 @@ export interface StageDraftArgs {
   in_reply_to_thread_id?: number | null;
   source?: string | null;
   context_messages?: DraftContextMessage[] | null;
+  context_diagnostic?: ContextLookupDiagnostic | null;
 }
 
 export function stageDraft(args: StageDraftArgs): { draft: Draft; path: string } {
@@ -73,6 +78,7 @@ export function stageDraft(args: StageDraftArgs): { draft: Draft; path: string }
     send_service: null,
     source: args.source ?? null,
     context_messages: args.context_messages ?? null,
+    context_diagnostic: args.context_diagnostic ?? null,
   };
   const path = draftPath(draft.id);
   writeFileSync(path, JSON.stringify(draft, null, 2), { mode: 0o600 });
@@ -128,6 +134,7 @@ function normalizeDraft(raw: Partial<Draft>): Draft | null {
     send_service: raw.send_service ?? null,
     source: raw.source ?? null,
     context_messages: raw.context_messages ?? null,
+    context_diagnostic: raw.context_diagnostic ?? null,
   };
 }
 

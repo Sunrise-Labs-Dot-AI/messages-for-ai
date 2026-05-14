@@ -8,7 +8,7 @@ import {
 } from "../schema.ts";
 import { stageDraft, listDrafts, getDraft, discardDraft, markDraftSent, draftsDir } from "../storage/drafts.ts";
 import { recentContextForRecipient } from "../chatdb/queries.ts";
-import type { DraftContextMessage } from "../chatdb/queries.ts";
+import type { DraftContextMessage, ContextLookupDiagnostic } from "../chatdb/queries.ts";
 import { sendIMessage } from "../imessage/send.ts";
 import { errorResult, jsonResult } from "./_result.ts";
 
@@ -25,19 +25,31 @@ export function registerDraftTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        // Best-effort thread-context lookup. Failures (no FDA, no matching
-        // thread, no AddressBook) produce null rather than blocking the
-        // stage — drafting must work even if chat.db is unreachable.
+        // Best-effort thread-context lookup. The function never throws
+        // (it catches internally and returns status="error"), but we
+        // belt-and-suspender it anyway. The diagnostic is always
+        // attached so a null context_messages is self-explaining in
+        // the menu bar UI.
         let context: DraftContextMessage[] | null = null;
+        let diagnostic: ContextLookupDiagnostic | null = null;
         try {
-          const found = recentContextForRecipient({
+          const result = recentContextForRecipient({
             recipientHandle: args.to_handle,
             threadId: args.in_reply_to_thread_id,
             limit: 5,
           });
-          context = found.length > 0 ? found : null;
-        } catch {
+          context = result.messages.length > 0 ? result.messages : null;
+          diagnostic = result.diagnostic;
+        } catch (e) {
           context = null;
+          diagnostic = {
+            status: "error",
+            canonical_recipient: null,
+            matched_handle_ids: [],
+            chat_id: null,
+            message_count: 0,
+            error: (e as Error).message,
+          };
         }
 
         const result = stageDraft({
@@ -46,6 +58,7 @@ export function registerDraftTools(server: McpServer): void {
           in_reply_to_thread_id: args.in_reply_to_thread_id ?? null,
           source: args.source ?? null,
           context_messages: context,
+          context_diagnostic: diagnostic,
         });
         return jsonResult({ ok: true, draft_id: result.draft.id, path: result.path, draft: result.draft });
       } catch (e) {
