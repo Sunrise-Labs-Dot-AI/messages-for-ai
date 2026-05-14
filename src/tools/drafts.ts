@@ -16,7 +16,9 @@ export function registerDraftTools(server: McpServer): void {
     {
       title: "Stage an iMessage draft (does NOT send)",
       description:
-        "Stage a draft iMessage as a local JSON file under ~/.imessage-mcp/drafts. Does NOT send. Returns the draft id and file path. James reviews and dispatches drafts out-of-band — there is no send tool in this server.",
+        "Stage a draft iMessage as a local JSON file under ~/.imessage-mcp/drafts. Does NOT send. Returns the draft id and file path. " +
+        "Drafts are reviewed and sent out-of-band — either via `send_imessage_draft` (with human confirmation in the MCP client) or via the companion menu bar app. " +
+        "Pass `source` to identify yourself: a short human-readable label (e.g. \"Claude Desktop / morning triage\", \"Claude Code in personal-assistant\"). The reviewer will see this verbatim next to the draft body.",
       inputSchema: StageDraftShape,
     },
     async (args) => {
@@ -25,6 +27,7 @@ export function registerDraftTools(server: McpServer): void {
           to_handle: args.to_handle,
           body: args.body,
           in_reply_to_thread_id: args.in_reply_to_thread_id ?? null,
+          source: args.source ?? null,
         });
         return jsonResult({ ok: true, draft_id: result.draft.id, path: result.path, draft: result.draft });
       } catch (e) {

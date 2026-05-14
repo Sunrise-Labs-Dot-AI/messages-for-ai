@@ -63,7 +63,8 @@ final class DraftStore: ObservableObject {
       in_reply_to_thread_id: existing.in_reply_to_thread_id,
       staged_at: existing.staged_at,
       sent_at: Self.isoString(sentAt),
-      send_service: service
+      send_service: service,
+      source: existing.source
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted]

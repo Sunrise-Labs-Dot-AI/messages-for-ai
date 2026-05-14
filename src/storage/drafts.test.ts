@@ -1,28 +1,33 @@
-import { describe, test, expect, beforeEach, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, beforeEach, afterAll } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-// The drafts module hardcodes ~/.imessage-mcp/drafts. We don't want tests
-// touching the user's actual drafts dir, so we override HOME for the
-// duration of these tests. Bun re-evaluates env on each spawn, so this is
-// safe within a single test file.
-const originalHome = process.env.HOME;
-const tmpHome = mkdtempSync(join(tmpdir(), "imessage-mcp-test-"));
-process.env.HOME = tmpHome;
+import * as drafts from "./drafts.ts";
 
-// Import lazily so the module picks up the patched HOME.
-const drafts = await import("./drafts.ts");
+// Use the explicit test seam (`_setDraftsDirForTesting`). The earlier
+// approach of overriding `process.env.HOME` doesn't work on macOS —
+// `os.homedir()` uses passwd lookup by effective UID and ignores the
+// JS-level override, so tests silently leaked into the real
+// `~/.imessage-mcp/drafts` AND wiped its contents in beforeEach.
+const tmpHome = mkdtempSync(join(tmpdir(), "imessage-mcp-test-"));
+const tmpDraftsDir = join(tmpHome, ".imessage-mcp", "drafts");
+
+beforeAll(() => {
+  drafts._setDraftsDirForTesting(tmpDraftsDir);
+});
 
 afterAll(() => {
-  process.env.HOME = originalHome;
+  drafts._setDraftsDirForTesting(null);
   rmSync(tmpHome, { recursive: true, force: true });
 });
 
 beforeEach(() => {
-  // Clear any drafts between tests so listDrafts assertions stay deterministic.
-  rmSync(drafts.draftsDir(), { recursive: true, force: true });
+  // Clear test drafts between tests so listDrafts assertions stay
+  // deterministic. Safe to rmSync now — this is the tmp dir, not the
+  // user's real drafts.
+  rmSync(tmpDraftsDir, { recursive: true, force: true });
 });
 
 describe("stageDraft / getDraft / discardDraft", () => {
@@ -30,9 +35,20 @@ describe("stageDraft / getDraft / discardDraft", () => {
     const { draft, path } = drafts.stageDraft({ to_handle: "+14155551234", body: "hi" });
     expect(draft.sent_at).toBeNull();
     expect(draft.send_service).toBeNull();
+    expect(draft.source).toBeNull();
     expect(draft.to_handle).toBe("+14155551234");
     expect(draft.body).toBe("hi");
     expect(path.endsWith(`${draft.id}.json`)).toBe(true);
+    expect(path.startsWith(tmpDraftsDir)).toBe(true);
+  });
+
+  test("stage with source records the provenance label", () => {
+    const { draft } = drafts.stageDraft({
+      to_handle: "+14155551234",
+      body: "hi",
+      source: "Claude Code / unit test",
+    });
+    expect(draft.source).toBe("Claude Code / unit test");
   });
 
   test("getDraft returns the staged draft", () => {
@@ -74,10 +90,19 @@ describe("markDraftSent", () => {
     expect(updated?.sent_at).toBe("2026-05-13T00:00:00.000Z");
     expect(updated?.send_service).toBe("iMessage");
 
-    // Verify it persisted, not just the in-memory return.
     const fetched = drafts.getDraft(draft.id);
     expect(fetched?.sent_at).toBe("2026-05-13T00:00:00.000Z");
     expect(fetched?.send_service).toBe("iMessage");
+  });
+
+  test("preserves source through mark-sent", () => {
+    const { draft } = drafts.stageDraft({
+      to_handle: "+14155551234",
+      body: "hi",
+      source: "ci test",
+    });
+    const updated = drafts.markDraftSent(draft.id, "2026-05-13T00:00:00.000Z", "SMS");
+    expect(updated?.source).toBe("ci test");
   });
 
   test("returns null for unknown id", () => {
@@ -86,13 +111,14 @@ describe("markDraftSent", () => {
 });
 
 describe("normalizeDraft backward-compat", () => {
-  test("reads a pre-sent_at format draft and backfills sent_at: null + send_service: null", () => {
-    // Hand-write a draft in the v0 schema (before sent_at/send_service existed).
+  test("reads a pre-source / pre-sent_at format draft and backfills nulls", () => {
+    // Hand-write a draft in the earliest schema (before sent_at,
+    // send_service, source). The test seam ensures this lands in the
+    // tmpdir, not the real drafts dir.
     const id = randomUUID();
-    const dir = drafts.draftsDir();
-    // ensureDir is called inside drafts module; force the dir to exist.
-    drafts.stageDraft({ to_handle: "+14155550000", body: "seed" }); // triggers ensureDir
-    writeFileSync(join(dir, `${id}.json`), JSON.stringify({
+    // Trigger ensureDir by staging once.
+    drafts.stageDraft({ to_handle: "+14155550000", body: "seed" });
+    writeFileSync(join(tmpDraftsDir, `${id}.json`), JSON.stringify({
       id,
       to_handle: "+14155551234",
       body: "from v0",
@@ -102,6 +128,7 @@ describe("normalizeDraft backward-compat", () => {
     const fetched = drafts.getDraft(id);
     expect(fetched?.sent_at).toBeNull();
     expect(fetched?.send_service).toBeNull();
+    expect(fetched?.source).toBeNull();
     expect(fetched?.body).toBe("from v0");
   });
 });

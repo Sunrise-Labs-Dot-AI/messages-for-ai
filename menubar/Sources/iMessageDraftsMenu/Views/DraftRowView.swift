@@ -8,15 +8,20 @@ struct DraftRowView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
+      // ─── Header: recipient + when ──────────────────────────────────
       HStack(alignment: .firstTextBaseline) {
         Text(draft.to_handle)
           .font(.system(.subheadline, design: .rounded).weight(.semibold))
+          .lineLimit(1)
+          .truncationMode(.middle)
         Spacer()
         Text(relativeStagedAt)
           .font(.caption)
           .foregroundStyle(.secondary)
+          .help(absoluteStagedAt) // hover for full timestamp
       }
 
+      // ─── Body ───────────────────────────────────────────────────────
       Text(draft.body)
         .font(.body)
         .textSelection(.enabled)
@@ -30,21 +35,44 @@ struct DraftRowView: View {
             .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
         )
 
+      // ─── Provenance: source label + absolute time ─────────────────
+      // Always shown so the reviewer has full context at a glance.
+      VStack(alignment: .leading, spacing: 2) {
+        if let source = draft.source, !source.isEmpty {
+          HStack(spacing: 4) {
+            Image(systemName: "person.crop.circle.dashed")
+              .font(.caption2)
+              .foregroundStyle(.tertiary)
+            Text(source)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .lineLimit(1)
+              .truncationMode(.tail)
+          }
+        }
+        HStack(spacing: 4) {
+          Image(systemName: "clock")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+          Text("Staged \(absoluteStagedAt)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+
       if let lastError {
         Text(lastError)
           .font(.caption)
           .foregroundStyle(.red)
       }
 
+      // ─── Actions ────────────────────────────────────────────────────
       HStack(spacing: 8) {
         Button(action: { Task { await send() } }) {
           if sending {
-            ProgressView()
-              .controlSize(.small)
-              .frame(width: 50)
+            ProgressView().controlSize(.small).frame(width: 50)
           } else {
-            Text("Send")
-              .frame(minWidth: 50)
+            Text("Send").frame(minWidth: 50)
           }
         }
         .buttonStyle(.borderedProminent)
@@ -81,6 +109,17 @@ struct DraftRowView: View {
     let formatter = RelativeDateTimeFormatter()
     formatter.unitsStyle = .abbreviated
     return formatter.localizedString(for: date, relativeTo: Date())
+  }
+
+  // "Today 2:35 PM" / "Yesterday 4:12 PM" / "May 12 at 9:01 AM"
+  // Localized; respects the user's clock format preference.
+  private var absoluteStagedAt: String {
+    guard let date = draft.stagedDate else { return draft.staged_at }
+    let formatter = DateFormatter()
+    formatter.doesRelativeDateFormatting = true
+    formatter.dateStyle = .medium
+    formatter.timeStyle = .short
+    return formatter.string(from: date)
   }
 
   private func send() async {

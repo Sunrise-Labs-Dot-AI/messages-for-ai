@@ -46,6 +46,13 @@ export const StageDraftShape = {
     }),
   body: z.string().min(1).max(20_000),
   in_reply_to_thread_id: z.number().int().positive().optional(),
+  // Short human-readable provenance label. Shown verbatim in the menu
+  // bar app's draft review UI so a reviewer can tell which agent or
+  // context staged the draft. Free-form; the agent should set it to
+  // something the human will actually find informative, e.g.
+  // "Claude Desktop / morning triage" or
+  // "Claude Code in personal-assistant repo".
+  source: z.string().min(1).max(200).optional(),
 } as const;
 
 export const ListDraftsShape = {
