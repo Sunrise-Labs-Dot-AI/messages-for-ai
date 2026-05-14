@@ -20,6 +20,50 @@ A local stdio MCP server is the right shape — no tunnel, no cloud, no
 shared secret. The blast radius is "what a process running as you can
 already do."
 
+## How this compares to other iMessage MCP servers
+
+There are at least eight other iMessage MCP servers on GitHub. They differ
+mostly in language, scope, and how much they trust the model:
+
+| Project | Read | Send | Distinguishing feature |
+|---|---|---|---|
+| [mattt/iMCP](https://github.com/mattt/iMCP) | ✓ | ✓ | Polished signed Mac app; also Contacts / Reminders / Calendar / Location |
+| [carterlasalle/mac_messages_mcp](https://github.com/carterlasalle/mac_messages_mcp) | ✓ | ✓ | Most feature-rich: attachments, group chats, phone validation |
+| [hannesrudolph/imessage-query-fastmcp-mcp-server](https://github.com/hannesrudolph/imessage-query-fastmcp-mcp-server) | ✓ | — | Python / FastMCP, read-only |
+| [anipotts/imessage-mcp](https://github.com/anipotts/imessage-mcp) | ✓ | — | "Spotify Wrapped for texts" angle |
+| [wyattjoh/imessage-mcp](https://github.com/wyattjoh/imessage-mcp) | ✓ | — | Minimal read-only Node |
+| [daveremy/imessage-mcp](https://github.com/daveremy/imessage-mcp) | ✓ | ✓ | Targets Claude Code specifically |
+| [jonmmease/jons-mcp-imessage](https://github.com/jonmmease/jons-mcp-imessage) | ✓ | — | Hybrid search + contact enrichment |
+| [tszaks/multimodal-imessage-mcp](https://github.com/tszaks/multimodal-imessage-mcp) | ✓ | ? | Attachment handling |
+| **this repo** | ✓ | ✓† | †draft-staged send only; companion menu bar review app |
+
+Pick **this one** if you specifically want:
+
+- **Draft-first send** — no ad-hoc send tool. Every outgoing message
+  goes through `stage_imessage_draft` first, so the body is observable
+  in the conversation transcript before any destructive call fires.
+  Idempotency lock prevents agent retry loops from double-sending.
+- **A human-review menu bar app** for staged drafts, with iMessage-style
+  thread-context bubbles. The agent can stage 5 drafts overnight; you
+  approve them in the morning.
+- **Required-filter guardrails** on read/search — every list/search call
+  must include `since` (≤2y) or `contact_filter`. Reduces prompt-injection
+  blast radius from a malicious sender shoving content into an agent's
+  context. None of the other servers I surveyed do this.
+- **`attributedBody` decoding** in search — modern iOS/macOS stores body
+  text in a typedstream blob rather than the plain `text` column. Most
+  read-only MCPs miss these messages entirely.
+- **Test coverage** — 56 cases including in-memory SQLite integration
+  for the SQL paths.
+
+Pick **`mattt/iMCP`** if you want a polished signed Mac app with broader
+scope (Contacts, Reminders, Calendar) and don't need the draft-staging
+flow.
+
+Pick **`carterlasalle/mac_messages_mcp`** if you want maximum feature
+breadth (attachments, group send) and the model can be trusted to send
+directly without staging.
+
 ## Tools
 
 | Tool | Purpose |
@@ -32,7 +76,7 @@ already do."
 | `get_imessage_draft` | Read one staged draft. |
 | `discard_imessage_draft` | Delete a staged draft. |
 | `send_imessage_draft` | **Destructive.** Send a staged draft via Messages.app. Refuses duplicate sends. (Or send via the menu bar app — see below.) |
-| `get_imessage_current_time` | UTC + LA-local timestamps, for building `since` filters. |
+| `get_imessage_current_time` | UTC + system-local timestamps, for building `since` filters. |
 
 Hard guardrails:
 
@@ -45,11 +89,12 @@ Hard guardrails:
 ### 1. Build + install
 
 ```sh
-cd ~/Documents/Claude/Projects/imessage-mcp
+git clone https://github.com/<you>/imessage-mcp.git
+cd imessage-mcp
 bun install
 bun run install:bin
 # → builds bin/imessage-mcp, clears xattrs, re-signs with a stable identifier
-#   (com.jamesheath.imessage-mcp), atomic-moves to ~/bin/imessage-mcp,
+#   (com.local.imessage-mcp), atomic-moves to ~/bin/imessage-mcp,
 #   smoke-tests an initialize call.
 ```
 
@@ -75,13 +120,13 @@ binary needs Full Disk Access to read them.
 
 1. Open **System Settings → Privacy & Security → Full Disk Access**.
 2. Click **+**.
-3. Press **⌘⇧G**, paste `/Users/jamesheath/bin/imessage-mcp`, press Enter.
+3. Press **⌘⇧G**, paste `~/bin/imessage-mcp`, press Enter.
 4. Confirm the toggle is **on**.
 
 (Granting FDA to the binary itself — not to Claude/Codex/Terminal — is
 the tight option: only this one program gets the privilege, not every
 tool the parent spawns. The stable codesign identifier
-`com.jamesheath.imessage-mcp` set by `scripts/install.sh` means TCC
+`com.local.imessage-mcp` set by `scripts/install.sh` means TCC
 keys the grant off the identifier, so rebuilds *usually* survive.)
 
 **Troubleshooting: tools return `authorization denied`.** TCC grants
@@ -100,13 +145,18 @@ replaced the binary itself (via `bun run install:bin`).
 
 ### 4. Wire up the MCP clients
 
+> ⚠️ MCP client `command` fields vary in whether they expand `~`. Claude
+> Desktop and Codex CLI do; some terminals' MCP plugins don't. If a
+> client fails to launch the server, replace `~/bin/imessage-mcp` with
+> the absolute path (`echo $HOME/bin/imessage-mcp`).
+
 **Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "imessages": {
-      "command": "/Users/jamesheath/bin/imessage-mcp"
+      "command": "~/bin/imessage-mcp"
     }
   }
 }
@@ -120,7 +170,7 @@ Restart Claude Desktop.
 ```json
 {
   "mcpServers": {
-    "imessages": { "command": "/Users/jamesheath/bin/imessage-mcp" }
+    "imessages": { "command": "~/bin/imessage-mcp" }
   }
 }
 ```
@@ -129,7 +179,7 @@ Restart Claude Desktop.
 
 ```toml
 [mcp_servers.imessages]
-command = "/Users/jamesheath/bin/imessage-mcp"
+command = "~/bin/imessage-mcp"
 ```
 
 (Verify against current Codex docs — config shape may have shifted.)

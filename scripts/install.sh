@@ -7,9 +7,12 @@
 #   2. Clear extended attributes (provenance + quarantine flags can otherwise
 #      flag the binary as untrusted on next launch).
 #   3. Re-sign with `codesign --force --sign -` and a STABLE identifier
-#      (com.jamesheath.imessage-mcp). bun's default linker-signed identifier
+#      (default: com.local.imessage-mcp; override via env var
+#      IMESSAGE_MCP_IDENTIFIER). bun's default linker-signed identifier
 #      is `a.out`, which macOS treats inconsistently when overwriting an
-#      existing binary at the same path.
+#      existing binary at the same path. A stable identifier also means
+#      the macOS Full Disk Access grant survives rebuilds — TCC keys
+#      the grant off the identifier, not the per-build hash.
 #   4. Atomic-mv into place (rather than `cp` overwriting in-place; the latter
 #      can trigger `kernel: load code signature error 2` on the next exec).
 #
@@ -23,7 +26,7 @@ cd "$(dirname "$0")/.."
 
 BIN_SRC="bin/imessage-mcp"
 BIN_DEST="${HOME}/bin/imessage-mcp"
-IDENTIFIER="com.jamesheath.imessage-mcp"
+IDENTIFIER="${IMESSAGE_MCP_IDENTIFIER:-com.local.imessage-mcp}"
 
 echo "› bun build --compile"
 bun build src/index.ts --compile --outfile "$BIN_SRC"

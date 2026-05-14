@@ -8,13 +8,17 @@ export function registerTimeTool(server: McpServer): void {
     {
       title: "Current time (for constructing `since` filters)",
       description:
-        "Returns the current time in ISO-8601 (UTC) plus the same instant formatted in America/Los_Angeles. Use this when constructing the `since` parameter for list/search tools so you don't have to guess timezone offsets.",
+        "Returns the current time in ISO-8601 (UTC) plus the same instant formatted in the system's local timezone. Use this when constructing the `since` parameter for list/search tools so you don't have to guess timezone offsets.",
       inputSchema: CurrentTimeShape,
     },
     async () => {
       const now = new Date();
-      const laFormatter = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "America/Los_Angeles",
+      // System timezone — picked up from the environment so the same
+      // binary works for any user without recompilation. Falls back to
+      // UTC if the runtime can't resolve a zone (rare).
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      const localFormatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: tz,
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
@@ -25,7 +29,8 @@ export function registerTimeTool(server: McpServer): void {
       });
       return jsonResult({
         utc_iso: now.toISOString(),
-        la_local: laFormatter.format(now),
+        local: localFormatter.format(now),
+        local_timezone: tz,
         epoch_ms: now.getTime(),
       });
     }

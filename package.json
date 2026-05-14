@@ -1,8 +1,20 @@
 {
   "name": "imessage-mcp",
   "version": "0.1.0",
-  "description": "Local MCP server exposing read-only access to macOS iMessages and a draft-staging API.",
-  "private": true,
+  "description": "Local MCP server for macOS iMessages: read-only chat.db queries, draft staging with thread-context snapshots, AppleScript send. Designed for Claude Desktop / Claude Code / Codex CLI.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "imessage",
+    "messages",
+    "macos",
+    "apple",
+    "chat.db",
+    "claude",
+    "stdio"
+  ],
+  "license": "MIT",
+  "author": "imessage-mcp contributors",
   "type": "module",
   "scripts": {
     "build": "bun build src/index.ts --compile --outfile bin/imessage-mcp",

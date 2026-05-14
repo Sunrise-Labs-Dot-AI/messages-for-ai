@@ -13,7 +13,7 @@ async function main() {
     {
       instructions:
         "Read-only iMessage access (chat.db) plus a local draft-staging API for the macOS Messages app. " +
-        "Drafts never auto-send — staging produces a JSON file under ~/.imessage-mcp/drafts that James reviews and dispatches out-of-band. " +
+        "Drafts never auto-send — staging produces a JSON file under ~/.imessage-mcp/drafts that the user reviews and dispatches out-of-band (either via the send_imessage_draft tool with explicit confirmation, or via the companion menu bar app). " +
         "All listing/search tools require either a `since` (ISO-8601, ≤2 years) or `contact_filter` (≥2 chars) to prevent unbounded history dumps.",
     }
   );
