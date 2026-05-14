@@ -80,7 +80,19 @@ binary needs Full Disk Access to read them.
 
 (Granting FDA to the binary itself — not to Claude/Codex/Terminal — is
 the tight option: only this one program gets the privilege, not every
-tool the parent spawns.)
+tool the parent spawns. The stable codesign identifier
+`com.jamesheath.imessage-mcp` set by `scripts/install.sh` means TCC
+keys the grant off the identifier, so rebuilds *usually* survive.)
+
+**Troubleshooting: tools return `authorization denied`.** TCC grants
+sometimes decay — macOS updates, Claude.app updates, or just luck.
+Symptom: every chat.db-touching tool fails (`list_imessage_threads`,
+the context-lookup inside `stage_imessage_draft`, etc.), and the
+`context_diagnostic` field on freshly-staged drafts reports
+`error: authorization denied`. Fix: in System Settings → Privacy &
+Security → Full Disk Access, toggle the `imessage-mcp` entry **off
+and back on** (or remove it via `−` and re-add via `+`). Restart any
+MCP client that's holding an old subprocess.
 
 ### 4. Wire up the MCP clients
 
