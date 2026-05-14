@@ -3,6 +3,7 @@ import AppKit
 
 struct DraftListView: View {
   @EnvironmentObject var store: DraftStore
+  @EnvironmentObject var loginItem: LoginItemController
 
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   private var recentlySent: [Draft] {
@@ -117,21 +118,52 @@ struct DraftListView: View {
   }
 
   private var footer: some View {
-    HStack {
-      Button("Refresh") { store.refresh() }
+    VStack(spacing: 6) {
+      // Settings row.
+      HStack(spacing: 8) {
+        Toggle(isOn: Binding(
+          get: { loginItem.isEnabled },
+          set: { loginItem.setEnabled($0) }
+        )) {
+          Text("Open at Login")
+            .font(.caption)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+
+        Spacer()
+      }
+
+      if let warning = loginItem.statusDescription {
+        Text(warning)
+          .font(.caption2)
+          .foregroundStyle(.orange)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      if let err = loginItem.lastError {
+        Text(err)
+          .font(.caption2)
+          .foregroundStyle(.red)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+
+      // Action row.
+      HStack {
+        Button("Refresh") { store.refresh() }
+          .buttonStyle(.plain)
+          .foregroundStyle(.secondary)
+
+        Spacer()
+
+        Button("Quit") {
+          NSApplication.shared.terminate(nil)
+        }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
-
-      Spacer()
-
-      Button("Quit") {
-        NSApplication.shared.terminate(nil)
+        .keyboardShortcut("q", modifiers: [.command])
       }
-      .buttonStyle(.plain)
-      .foregroundStyle(.secondary)
-      .keyboardShortcut("q", modifiers: [.command])
+      .font(.caption)
     }
-    .font(.caption)
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
   }

@@ -4,12 +4,14 @@ import AppKit
 @main
 struct iMessageDraftsMenuApp: App {
   @StateObject private var store = DraftStore()
+  @StateObject private var loginItem = LoginItemController()
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
   var body: some Scene {
     MenuBarExtra {
       DraftListView()
         .environmentObject(store)
+        .environmentObject(loginItem)
     } label: {
       // Dynamic label: badge count when there are pending drafts.
       // SF Symbols + Text composed via Image+Text in a HStack would not

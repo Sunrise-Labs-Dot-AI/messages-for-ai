@@ -209,8 +209,9 @@ open ~/Applications/iMessage\ Drafts.app
 The first Send will trigger a macOS Automation prompt — "iMessage Drafts
 wants to control Messages" — click OK.
 
-Optionally add to **System Settings → General → Login Items** so it
-runs in the background whenever you're logged in.
+**Open at Login is on by default.** The app self-registers via
+`SMAppService` the first time it runs. Toggle it off via the popover
+footer, or via System Settings → General → Login Items.
 
 ### How it works
 
@@ -238,6 +239,7 @@ menubar/
     App.swift              # @main, MenuBarExtra scene, AppDelegate
     DraftStore.swift       # ObservableObject + FS watcher
     DraftSender.swift      # osascript wrapper
+    LoginItemController.swift  # SMAppService open-at-login toggle
     Models/Draft.swift     # Codable; mirrors src/storage/drafts.ts
     Views/
       DraftListView.swift  # Pending + Recently-sent sections
