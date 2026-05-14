@@ -101,7 +101,7 @@ Hard guardrails:
 ### 1. Build + install
 
 ```sh
-git clone https://github.com/<you>/imessage-mcp.git
+git clone https://github.com/Sunrise-Labs-Dot-AI/imessage-mcp.git
 cd imessage-mcp
 bun install
 bun run install:bin

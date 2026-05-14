@@ -1,0 +1,50 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-flight run when a new commit lands on the same ref —
+# keeps PR latency low when someone pushes multiple times.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bun-test:
+    # macOS runner because the eventual binary is macOS-only (uses
+    # bun:sqlite against chat.db + osascript). Tests themselves use
+    # in-memory SQLite and don't touch chat.db / Messages.app, so
+    # Linux would also work today — but keeping the runner close to
+    # the production env catches mac-specific regressions early.
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type-check
+        run: bun --bun tsc --noEmit
+
+      - name: Test
+        run: bun test
+
+  swift-build:
+    # Verify the companion menu bar app at menubar/ still compiles.
+    # We don't run the bundle (no UI in CI) — just `swift build`.
+    runs-on: macos-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift build
+        working-directory: menubar
+        run: swift build -c release

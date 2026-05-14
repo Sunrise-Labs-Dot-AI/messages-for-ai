@@ -15,6 +15,14 @@
   ],
   "license": "MIT",
   "author": "imessage-mcp contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sunrise-Labs-Dot-AI/imessage-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Sunrise-Labs-Dot-AI/imessage-mcp/issues"
+  },
+  "homepage": "https://github.com/Sunrise-Labs-Dot-AI/imessage-mcp#readme",
   "type": "module",
   "scripts": {
     "build": "bun build src/index.ts --compile --outfile bin/imessage-mcp",
