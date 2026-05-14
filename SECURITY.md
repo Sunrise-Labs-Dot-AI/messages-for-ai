@@ -58,7 +58,8 @@ myself" — not "I trust this binary because of some sandbox."
 | **Required `since` (≤2y) or `contact_filter` on read/search** | Unbounded history dumps into agent context | Doesn't stop reads inside the bounded window |
 | **8 KB body truncation** | Mega-payload prompt injections | A 4 KB injection works the same as an 8 KB one |
 | **Send-only-from-draft** | Ad-hoc send tool calls | Agent can stage + send in one turn (see next) |
-| **Minimum staged-age (default 5s)** | Single-turn stage-and-send bypassing human review | Configurable, can be disabled |
+| **`require_approval` setting** (default ON) | All MCP send paths — agents can only stage; the menu bar app is the sole send surface | User-controllable toggle in the menu bar footer. Off if the user explicitly disables. |
+| **Minimum staged-age (default 5s)** | Single-turn stage-and-send bypassing human review when `require_approval` is off | Configurable, can be disabled |
 | **Daily send cap (default 50/UTC day)** | Runaway loops, blast attacks | Cap is per-day, not per-recipient; configurable |
 | **Send audit log** at `~/.imessage-mcp/send-audit.log` | Forensic gap (post-hoc only) | Doesn't prevent; helps investigate. Body content is SHA-256-hashed, not stored. |
 | **`destructiveHint: true` + `idempotentHint: false` annotations on send** | MCP clients can surface confirmation prompts | Depends on the client implementing the hint |
@@ -71,13 +72,23 @@ myself" — not "I trust this binary because of some sandbox."
 | **No network listener, no outbound calls** | Network-based attack surface | — |
 | **`PRAGMA query_only = ON` + `readonly: true` on `chat.db`** | Accidental writes corrupting Messages state | — |
 
-## Configuration knobs (env vars)
+## Configuration knobs
 
-All have safe defaults; configure them to harden further or to disable
-guardrails for trusted automation contexts:
+User-controllable in the menu bar UI:
+
+- **Require draft approval to send** (default ON). Toggle in the
+  popover footer. When on, the MCP `send_imessage_draft` tool is
+  disabled entirely — every send must come from a human pressing
+  Hold-to-Send in the menu bar app. Persists to
+  `~/.imessage-mcp/settings.json` as `{ "require_approval": bool }`;
+  the MCP server reads it on every send call so toggling takes
+  effect immediately without restarting any client.
+
+Env vars (configure for trusted automation contexts):
 
 - `IMESSAGE_MIN_DRAFT_AGE_MS` — minimum age (ms) a draft must be before
-  it can be sent. Default `5000`. Set to `0` to disable.
+  it can be sent via MCP. Default `5000`. Set to `0` to disable. Only
+  applies when `require_approval` is off.
 - `IMESSAGE_DAILY_SEND_CAP` — maximum sends per UTC day. Default `50`.
   Set to `0` to disable.
 - `IMESSAGE_MCP_IDENTIFIER` — codesign identifier used by

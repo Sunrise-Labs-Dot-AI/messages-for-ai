@@ -11,6 +11,7 @@ import { recentContextForRecipient } from "../chatdb/queries.ts";
 import type { DraftContextMessage, ContextLookupDiagnostic } from "../chatdb/queries.ts";
 import { sendIMessage } from "../imessage/send.ts";
 import { appendAudit, checkDailyCap } from "../imessage/audit.ts";
+import { requireApproval } from "../storage/settings.ts";
 import { errorResult, jsonResult } from "./_result.ts";
 import { wrapBodyInPlace } from "./_untrusted.ts";
 import type { Draft } from "../storage/drafts.ts";
@@ -152,8 +153,9 @@ export function registerDraftTools(server: McpServer): void {
       description:
         "Send a previously-staged iMessage draft via the Messages.app AppleScript automation surface. Requires a draft_id from `stage_imessage_draft` — there is no ad-hoc send. Tries iMessage first, falls back to SMS if the recipient is not on iMessage. " +
         "Refuses if: (a) the draft has already been sent (`sent_at` set); " +
-        "(b) the draft is younger than the minimum staged-age (default 5000ms, env IMESSAGE_MIN_DRAFT_AGE_MS) — this prevents a single agent turn from staging and immediately sending without giving the user / MCP client confirmation surface a chance to intervene; " +
-        "(c) the daily send cap has been reached (default 50 sends per UTC day, env IMESSAGE_DAILY_SEND_CAP) — circuit breaker against runaway loops. " +
+        "(b) the user's 'Require draft approval' setting is on (default ON) — in which case the user must hold the Send button in the companion menu bar app instead; " +
+        "(c) the draft is younger than the minimum staged-age (default 5000ms, env IMESSAGE_MIN_DRAFT_AGE_MS) — this prevents a single agent turn from staging and immediately sending without giving the user / MCP client confirmation surface a chance to intervene; " +
+        "(d) the daily send cap has been reached (default 50 sends per UTC day, env IMESSAGE_DAILY_SEND_CAP) — circuit breaker against runaway loops. " +
         "Every successful send appends a JSON line to ~/.imessage-mcp/send-audit.log with timestamp, recipient, and a SHA-256 of the body. " +
         "First call to this tool triggers a one-time macOS prompt: 'Allow <parent app> to control Messages.app?' — approve it to enable sending.",
       inputSchema: SendDraftShape,
@@ -172,6 +174,21 @@ export function registerDraftTools(server: McpServer): void {
         if (draft.sent_at) {
           return errorResult(
             `draft ${args.draft_id} was already sent at ${draft.sent_at} via ${draft.send_service ?? "unknown"}; refusing duplicate send`
+          );
+        }
+
+        // Guardrail #0: user-controlled "require draft approval" toggle.
+        // When on (default), the MCP send path is disabled entirely and
+        // sends must go through the menu bar app's hold-to-fire button.
+        // This is the strongest enforcement of the draft-review property —
+        // every send passes through a human eye. Read fresh on each call
+        // so toggling in the menu bar takes effect immediately.
+        if (requireApproval()) {
+          return errorResult(
+            `send blocked: 'Require draft approval' is enabled. ` +
+            `Draft ${args.draft_id} is staged and visible in the menu bar app — ` +
+            `open it and hold the Send button to dispatch. ` +
+            `Toggle this off in the menu bar popover footer if you want agents to send directly via MCP.`
           );
         }
 

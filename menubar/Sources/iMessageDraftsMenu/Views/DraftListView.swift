@@ -4,6 +4,7 @@ import AppKit
 struct DraftListView: View {
   @EnvironmentObject var store: DraftStore
   @EnvironmentObject var loginItem: LoginItemController
+  @EnvironmentObject var settings: SettingsStore
 
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   private var recentlySent: [Draft] {
@@ -132,7 +133,25 @@ struct DraftListView: View {
 
   private var footer: some View {
     VStack(spacing: 6) {
-      // Settings row.
+      // Settings rows.
+      HStack(spacing: 8) {
+        Toggle(isOn: $settings.requireApproval) {
+          VStack(alignment: .leading, spacing: 1) {
+            Text("Require draft approval to send")
+              .font(.caption)
+            Text(settings.requireApproval
+                 ? "Agents must stage; only this app can send."
+                 : "Agents can send via MCP directly (after staged-age delay).")
+              .font(.caption2)
+              .foregroundStyle(.tertiary)
+          }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+
+        Spacer()
+      }
+
       HStack(spacing: 8) {
         Toggle(isOn: Binding(
           get: { loginItem.isEnabled },
