@@ -1,45 +1,45 @@
 import SwiftUI
 
 // A button that fires only after the user holds it for `duration` seconds.
-// Renders an in-button progress ring while held. Releasing before the
-// threshold cancels (no fire). The label is "Send", "Sending…" or a
-// progress ring depending on state.
+// Visible progress fills the button background during the hold. Releasing
+// early cancels silently; reaching the threshold fires `action`.
 //
-// Rationale: prevents misclick sends from the menu bar popover. A
-// confirmation dialog would be more obvious but introduces a modal that
-// fights the popover dismissal behavior. Hold-to-fire is a known iOS/
-// macOS pattern (delete-on-iPhone, app removal, etc.) and is unambiguous.
+// Implementation notes (this is the second cut — first used NSTimer and
+// didn't fire reliably inside SwiftUI gesture closures):
 //
-// `disabled` short-circuits all gesture handling — e.g. when the parent
-// is mid-send and shouldn't accept another tap.
+// - Uses `Task.sleep(for:)` for the timeout, which is the modern Swift
+//   structured-concurrency pattern. Cancelling the Task on release stops
+//   the in-flight sleep cleanly.
+// - Progress is animated by SwiftUI's implicit animation around the
+//   `progress` state — when we set it to 1.0 with a `.linear(duration:)`
+//   animation, SwiftUI interpolates the visual fill over the hold time.
+//   When we set it back to 0 (on cancel), SwiftUI snaps back.
+// - DragGesture with `minimumDistance: 0` doubles as a "press detector":
+//   onChanged fires on touch, onEnded fires on release. Robust against
+//   the no-movement case where LongPressGesture alone is ambiguous.
 struct HoldToFireButton: View {
   let duration: Double
   let isSending: Bool
   let action: () -> Void
 
-  @State private var holdStart: Date? = nil
+  @State private var holding = false
   @State private var progress: Double = 0
-  @State private var timer: Timer? = nil
-
-  // Tick the progress at ~60fps while held; cheaper than relying on
-  // SwiftUI Animation for a property we also need to read for the
-  // fire-threshold check.
-  private let tickInterval: TimeInterval = 1.0 / 60.0
+  @State private var fireTask: Task<Void, Never>? = nil
 
   var body: some View {
     ZStack {
       // Background pill
       RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .fill(holdStart != nil ? Color.accentColor.opacity(0.7) : Color.accentColor)
-        .frame(width: 90, height: 24)
+        .fill(Color.accentColor)
+        .frame(width: 110, height: 26)
 
-      // Fill that grows with hold progress
+      // Progress fill — animated via SwiftUI implicit animation
       GeometryReader { proxy in
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(Color.white.opacity(0.25))
+          .fill(Color.white.opacity(0.28))
           .frame(width: proxy.size.width * progress, height: proxy.size.height)
       }
-      .frame(width: 90, height: 24)
+      .frame(width: 110, height: 26)
       .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
       .allowsHitTesting(false)
 
@@ -47,59 +47,54 @@ struct HoldToFireButton: View {
       if isSending {
         ProgressView().controlSize(.small).colorInvert()
       } else {
-        Text(holdStart == nil ? "Hold to Send" : "Keep holding…")
+        Text(holding ? "Keep holding…" : "Hold to Send")
           .font(.caption.weight(.semibold))
           .foregroundStyle(.white)
       }
     }
-    .frame(width: 90, height: 24)
+    .frame(width: 110, height: 26)
     .contentShape(RoundedRectangle(cornerRadius: 6))
     .opacity(isSending ? 0.85 : 1.0)
     .gesture(
       DragGesture(minimumDistance: 0)
         .onChanged { _ in
-          guard !isSending else { return }
-          if holdStart == nil {
-            holdStart = Date()
-            startTimer()
-          }
+          guard !isSending, !holding else { return }
+          beginHold()
         }
         .onEnded { _ in
-          // Released early (before the timer reached threshold and fired
-          // the action). Silent cancel; user sees the ring collapse.
-          stopTimer()
-          holdStart = nil
-          progress = 0
+          cancelHold()
         }
     )
-    .accessibilityLabel("Send (hold to confirm)")
+    .accessibilityLabel("Send (press and hold to confirm)")
     .accessibilityAddTraits(.isButton)
   }
 
-  private func startTimer() {
-    progress = 0
-    timer?.invalidate()
-    timer = Timer.scheduledTimer(withTimeInterval: tickInterval, repeats: true) { _ in
-      guard let start = holdStart else { return }
-      let elapsed = Date().timeIntervalSince(start)
-      let p = min(1.0, elapsed / duration)
-      // Hop back to main for SwiftUI state mutation.
-      DispatchQueue.main.async {
-        progress = p
-        if p >= 1.0 {
-          // Fire on threshold reach. Mirrors the "slide to confirm"
-          // pattern: the user's commitment is the gesture, not the
-          // release. Clean up state so a subsequent press starts fresh.
-          stopTimer()
-          holdStart = nil
-          action()
-        }
-      }
+  private func beginHold() {
+    holding = true
+    // Animate the fill linearly over the hold duration.
+    withAnimation(.linear(duration: duration)) {
+      progress = 1.0
+    }
+    // Schedule the actual fire.
+    fireTask?.cancel()
+    fireTask = Task { @MainActor in
+      let nanos = UInt64(duration * 1_000_000_000)
+      try? await Task.sleep(nanoseconds: nanos)
+      guard !Task.isCancelled else { return }
+      // Threshold reached AND not cancelled by release. Fire.
+      holding = false
+      progress = 0
+      action()
     }
   }
 
-  private func stopTimer() {
-    timer?.invalidate()
-    timer = nil
+  private func cancelHold() {
+    fireTask?.cancel()
+    fireTask = nil
+    holding = false
+    // Snap the ring back to empty (no animation, just reset).
+    withAnimation(.easeOut(duration: 0.12)) {
+      progress = 0
+    }
   }
 }
