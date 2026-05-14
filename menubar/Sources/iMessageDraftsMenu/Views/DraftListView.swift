@@ -51,12 +51,18 @@ struct DraftListView: View {
         .padding(12)
         .frame(maxWidth: .infinity)
       }
-      .frame(minHeight: 220, maxHeight: 480)
+      // Vertical sizing. minHeight keeps the empty / single-short-draft
+      // case from collapsing to a sliver. maxHeight caps how tall the
+      // popover can grow — macOS will further clamp by screen height, so
+      // this value is "the most we'll ever ask for." 720 is enough for
+      // ~3 drafts with their Details disclosure expanded (each ~220pt
+      // collapsed, ~400pt with context bubbles) before scrolling kicks in.
+      .frame(minHeight: 280, maxHeight: 720)
 
       Divider()
       footer
     }
-    .frame(width: 380)
+    .frame(width: 420)
   }
 
   // MARK: - Sections
