@@ -91,8 +91,12 @@ the context-lookup inside `stage_imessage_draft`, etc.), and the
 `context_diagnostic` field on freshly-staged drafts reports
 `error: authorization denied`. Fix: in System Settings → Privacy &
 Security → Full Disk Access, toggle the `imessage-mcp` entry **off
-and back on** (or remove it via `−` and re-add via `+`). Restart any
-MCP client that's holding an old subprocess.
+and back on** (or remove it via `−` and re-add via `+`). The next
+chat.db-touching call from an already-running MCP client picks the
+grant up — no client restart needed. (`openChatDb()` retries the
+SQLite open on every call until it succeeds, so the cached-failure
+case doesn't apply.) Client restart is only required if you've
+replaced the binary itself (via `bun run install:bin`).
 
 ### 4. Wire up the MCP clients
 
