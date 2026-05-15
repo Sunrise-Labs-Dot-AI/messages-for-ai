@@ -8,10 +8,13 @@ struct DraftListView: View {
 
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   private var recentlySent: [Draft] {
-    let oneHourAgo = Date().addingTimeInterval(-3600)
+    // 24-hour visible window for sent drafts. The on-disk draft JSON and
+    // the ~/.imessage-mcp/send-audit.log keep forever — this is just the
+    // popover's confirmation-breadcrumb view.
+    let cutoff = Date().addingTimeInterval(-86_400)
     return store.drafts.filter { d in
       guard let sent = d.sentDate else { return false }
-      return sent > oneHourAgo
+      return sent > cutoff
     }
   }
 
