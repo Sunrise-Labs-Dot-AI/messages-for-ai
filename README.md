@@ -4,10 +4,10 @@ A local MCP server that exposes read-only access to your macOS iMessages
 (`~/Library/Messages/chat.db`) and lets agents stage outgoing drafts as
 local JSON files. **Drafts never auto-send.**
 
-- P0 — read iMessage threads, messages, and search.
-- P1 — stage drafts under `~/.imessage-mcp/drafts/`.
-- P2 — approval-gated send of staged drafts via AppleScript automation.
-- P3 — companion **menu bar app** (`menubar/`) that shows pending drafts
+- read iMessage threads, messages, and search.
+- stage drafts under `~/.imessage-mcp/drafts/`.
+- approval-gated send of staged drafts via AppleScript automation.
+- companion **menu bar app** (`menubar/`) that shows pending drafts
   with Send / Discard buttons. Turns "draft" into a real human-review
   surface rather than a JSON file on disk.
 - Designed for **local MCP clients** (Claude Desktop, Claude Code, Codex
