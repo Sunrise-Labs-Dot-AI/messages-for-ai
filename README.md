@@ -32,50 +32,6 @@ A local stdio MCP server is the right shape — no tunnel, no cloud, no
 shared secret. The blast radius is "what a process running as you can
 already do."
 
-## How this compares to other iMessage MCP servers
-
-There are at least eight other iMessage MCP servers on GitHub. They differ
-mostly in language, scope, and how much they trust the model:
-
-| Project | Read | Send | Distinguishing feature |
-|---|---|---|---|
-| [mattt/iMCP](https://github.com/mattt/iMCP) | ✓ | ✓ | Polished signed Mac app; also Contacts / Reminders / Calendar / Location |
-| [carterlasalle/mac_messages_mcp](https://github.com/carterlasalle/mac_messages_mcp) | ✓ | ✓ | Most feature-rich: attachments, group chats, phone validation |
-| [hannesrudolph/imessage-query-fastmcp-mcp-server](https://github.com/hannesrudolph/imessage-query-fastmcp-mcp-server) | ✓ | — | Python / FastMCP, read-only |
-| [anipotts/imessage-mcp](https://github.com/anipotts/imessage-mcp) | ✓ | — | "Spotify Wrapped for texts" angle |
-| [wyattjoh/imessage-mcp](https://github.com/wyattjoh/imessage-mcp) | ✓ | — | Minimal read-only Node |
-| [daveremy/imessage-mcp](https://github.com/daveremy/imessage-mcp) | ✓ | ✓ | Targets Claude Code specifically |
-| [jonmmease/jons-mcp-imessage](https://github.com/jonmmease/jons-mcp-imessage) | ✓ | — | Hybrid search + contact enrichment |
-| [tszaks/multimodal-imessage-mcp](https://github.com/tszaks/multimodal-imessage-mcp) | ✓ | ? | Attachment handling |
-| **this repo** | ✓ | ✓† | †draft-staged send only; companion menu bar review app |
-
-Pick **this one** if you specifically want:
-
-- **Draft-first send** — no ad-hoc send tool. Every outgoing message
-  goes through `stage_imessage_draft` first, so the body is observable
-  in the conversation transcript before any destructive call fires.
-  Idempotency lock prevents agent retry loops from double-sending.
-- **A human-review menu bar app** for staged drafts, with iMessage-style
-  thread-context bubbles. The agent can stage 5 drafts overnight; you
-  approve them in the morning.
-- **Required-filter guardrails** on read/search — every list/search call
-  must include `since` (≤2y) or `contact_filter`. Reduces prompt-injection
-  blast radius from a malicious sender shoving content into an agent's
-  context. None of the other servers I surveyed do this.
-- **`attributedBody` decoding** in search — modern iOS/macOS stores body
-  text in a typedstream blob rather than the plain `text` column. Most
-  read-only MCPs miss these messages entirely.
-- **Test coverage** — 56 cases including in-memory SQLite integration
-  for the SQL paths.
-
-Pick **`mattt/iMCP`** if you want a polished signed Mac app with broader
-scope (Contacts, Reminders, Calendar) and don't need the draft-staging
-flow.
-
-Pick **`carterlasalle/mac_messages_mcp`** if you want maximum feature
-breadth (attachments, group send) and the model can be trusted to send
-directly without staging.
-
 ## Tools
 
 | Tool | Purpose |

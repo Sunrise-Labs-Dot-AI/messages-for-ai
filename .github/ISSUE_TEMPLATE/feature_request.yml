@@ -41,9 +41,8 @@ body:
         - General audience
       default: 0
 
-  - type: checkboxes
+  - type: textarea
     id: alternatives
     attributes:
       label: Alternatives considered
-      options:
-        - label: I checked the "How this compares" section in the README — none of the other iMessage MCPs solve this for me.
+      description: Did you consider workarounds with the existing tools, or other servers? Briefly — what didn't work?
