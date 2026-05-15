@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, existsSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -146,7 +146,17 @@ export function markDraftSent(id: string, sentAt: string, service: "iMessage" | 
   const existing = getDraft(id);
   if (!existing) return null;
   const updated: Draft = { ...existing, sent_at: sentAt, send_service: service };
-  writeFileSync(draftPath(id), JSON.stringify(updated, null, 2), { mode: 0o600 });
+  // Atomic write: temp file + rename. The menu bar app watches the drafts
+  // directory via DispatchSourceFileSystemObject, which fires on directory-
+  // entry changes (create/delete/rename) but NOT on in-place modifications
+  // of existing files. A plain writeFileSync over the existing path leaves
+  // the menu bar with a stale in-memory draft (sent_at still null), so the
+  // just-sent message stays parked in the "pending" list until the next
+  // unrelated directory event. Rename fires the watcher reliably.
+  const finalPath = draftPath(id);
+  const tmpPath = `${finalPath}.tmp-${randomUUID()}`;
+  writeFileSync(tmpPath, JSON.stringify(updated, null, 2), { mode: 0o600 });
+  renameSync(tmpPath, finalPath);
   return updated;
 }
 

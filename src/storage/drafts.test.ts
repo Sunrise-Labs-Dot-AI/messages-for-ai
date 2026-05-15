@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -107,6 +107,32 @@ describe("markDraftSent", () => {
 
   test("returns null for unknown id", () => {
     expect(drafts.markDraftSent(randomUUID(), "2026-05-13T00:00:00.000Z", "iMessage")).toBeNull();
+  });
+
+  test("writes atomically: no .tmp leftovers and the drafts dir mtime advances", () => {
+    // Atomicity matters because the menu bar app's directory watcher
+    // (DispatchSourceFileSystemObject on the drafts dir) only fires on
+    // directory-entry changes — create/delete/rename — not on in-place
+    // writes. A rename bumps the parent directory's mtime; a plain
+    // in-place writeFileSync does not.
+    const { draft } = drafts.stageDraft({ to_handle: "+14155551234", body: "hi" });
+    const dirMtimeBefore = statSync(tmpDraftsDir).mtimeMs;
+    // Tiny sleep so the post-rename mtime is observably newer than the
+    // post-stage mtime on filesystems with coarse mtime granularity.
+    Bun.sleepSync(15);
+
+    const updated = drafts.markDraftSent(draft.id, "2026-05-13T00:00:00.000Z", "iMessage");
+    expect(updated?.sent_at).toBe("2026-05-13T00:00:00.000Z");
+
+    // No .tmp-* leftovers in the drafts dir — they should all be renamed away.
+    const leftoverTmps = readdirSync(tmpDraftsDir).filter((f) => f.includes(".tmp-"));
+    expect(leftoverTmps).toEqual([]);
+
+    // Directory mtime advanced, which is the file-watcher signal the menu
+    // bar app relies on. (If this ever regresses to plain writeFileSync,
+    // the dir mtime will not change and the menu bar will go stale.)
+    const dirMtimeAfter = statSync(tmpDraftsDir).mtimeMs;
+    expect(dirMtimeAfter).toBeGreaterThan(dirMtimeBefore);
   });
 });
 
