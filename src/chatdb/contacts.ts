@@ -18,17 +18,25 @@ let handleToName = new Map<string, string>(); // canonicalized handle -> name
 let nameIndex: { lower_name: string; handles: string[] }[] = []; // for substring search
 
 function findAddressBookDb(): string | null {
-  // Wrap the whole walk in try/catch: when TCC denies Full Disk Access, the
-  // readdirSync raises EPERM rather than returning an empty list, and
-  // existsSync on the candidate paths can also raise on locked-down dirs.
-  // Any failure mode means "AddressBook unavailable" — return null and let
-  // the bulk loader treat it as a graceful absence of contact data.
+  // Prefer a source-specific DB (Sources/{uuid}/AddressBook-v22.abcddb) since
+  // it's the canonical location used by multi-account setups. Fall through to
+  // the top-level path when the Sources scan is unavailable or empty.
+  //
+  // IMPORTANT: the Sources-scan try/catch is intentionally separate from the
+  // outer guard. readdirSync(sourcesRoot) raises EPERM when TCC hasn't yet
+  // granted access to that specific sub-path (even when FDA is granted for the
+  // top-level AddressBook dir). Catching the inner error lets us fall through
+  // to the top-level path rather than short-circuiting to null.
   try {
     const sourcesRoot = join(homedir(), "Library", "Application Support", "AddressBook", "Sources");
     if (existsSync(sourcesRoot)) {
-      for (const source of readdirSync(sourcesRoot)) {
-        const candidate = join(sourcesRoot, source, "AddressBook-v22.abcddb");
-        if (existsSync(candidate)) return candidate;
+      try {
+        for (const source of readdirSync(sourcesRoot)) {
+          const candidate = join(sourcesRoot, source, "AddressBook-v22.abcddb");
+          if (existsSync(candidate)) return candidate;
+        }
+      } catch {
+        // Sources scan failed (EPERM or similar) — fall through to top-level path.
       }
     }
     const top = join(homedir(), "Library", "Application Support", "AddressBook", "AddressBook-v22.abcddb");

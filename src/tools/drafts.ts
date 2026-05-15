@@ -8,6 +8,7 @@ import {
 } from "../schema.ts";
 import { stageDraft, listDrafts, getDraft, discardDraft, markDraftSent, draftsDir } from "../storage/drafts.ts";
 import { recentContextForRecipient } from "../chatdb/queries.ts";
+import { resolveHandle } from "../chatdb/contacts.ts";
 import type { DraftContextMessage, ContextLookupDiagnostic } from "../chatdb/queries.ts";
 import { sendIMessage } from "../imessage/send.ts";
 import { appendAudit, checkDailyCap } from "../imessage/audit.ts";
@@ -79,8 +80,16 @@ export function registerDraftTools(server: McpServer): void {
           };
         }
 
+        let to_handle_name: string | null = null;
+        try {
+          to_handle_name = resolveHandle(args.to_handle);
+        } catch {
+          to_handle_name = null; // graceful fallback if AddressBook unreadable
+        }
+
         const result = stageDraft({
           to_handle: args.to_handle,
+          to_handle_name,
           body: args.body,
           in_reply_to_thread_id: args.in_reply_to_thread_id ?? null,
           source: args.source ?? null,
