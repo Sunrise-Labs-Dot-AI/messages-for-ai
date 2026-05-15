@@ -27,6 +27,7 @@ export function _setDraftsDirForTesting(dir: string | null): void {
 export interface Draft {
   id: string;
   to_handle: string;
+  to_handle_name: string | null;
   body: string;
   in_reply_to_thread_id: number | null;
   staged_at: string;
@@ -59,6 +60,7 @@ function draftPath(id: string): string {
 
 export interface StageDraftArgs {
   to_handle: string;
+  to_handle_name?: string | null;
   body: string;
   in_reply_to_thread_id?: number | null;
   source?: string | null;
@@ -156,7 +158,18 @@ export function markDraftSent(id: string, sentAt: string, service: "iMessage" | 
   const finalPath = draftPath(id);
   const tmpPath = `${finalPath}.tmp-${randomUUID()}`;
   writeFileSync(tmpPath, JSON.stringify(updated, null, 2), { mode: 0o600 });
-  renameSync(tmpPath, finalPath);
+  try {
+    renameSync(tmpPath, finalPath);
+  } catch (err) {
+    // Rename can throw on EACCES, ENOSPC, EROFS, or transient EBUSY (e.g.
+    // Spotlight indexing holds an fd on the tmp file). Without this cleanup
+    // the orphan `.tmp-<uuid>` persists at 0600 with the full draft body —
+    // recipient handle, message text, and the context_messages snapshot of
+    // recent thread messages. Backup tools (Time Machine, Backblaze) and
+    // local indexers will happily ingest it.
+    try { unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+    throw err;
+  }
   return updated;
 }
 
