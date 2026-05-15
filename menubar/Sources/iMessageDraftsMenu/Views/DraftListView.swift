@@ -7,16 +7,17 @@ struct DraftListView: View {
   @EnvironmentObject var settings: SettingsStore
 
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
-  // Screen-aware popover height. `visibleFrame` excludes the menu bar
-  // and dock so we don't propose a value the popover can't actually
-  // render. Default is a comfortable ~70% of available; "Tall" mode
-  // bumps to ~95% (just shy of full available height). Floor of 600
-  // keeps small MacBook Air screens feeling generous rather than
-  // strictly proportional.
-  private var maxPopoverHeight: CGFloat {
+  // Cap for the inner ScrollView. We subtract a rough estimate of the
+  // surrounding chrome (header + divider + footer + padding ~ 180pt)
+  // from the screen's `visibleFrame.height` (which macOS already
+  // computes net of menu bar + dock). ScrollView grows to fit content
+  // up to this cap; beyond it, the ScrollView scrolls. This makes the
+  // popover "grow as needed" up to right above the dock.
+  private static let chromeEstimate: CGFloat = 180
+
+  private var maxScrollHeight: CGFloat {
     let screenH = NSScreen.main?.visibleFrame.height ?? 900
-    let factor: CGFloat = settings.tallPopover ? 0.95 : 0.70
-    return max(600, screenH * factor)
+    return max(360, screenH - Self.chromeEstimate)
   }
 
   private var recentlySent: [Draft] {
@@ -67,12 +68,14 @@ struct DraftListView: View {
         .padding(12)
         .frame(maxWidth: .infinity)
       }
-      // Screen-aware vertical sizing. minHeight keeps the empty case
-      // from collapsing to a sliver; maxHeight scales to the user's
-      // current screen so a 13" MacBook Air (~800pt visible) and a
-      // 5K iMac (~1500pt visible) both feel right. The "Tall layout"
-      // toggle in the footer lets the user override default → fill.
-      .frame(minHeight: 360, maxHeight: maxPopoverHeight)
+      // ScrollView naturally sizes to its content up to maxScrollHeight,
+      // beyond which it starts scrolling. maxScrollHeight is derived
+      // from `NSScreen.main.visibleFrame.height` (which macOS computes
+      // net of menu bar + dock), so the popover never reaches into
+      // the dock. minHeight is a small floor for the empty state so
+      // the popover doesn't collapse to a sliver when there are no
+      // pending drafts.
+      .frame(minHeight: 200, maxHeight: maxScrollHeight)
 
       Divider()
       footer
@@ -176,18 +179,6 @@ struct DraftListView: View {
         }
         .toggleStyle(.switch)
         .controlSize(.mini)
-
-        Spacer()
-      }
-
-      HStack(spacing: 8) {
-        Toggle(isOn: $settings.tallPopover) {
-          Text("Tall layout")
-            .font(.caption)
-        }
-        .toggleStyle(.switch)
-        .controlSize(.mini)
-        .help("Fills ~95% of screen height instead of the default ~70%.")
 
         Spacer()
       }
