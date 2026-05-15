@@ -1,10 +1,11 @@
-import { describe, test, expect, beforeAll, beforeEach, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import * as drafts from "./drafts.ts";
+import { _setContactsForTesting, _resetContactsCache, resolveHandle } from "../chatdb/contacts.ts";
 
 // Use the explicit test seam (`_setDraftsDirForTesting`). The earlier
 // approach of overriding `process.env.HOME` doesn't work on macOS —
@@ -130,5 +131,51 @@ describe("normalizeDraft backward-compat", () => {
     expect(fetched?.send_service).toBeNull();
     expect(fetched?.source).toBeNull();
     expect(fetched?.body).toBe("from v0");
+  });
+});
+
+describe("to_handle_name resolution", () => {
+  afterEach(() => {
+    _resetContactsCache();
+  });
+
+  test("stage with a handle that resolves → to_handle_name populated", () => {
+    // canonHandle("+14155551234") = "4155551234" (last 10 digits)
+    _setContactsForTesting(new Map([["4155551234", "Alice Smith"]]), []);
+    const name = resolveHandle("+14155551234");
+    const { draft } = drafts.stageDraft({ to_handle: "+14155551234", to_handle_name: name, body: "hi" });
+    expect(draft.to_handle_name).toBe("Alice Smith");
+    // Persists through getDraft round-trip.
+    expect(drafts.getDraft(draft.id)?.to_handle_name).toBe("Alice Smith");
+  });
+
+  test("stage with a handle that doesn't resolve → to_handle_name null", () => {
+    _setContactsForTesting(new Map(), []);
+    const name = resolveHandle("+14155559999");
+    const { draft } = drafts.stageDraft({ to_handle: "+14155559999", to_handle_name: name, body: "hi" });
+    expect(draft.to_handle_name).toBeNull();
+    expect(drafts.getDraft(draft.id)?.to_handle_name).toBeNull();
+  });
+
+  test("non-canonical phone form still matches via canonHandle", () => {
+    // Both "+1 (404) 561-0417" and "+14045610417" canonicalize to "4045610417".
+    _setContactsForTesting(new Map([["4045610417", "Bob Jones"]]), []);
+    expect(resolveHandle("+1 (404) 561-0417")).toBe("Bob Jones");
+    expect(resolveHandle("+14045610417")).toBe("Bob Jones");
+  });
+
+  test("normalizeDraft backward-compat: draft without to_handle_name decodes with null", () => {
+    const id = randomUUID();
+    drafts.stageDraft({ to_handle: "+14155550000", body: "seed" });
+    writeFileSync(join(tmpDraftsDir, `${id}.json`), JSON.stringify({
+      id,
+      to_handle: "+14155551234",
+      body: "legacy draft",
+      in_reply_to_thread_id: null,
+      staged_at: "2026-05-01T00:00:00Z",
+    }, null, 2));
+    const fetched = drafts.getDraft(id);
+    expect(fetched?.to_handle_name).toBeNull();
+    expect(fetched?.body).toBe("legacy draft");
   });
 });

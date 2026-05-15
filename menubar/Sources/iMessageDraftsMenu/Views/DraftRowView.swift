@@ -28,10 +28,24 @@ struct DraftRowView: View {
 
   private var header: some View {
     HStack(alignment: .firstTextBaseline) {
-      Text(draft.to_handle)
-        .font(.system(.subheadline, design: .rounded).weight(.semibold))
-        .lineLimit(1)
-        .truncationMode(.middle)
+      VStack(alignment: .leading, spacing: 1) {
+        if let name = draft.to_handle_name {
+          Text(name)
+            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            .lineLimit(1)
+            .truncationMode(.middle)
+          Text(draft.to_handle)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        } else {
+          Text(draft.to_handle)
+            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+      }
       Spacer()
       Text(relativeStagedAt)
         .font(.caption)

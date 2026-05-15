@@ -27,6 +27,7 @@ export function _setDraftsDirForTesting(dir: string | null): void {
 export interface Draft {
   id: string;
   to_handle: string;
+  to_handle_name: string | null;
   body: string;
   in_reply_to_thread_id: number | null;
   staged_at: string;
@@ -59,6 +60,7 @@ function draftPath(id: string): string {
 
 export interface StageDraftArgs {
   to_handle: string;
+  to_handle_name?: string | null;
   body: string;
   in_reply_to_thread_id?: number | null;
   source?: string | null;
@@ -71,6 +73,7 @@ export function stageDraft(args: StageDraftArgs): { draft: Draft; path: string }
   const draft: Draft = {
     id: randomUUID(),
     to_handle: args.to_handle,
+    to_handle_name: args.to_handle_name ?? null,
     body: args.body,
     in_reply_to_thread_id: args.in_reply_to_thread_id ?? null,
     staged_at: new Date().toISOString(),
@@ -127,6 +130,7 @@ function normalizeDraft(raw: Partial<Draft>): Draft | null {
   return {
     id: raw.id,
     to_handle: raw.to_handle,
+    to_handle_name: raw.to_handle_name ?? null,
     body: raw.body,
     in_reply_to_thread_id: raw.in_reply_to_thread_id ?? null,
     staged_at: raw.staged_at,

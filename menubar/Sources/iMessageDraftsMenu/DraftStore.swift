@@ -64,6 +64,7 @@ final class DraftStore: ObservableObject {
       staged_at: existing.staged_at,
       sent_at: Self.isoString(sentAt),
       send_service: service,
+      to_handle_name: existing.to_handle_name,
       source: existing.source,
       context_messages: existing.context_messages,
       context_diagnostic: existing.context_diagnostic

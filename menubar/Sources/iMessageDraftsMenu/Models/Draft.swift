@@ -11,6 +11,11 @@ struct Draft: Codable, Identifiable, Equatable {
   let staged_at: String
   let sent_at: String?
   let send_service: String?
+  // Resolved contact name for the recipient, captured at stage time by the
+  // MCP server. Nil when the handle has no matching Contacts entry, or for
+  // older drafts written before this field existed (back-compat safe via
+  // Swift's synthesized Codable init treating missing keys as nil).
+  let to_handle_name: String?
   // Free-form provenance label set by the staging agent ("Claude Desktop
   // / morning triage", etc.). Older drafts may not have this field —
   // Swift's synthesized init(from:) treats a missing key as nil for
