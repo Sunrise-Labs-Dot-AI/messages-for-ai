@@ -7,6 +7,18 @@ struct DraftListView: View {
   @EnvironmentObject var settings: SettingsStore
 
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
+  // Screen-aware popover height. `visibleFrame` excludes the menu bar
+  // and dock so we don't propose a value the popover can't actually
+  // render. Default is a comfortable ~70% of available; "Tall" mode
+  // bumps to ~95% (just shy of full available height). Floor of 600
+  // keeps small MacBook Air screens feeling generous rather than
+  // strictly proportional.
+  private var maxPopoverHeight: CGFloat {
+    let screenH = NSScreen.main?.visibleFrame.height ?? 900
+    let factor: CGFloat = settings.tallPopover ? 0.95 : 0.70
+    return max(600, screenH * factor)
+  }
+
   private var recentlySent: [Draft] {
     // 24-hour visible window for sent drafts. The on-disk draft JSON and
     // the ~/.imessage-mcp/send-audit.log keep forever — this is just the
@@ -55,13 +67,12 @@ struct DraftListView: View {
         .padding(12)
         .frame(maxWidth: .infinity)
       }
-      // Vertical sizing. minHeight keeps the empty / single-short-draft
-      // case from collapsing to a sliver. maxHeight caps how tall the
-      // popover can grow — macOS will further clamp by screen height, so
-      // this value is "the most we'll ever ask for." 720 is enough for
-      // ~3 drafts with their Details disclosure expanded (each ~220pt
-      // collapsed, ~400pt with context bubbles) before scrolling kicks in.
-      .frame(minHeight: 280, maxHeight: 720)
+      // Screen-aware vertical sizing. minHeight keeps the empty case
+      // from collapsing to a sliver; maxHeight scales to the user's
+      // current screen so a 13" MacBook Air (~800pt visible) and a
+      // 5K iMac (~1500pt visible) both feel right. The "Tall layout"
+      // toggle in the footer lets the user override default → fill.
+      .frame(minHeight: 360, maxHeight: maxPopoverHeight)
 
       Divider()
       footer
@@ -165,6 +176,18 @@ struct DraftListView: View {
         }
         .toggleStyle(.switch)
         .controlSize(.mini)
+
+        Spacer()
+      }
+
+      HStack(spacing: 8) {
+        Toggle(isOn: $settings.tallPopover) {
+          Text("Tall layout")
+            .font(.caption)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .help("Fills ~95% of screen height instead of the default ~70%.")
 
         Spacer()
       }

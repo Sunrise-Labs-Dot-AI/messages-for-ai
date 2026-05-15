@@ -17,6 +17,13 @@ final class SettingsStore: ObservableObject {
     didSet { persist() }
   }
 
+  // When true, the popover renders at ~95% of available screen height
+  // instead of the default ~70%. UI-only preference; doesn't affect
+  // the MCP server. Default off.
+  @Published var tallPopover: Bool {
+    didSet { persist() }
+  }
+
   @Published private(set) var lastError: String?
 
   private let file: URL
@@ -33,8 +40,10 @@ final class SettingsStore: ObservableObject {
        let data = try? Data(contentsOf: file),
        let parsed = try? JSONDecoder().decode(SettingsFile.self, from: data) {
       self.requireApproval = parsed.require_approval ?? true
+      self.tallPopover = parsed.tall_popover ?? false
     } else {
       self.requireApproval = true
+      self.tallPopover = false
       // Persist the defaults on first run so the MCP server has a file
       // to read rather than having to assume defaults itself.
       persistInit()
@@ -45,7 +54,7 @@ final class SettingsStore: ObservableObject {
     // Same as persist() but doesn't go through didSet (which would fire
     // during init before self is fully constructed).
     do {
-      let data = try JSONEncoder().encode(SettingsFile(require_approval: requireApproval))
+      let data = try JSONEncoder().encode(currentFile())
       try data.write(to: file, options: .atomic)
       try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     } catch {
@@ -55,7 +64,7 @@ final class SettingsStore: ObservableObject {
 
   private func persist() {
     do {
-      let data = try JSONEncoder().encode(SettingsFile(require_approval: requireApproval))
+      let data = try JSONEncoder().encode(currentFile())
       try data.write(to: file, options: .atomic)
       try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
       lastError = nil
@@ -63,10 +72,17 @@ final class SettingsStore: ObservableObject {
       lastError = "couldn't write settings.json: \(error.localizedDescription)"
     }
   }
+
+  private func currentFile() -> SettingsFile {
+    SettingsFile(require_approval: requireApproval, tall_popover: tallPopover)
+  }
 }
 
-// The on-disk shape. Field name matches the TS Settings type exactly so
-// the JSON is identical on both sides of the language boundary.
+// The on-disk shape. require_approval is consumed by both the Swift menu
+// bar app AND the TS MCP server, so keep the snake_case name in sync
+// with src/storage/settings.ts. tall_popover is UI-only — the MCP server
+// ignores any field it doesn't know.
 private struct SettingsFile: Codable {
   let require_approval: Bool?
+  let tall_popover: Bool?
 }
