@@ -129,9 +129,16 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
     | awk -F\" '/Developer ID Application/ {print $2; exit}')
 fi
 
+ENTITLEMENTS="$(dirname "$0")/imessage-drafts.entitlements"
 if [[ -n "$SIGN_IDENTITY" ]]; then
   echo "› signing with Developer ID: $SIGN_IDENTITY"
-  codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "${BUNDLE_ID}" --options=runtime "$APP"
+  # --entitlements passes the per-feature permissions Hardened Runtime
+  # requires for Contacts framework access and Apple Events. Without
+  # the addressbook entitlement, CNContactStore.requestAccess throws
+  # "Access Denied" synchronously even for Developer-ID-signed apps.
+  codesign --force --deep --sign "$SIGN_IDENTITY" \
+    --identifier "${BUNDLE_ID}" --options=runtime \
+    --entitlements "$ENTITLEMENTS" "$APP"
 else
   if [[ "${CONTACTS_REQUIRE_DEVID:-}" == "1" ]]; then
     echo "✗ no Developer ID Application certificate found in keychain, but CONTACTS_REQUIRE_DEVID=1" >&2
