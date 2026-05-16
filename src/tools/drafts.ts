@@ -46,7 +46,9 @@ export function registerDraftTools(server: McpServer): void {
     {
       title: "Stage an iMessage draft (does NOT send)",
       description:
-        "Stage a draft iMessage as a local JSON file under ~/.imessage-mcp/drafts. Does NOT send. Returns the draft id and file path. " +
+        "Stage a draft iMessage as a local JSON file under ~/.imessage-mcp/drafts. Does NOT send. " +
+        "Returns the staged draft including `to_handle_name` — the resolved contact name from the user's Contacts (null when no match). " +
+        "**Echo `to_handle_name` back to the user in your reply** so they can confirm the recipient by name before the draft is sent (e.g. \"Staged a draft to Allegra Heath at +14155551234 — review and hold-to-send in the menu bar\"). " +
         "Drafts are reviewed and sent out-of-band — either via `send_imessage_draft` (with human confirmation in the MCP client) or via the companion menu bar app. " +
         "Pass `source` to identify yourself: a short human-readable label (e.g. \"Claude Desktop / morning triage\", \"Claude Code in personal-assistant\"). The reviewer will see this verbatim next to the draft body.",
       inputSchema: StageDraftShape,
@@ -107,7 +109,10 @@ export function registerDraftTools(server: McpServer): void {
     "list_imessage_drafts",
     {
       title: "List staged iMessage drafts",
-      description: `List staged iMessage drafts, newest first. Drafts live under ${draftsDir()}.`,
+      description:
+        `List staged iMessage drafts, newest first. Drafts live under ${draftsDir()}. ` +
+        "Each entry includes `to_handle_name` (resolved contact name, null if no match) — use it when " +
+        "presenting the list to the user so recipients are recognizable rather than raw phone numbers.",
       inputSchema: ListDraftsShape,
     },
     async (args) => {
@@ -123,7 +128,10 @@ export function registerDraftTools(server: McpServer): void {
     "get_imessage_draft",
     {
       title: "Get a staged iMessage draft",
-      description: "Fetch a single staged iMessage draft by id.",
+      description:
+        "Fetch a single staged iMessage draft by id. Returns the full draft including `to_handle_name` " +
+        "(resolved contact name) and `context_messages` (recent thread snapshot). When summarizing the " +
+        "draft back to the user, use `to_handle_name` instead of the raw handle so the recipient is recognizable.",
       inputSchema: GetDraftShape,
     },
     async (args) => {
