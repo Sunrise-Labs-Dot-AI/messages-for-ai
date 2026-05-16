@@ -40,7 +40,10 @@ final class ContactsExporter: ObservableObject {
 
   private let store = CNContactStore()
   private var changeObserver: NSObjectProtocol?
-  private let logger = Logger(subsystem: "com.local.imessage-drafts", category: "contacts")
+  // Subsystem string follows the Info.plist CFBundleIdentifier. Keep
+  // them in lockstep so `log stream --predicate 'subsystem == "..."'`
+  // matches the running app.
+  private let logger = Logger(subsystem: "com.sunriselabs.imessage-drafts", category: "contacts")
 
   // Schema version must match `CONTACTS_CACHE_SCHEMA_VERSION` in
   // src/storage/contacts-cache.ts. Bumping breaks the read path on

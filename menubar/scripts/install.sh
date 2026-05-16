@@ -21,7 +21,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 APP_NAME="iMessage Drafts"
-BUNDLE_ID="com.local.imessage-drafts"
+# Bundle ID changed from `com.local.imessage-drafts` after that one got
+# poisoned by an earlier build that lacked NSContactsUsageDescription —
+# macOS TCC's opaque "this bundle is suspicious" cache survives both
+# `tccutil reset` and a `killall tccd`, and Apple gives no way to clear
+# it. A fresh bundle ID dodges the whole apparatus and is treated as a
+# new app for TCC purposes. The `.local.` namespace is reserved for
+# Bonjour multicast DNS anyway — `com.sunriselabs.*` matches the GitHub
+# org and is the conventional reverse-DNS shape for unsigned dev tools.
+BUNDLE_ID="com.sunriselabs.imessage-drafts"
+LEGACY_BUNDLE_IDS=("com.local.imessage-drafts") # for tccutil cleanup hint
 INSTALL_ROOT="${INSTALL_ROOT:-/Applications}"
 APP="${INSTALL_ROOT}/${APP_NAME}.app"
 LEGACY_APP="${HOME}/Applications/${APP_NAME}.app"
@@ -115,6 +124,16 @@ if [[ -x "$LSREGISTER" ]]; then
   echo "› refreshing LaunchServices registration"
   "$LSREGISTER" -f "$APP" >/dev/null 2>&1 || true
 fi
+
+# Add the bundle to Gatekeeper's trusted-apps list. Without this,
+# adhoc-signed apps (signature=adhoc, TeamIdentifier=not set) can
+# trigger an "Access Denied" rejection from CNContactStore.requestAccess
+# even when NSContactsUsageDescription is set and TCC has no recorded
+# denial — verified empirically on macOS Sequoia. spctl --add registers
+# the path as an approved source, which lets the TCC subsystem trust
+# the calling process for sensitive APIs.
+echo "› adding to Gatekeeper trusted apps"
+spctl --add "$APP" 2>/dev/null || true
 
 # Remove the legacy ~/Applications/iMessage Drafts.app left over from
 # earlier installs that wrote there. Two reasons: (1) Spotlight indexes
