@@ -188,7 +188,7 @@ async function handle(
   try {
     switch (req.method) {
       case "getConnectionStatus": {
-        return ok(id, { state: connection.getState() });
+        return ok(id, { state: connection.getState(), me: connection.getMe() });
       }
       case "getThreads": {
         const p = (req.params ?? {}) as { since?: number; contact_filter?: string; limit?: number };

@@ -52,6 +52,8 @@ export class WhatsAppConnection extends EventEmitter {
   private socket: WASocket | null = null;
   private state: ConnectionState = "connecting";
   private currentQr: string | null = null;
+  private meJid: string | null = null;
+  private mePhone: string | null = null;
   private backoffMs: number = BACKOFF_INITIAL_MS;
   private stopped = false;
 
@@ -64,6 +66,9 @@ export class WhatsAppConnection extends EventEmitter {
 
   getState(): ConnectionState { return this.state; }
   getQr(): string | null { return this.currentQr; }
+  getMe(): { jid: string | null; phone: string | null } {
+    return { jid: this.meJid, phone: this.mePhone };
+  }
 
   async start(): Promise<void> {
     // Abort fast if a previous run hit loggedOut and the sentinel still exists.
@@ -107,9 +112,13 @@ export class WhatsAppConnection extends EventEmitter {
         this.currentQr = null;
         this.backoffMs = BACKOFF_INITIAL_MS;
         this.setState("connected");
-        const meId = sock.user?.id;
-        const phoneNumber = meId != null ? jidToPhone(meId) : undefined;
-        this.emit("paired", { phone_number: phoneNumber });
+        const meId = sock.user?.id ?? null;
+        // Baileys appends ":N@s.whatsapp.net" device suffix (e.g.
+        // "12025550001:42@s.whatsapp.net") — for sendMessage targeting
+        // we want the bare user JID without the device part.
+        this.meJid = meId != null ? meId.replace(/:\d+@/, "@") : null;
+        this.mePhone = this.meJid != null ? jidToPhone(this.meJid) : null;
+        this.emit("paired", { phone_number: this.mePhone ?? undefined });
       } else if (connection === "close") {
         this.handleClose(lastDisconnect?.error as Error | undefined);
       }
