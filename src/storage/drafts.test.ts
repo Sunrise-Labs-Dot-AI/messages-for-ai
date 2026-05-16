@@ -137,6 +137,37 @@ describe("markDraftSent", () => {
     expect(fromDisk?.send_service).toBe("iMessage");
   });
 
+  test("refuses if the parent ~/.imessage-mcp is a symlink", () => {
+    // Defense-in-depth: even if the drafts dir itself is a real dir, an
+    // attacker who pre-symlinked the parent before our first run wins —
+    // mkdirSync(recursive:true) would create `drafts/` inside the symlink
+    // target and every staged draft + audit log entry would land in the
+    // attacker-controlled location.
+    //
+    // Setup: blow away the test home, redirect the test seam to a NEW
+    // path whose parent IS a symlink, and assert any operation that runs
+    // through ensureDir throws. Restore the original test seam afterward
+    // so subsequent tests pass.
+    const malHome = mkdtempSync(join(tmpdir(), "imessage-mcp-malhome-"));
+    const decoyTarget = join(malHome, "real-imessage-mcp-dir");
+    const symlinkedParent = join(malHome, ".imessage-mcp");
+    const draftsUnderSymlink = join(symlinkedParent, "drafts");
+    // Create the decoy as a real directory.
+    writeFileSync(join(malHome, "marker"), "marker");  // touch to materialize malHome
+    rmSync(symlinkedParent, { recursive: true, force: true });
+    // Symlink the parent.
+    symlinkSync(decoyTarget, symlinkedParent);
+    drafts._setDraftsDirForTesting(draftsUnderSymlink);
+    try {
+      expect(() => drafts.stageDraft({ to_handle: "+14155551234", body: "hi" }))
+        .toThrow(/parent directory is a symlink/);
+    } finally {
+      // Restore the canonical test seam so the rest of the suite keeps working.
+      drafts._setDraftsDirForTesting(tmpDraftsDir);
+      rmSync(malHome, { recursive: true, force: true });
+    }
+  });
+
   test("refuses to overwrite a symlinked draft path", () => {
     // Symlink-clobber defense — if a local-UID attacker pre-creates the
     // draft file as a symlink to ~/.zshrc, renameSync would happily

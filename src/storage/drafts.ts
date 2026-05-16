@@ -27,7 +27,6 @@ export function _setDraftsDirForTesting(dir: string | null): void {
 export interface Draft {
   id: string;
   to_handle: string;
-  to_handle_name: string | null;
   body: string;
   in_reply_to_thread_id: number | null;
   staged_at: string;
@@ -51,11 +50,25 @@ export interface Draft {
 
 function ensureDir(): void {
   const d = draftsDirPath();
+  // Walk up one level: check that the *parent* (`~/.imessage-mcp`) isn't
+  // a symlink before we let `mkdirSync(recursive:true)` traverse it.
+  // Without this, an attacker who pre-symlinked the parent before our
+  // first run wins — mkdirSync creates `drafts/` *inside* the symlink
+  // target and our subsequent same-dir check sees a real directory and
+  // proceeds. The drafts-dir-itself check below still matters for the
+  // already-bootstrapped case (parent is a real dir, attacker replaces
+  // just `drafts/` with a symlink). We use lstatSync directly (not
+  // existsSync+lstatSync) because existsSync follows symlinks and would
+  // return false for a dangling-symlink parent, skipping the guard.
+  const parent = join(d, "..");
+  try {
+    if (lstatSync(parent).isSymbolicLink()) {
+      throw new Error(`drafts parent directory is a symlink, refusing to use: ${parent}`);
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
   if (existsSync(d)) {
-    // Refuse if a local-UID attacker pre-created the drafts dir as a
-    // symlink to a sensitive directory — `writeFileSync` and `renameSync`
-    // both follow symlinks at the parent, so without this check our draft
-    // writes would land wherever the symlink points.
     if (lstatSync(d).isSymbolicLink()) {
       throw new Error(`drafts directory is a symlink, refusing to use: ${d}`);
     }
