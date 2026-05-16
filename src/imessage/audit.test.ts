@@ -55,6 +55,37 @@ describe("appendAudit / readAudit", () => {
     expect(mode).toBe(0o600);
   });
 
+  test("re-enforces mode 0600 on every append even if the file pre-existed with loose perms", () => {
+    // Attacker pre-creates the log world-readable. Our first append must
+    // tighten it to 0o600 (chmodSync after appendFileSync). Without the
+    // re-chmod, appendFileSync's `mode` option is ignored on existing
+    // files and the log silently stays world-readable, leaking recipient
+    // handles on every line.
+    audit.appendAudit({ draft_id: "a", to_handle: "x", body: "y", service: "iMessage" });
+    chmodSync(tmpLogPath, 0o644);
+    audit.appendAudit({ draft_id: "b", to_handle: "x", body: "y", service: "iMessage" });
+    const mode = statSync(tmpLogPath).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+});
+
+describe("wasSentInAudit", () => {
+  test("returns true if the draft id appears in any audit entry", () => {
+    audit.appendAudit({ draft_id: "draft-A", to_handle: "x", body: "1", service: "iMessage" });
+    audit.appendAudit({ draft_id: "draft-B", to_handle: "y", body: "2", service: "SMS" });
+    expect(audit.wasSentInAudit("draft-A")).toBe(true);
+    expect(audit.wasSentInAudit("draft-B")).toBe(true);
+  });
+
+  test("returns false for an unknown draft id", () => {
+    audit.appendAudit({ draft_id: "draft-A", to_handle: "x", body: "1", service: "iMessage" });
+    expect(audit.wasSentInAudit("draft-Z")).toBe(false);
+  });
+
+  test("returns false when the log is empty", () => {
+    expect(audit.wasSentInAudit("anything")).toBe(false);
+  });
+
   test("malformed lines are skipped, not fatal", () => {
     // Hand-corrupt: write a valid entry, then a bad line, then another valid one.
     audit.appendAudit({ draft_id: "good1", to_handle: "x", body: "y", service: "iMessage" });

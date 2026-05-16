@@ -20,7 +20,7 @@
 // IMESSAGE_DAILY_SEND_CAP (default 50). Setting it to 0 disables the
 // check.
 
-import { mkdirSync, existsSync, appendFileSync, readFileSync } from "node:fs";
+import { mkdirSync, existsSync, appendFileSync, readFileSync, lstatSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -48,7 +48,29 @@ function logPath(): string {
 
 function ensureDir(): void {
   const d = testOverridePath ? join(testOverridePath, "..") : auditDirPath();
-  if (!existsSync(d)) mkdirSync(d, { recursive: true });
+  // Symlink defense: refuse if either the audit dir itself OR its parent
+  // (one level up from `~/.imessage-mcp`, i.e. `$HOME`) has been replaced
+  // with a symlink that would redirect our log writes. Parallel to the
+  // drafts-side guard in storage/drafts.ts. We don't walk past the
+  // immediate parent — `$HOME` itself being a symlink is the user's
+  // problem, not ours to enforce. Using lstatSync directly (not
+  // existsSync+lstatSync) because existsSync follows symlinks and would
+  // return false for a dangling-symlink parent, skipping the guard.
+  const parent = join(d, "..");
+  try {
+    if (lstatSync(parent).isSymbolicLink()) {
+      throw new Error(`audit parent directory is a symlink, refusing to use: ${parent}`);
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  if (existsSync(d)) {
+    if (lstatSync(d).isSymbolicLink()) {
+      throw new Error(`audit directory is a symlink, refusing to use: ${d}`);
+    }
+    return;
+  }
+  mkdirSync(d, { recursive: true });
 }
 
 export interface AuditEntry {
@@ -74,8 +96,30 @@ export function appendAudit(args: {
     body_sha256: createHash("sha256").update(args.body, "utf8").digest("hex"),
     service: args.service,
   };
-  appendFileSync(logPath(), JSON.stringify(entry) + "\n", { mode: 0o600 });
+  const path = logPath();
+  appendFileSync(path, JSON.stringify(entry) + "\n", { mode: 0o600 });
+  // `mode` on appendFileSync only applies on file CREATION. If a same-UID
+  // attacker pre-created the log with 0o644 before our first append, every
+  // subsequent append silently writes to a world-readable file — and this
+  // log has `to_handle` (recipient phone/email) in cleartext on every
+  // line. Re-chmod on every append to enforce.
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // Best-effort. If chmod fails (network FS, exotic ACL), continue —
+    // the append already succeeded and we don't want bookkeeping noise.
+  }
   return entry;
+}
+
+// Did the audit log record a send for this draft id? Used as a second
+// source of truth alongside `Draft.sent_at` to gate duplicate sends — if
+// a previous run crashed between appendAudit and markDraftSent, the
+// on-disk draft would say not-yet-sent but the audit would have the
+// record. Without this check, a retry would fire AppleScript again and
+// the recipient would get the message twice.
+export function wasSentInAudit(draftId: string): boolean {
+  return readAudit().some((e) => e.draft_id === draftId);
 }
 
 export function readAudit(): AuditEntry[] {
