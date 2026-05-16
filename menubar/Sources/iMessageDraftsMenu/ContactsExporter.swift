@@ -40,7 +40,6 @@ final class ContactsExporter: ObservableObject {
 
   private let store = CNContactStore()
   private var changeObserver: NSObjectProtocol?
-  private var refreshTimer: Timer?
   private let logger = Logger(subsystem: "com.local.imessage-drafts", category: "contacts")
 
   // Schema version must match `CONTACTS_CACHE_SCHEMA_VERSION` in
@@ -50,7 +49,11 @@ final class ContactsExporter: ObservableObject {
 
   init() {
     // Observe live Contacts edits so a contact added/renamed in
-    // Contacts.app refreshes the sidecar within seconds.
+    // Contacts.app — or arriving via iCloud sync — refreshes the
+    // sidecar within seconds. This notification is documented as
+    // reliable for both local mutations and CloudKit-driven changes,
+    // so we rely on it as the sole refresh trigger after the
+    // app-launch bootstrap. No polling timer.
     changeObserver = NotificationCenter.default.addObserver(
       forName: .CNContactStoreDidChange,
       object: nil,
@@ -59,20 +62,10 @@ final class ContactsExporter: ObservableObject {
       self?.logger.info("CNContactStoreDidChange fired, refreshing sidecar")
       Task { await self?.exportNow() }
     }
-
-    // Belt-and-suspenders periodic refresh. The change notification is
-    // reliable in practice but skips during system sleep, and there's
-    // no guarantee it fires for every CloudKit sync. 10 minutes is
-    // fast enough that "I just added a contact and want to draft to
-    // them" works without restarting the menu bar app.
-    refreshTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
-      Task { await self?.exportNow() }
-    }
   }
 
   deinit {
     if let obs = changeObserver { NotificationCenter.default.removeObserver(obs) }
-    refreshTimer?.invalidate()
   }
 
   // Kick off the initial sync at app launch. Safe to call repeatedly —
