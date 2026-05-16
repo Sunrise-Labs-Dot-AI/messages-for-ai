@@ -230,10 +230,36 @@ export function registerDraftTools(server: McpServer): void {
           return errorResult(`send failed: ${result.error ?? "unknown error"} (took ${result.duration_ms}ms)`);
         }
         const sentAt = new Date().toISOString();
-        const updated = markDraftSent(draft.id, sentAt, result.service);
+
+        // Post-send bookkeeping. The wire-level send already happened —
+        // bookkeeping failures must NEVER fall through to the outer catch
+        // and return errorResult, because callers that see ok:false will
+        // retry, and a retry sends the same message a second time. So
+        // wrap each step in its own try/catch and surface failures as
+        // non-fatal warnings on an ok:true response.
+        const response: {
+          ok: true;
+          draft_id: string;
+          service: "iMessage" | "SMS";
+          sent_at: string;
+          duration_ms: number;
+          draft?: Draft;
+          audit_warning?: string;
+          mark_warning?: string;
+        } = {
+          ok: true,
+          draft_id: draft.id,
+          service: result.service,
+          sent_at: sentAt,
+          duration_ms: result.duration_ms,
+        };
 
         // Guardrail #3: audit log. Append-only record per send, for
-        // forensic review and as input to the daily-cap counter.
+        // forensic review and as input to the daily-cap counter. Runs
+        // FIRST (before markDraftSent) because it's the durable ledger
+        // that gates `checkDailyCap` on the next call — keeping the cap
+        // calibrated is what stops runaway-retry loops from sending
+        // hundreds of messages even when the draft-state write is flaky.
         try {
           appendAudit({
             draft_id: draft.id,
@@ -243,28 +269,23 @@ export function registerDraftTools(server: McpServer): void {
             ts: new Date(sentAt),
           });
         } catch (e) {
-          // Don't fail the send if the audit write fails — the message
-          // already went out. Surface the error in the response so a
-          // human reviewer sees it.
-          return jsonResult({
-            ok: true,
-            draft_id: draft.id,
-            service: result.service,
-            sent_at: sentAt,
-            duration_ms: result.duration_ms,
-            draft: updated,
-            audit_warning: `send succeeded but audit log write failed: ${(e as Error).message}`,
-          });
+          response.audit_warning = `send succeeded but audit log write failed: ${(e as Error).message}`;
         }
 
-        return jsonResult({
-          ok: true,
-          draft_id: draft.id,
-          service: result.service,
-          sent_at: sentAt,
-          duration_ms: result.duration_ms,
-          draft: updated,
-        });
+        // Mark the on-disk draft as sent so the menu bar app moves it
+        // from the pending list to "Recently sent". Best-effort: if the
+        // rename throws (e.g. transient Spotlight EBUSY), the send still
+        // happened, so we surface a warning rather than failing the
+        // response. The draft will appear stuck as pending in the menu
+        // bar until the user discards it.
+        try {
+          const updated = markDraftSent(draft.id, sentAt, result.service);
+          if (updated) response.draft = updated;
+        } catch (e) {
+          response.mark_warning = `send succeeded but draft state update failed; the draft will appear pending in the menu bar — discard it manually: ${(e as Error).message}`;
+        }
+
+        return jsonResult(response);
       } catch (e) {
         return errorResult(`send_imessage_draft failed: ${(e as Error).message}`);
       }

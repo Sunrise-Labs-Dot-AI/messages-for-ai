@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, statSync, copyFileSync, symlinkSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -108,6 +108,57 @@ describe("markDraftSent", () => {
 
   test("returns null for unknown id", () => {
     expect(drafts.markDraftSent(randomUUID(), "2026-05-13T00:00:00.000Z", "iMessage")).toBeNull();
+  });
+
+  test("idempotent: calling twice on a sent draft returns the existing record without overwriting", () => {
+    // Defends against a race between the Node MCP server and the Swift
+    // menubar app — both can call their respective markDraftSent in
+    // overlapping windows. The Swift side already has a `guard !isSent`;
+    // this test pins the Node-side equivalent so a future refactor that
+    // restores blind-overwrite behavior (clobbering the Swift writer's
+    // sent_at + send_service + source) fails CI.
+    const { draft } = drafts.stageDraft({
+      to_handle: "+14155551234",
+      body: "hi",
+      source: "first-writer",
+    });
+    const first = drafts.markDraftSent(draft.id, "2026-05-13T00:00:00.000Z", "iMessage");
+    expect(first?.sent_at).toBe("2026-05-13T00:00:00.000Z");
+    expect(first?.send_service).toBe("iMessage");
+
+    // Second call simulates the racing writer — different timestamp + service.
+    const second = drafts.markDraftSent(draft.id, "2026-05-14T00:00:00.000Z", "SMS");
+    expect(second?.sent_at).toBe("2026-05-13T00:00:00.000Z"); // original preserved
+    expect(second?.send_service).toBe("iMessage"); // original preserved
+    expect(second?.source).toBe("first-writer"); // metadata preserved
+
+    // And on disk too — the second call must not have written.
+    const fromDisk = drafts.getDraft(draft.id);
+    expect(fromDisk?.sent_at).toBe("2026-05-13T00:00:00.000Z");
+    expect(fromDisk?.send_service).toBe("iMessage");
+  });
+
+  test("refuses to overwrite a symlinked draft path", () => {
+    // Symlink-clobber defense — if a local-UID attacker pre-creates the
+    // draft file as a symlink to ~/.zshrc, renameSync would happily
+    // replace the symlink target with our JSON. lstatSync rejects.
+    //
+    // Setup: stage normally, copy the resulting JSON aside, then replace
+    // the real path with a symlink pointing at the copy. getDraft reads
+    // through the symlink and parses valid JSON, but the lstatSync check
+    // in markDraftSent sees a symbolic link and throws BEFORE the rename.
+    const { draft } = drafts.stageDraft({ to_handle: "+14155551234", body: "hi" });
+    const draftFile = join(tmpDraftsDir, `${draft.id}.json`);
+    const decoyTarget = join(tmpHome, "decoy-target.json");
+    copyFileSync(draftFile, decoyTarget);
+    const decoyContentsBefore = readFileSync(decoyTarget, "utf8");
+    rmSync(draftFile);
+    symlinkSync(decoyTarget, draftFile);
+
+    expect(() => drafts.markDraftSent(draft.id, "2026-05-13T00:00:00.000Z", "iMessage"))
+      .toThrow(/symlink/);
+    // Decoy target must be untouched — our JSON did NOT clobber it.
+    expect(readFileSync(decoyTarget, "utf8")).toBe(decoyContentsBefore);
   });
 
   test("writes atomically: no .tmp leftovers and the drafts dir mtime advances", () => {
