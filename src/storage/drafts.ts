@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, existsSync, renameSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, lstatSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -51,7 +51,17 @@ export interface Draft {
 
 function ensureDir(): void {
   const d = draftsDirPath();
-  if (!existsSync(d)) mkdirSync(d, { recursive: true });
+  if (existsSync(d)) {
+    // Refuse if a local-UID attacker pre-created the drafts dir as a
+    // symlink to a sensitive directory — `writeFileSync` and `renameSync`
+    // both follow symlinks at the parent, so without this check our draft
+    // writes would land wherever the symlink points.
+    if (lstatSync(d).isSymbolicLink()) {
+      throw new Error(`drafts directory is a symlink, refusing to use: ${d}`);
+    }
+    return;
+  }
+  mkdirSync(d, { recursive: true });
 }
 
 function draftPath(id: string): string {
@@ -147,6 +157,16 @@ function normalizeDraft(raw: Partial<Draft>): Draft | null {
 export function markDraftSent(id: string, sentAt: string, service: "iMessage" | "SMS"): Draft | null {
   const existing = getDraft(id);
   if (!existing) return null;
+  // Idempotency guard — match the Swift menubar app's `guard !existing.isSent`
+  // check (DraftStore.swift). Without this, a race between the Node MCP
+  // server and the Swift app (e.g. user holds Send in menubar while an
+  // agent is mid-send_imessage_draft) lets the second writer clobber the
+  // first writer's `sent_at` + `send_service` + `source` on disk. This is
+  // the on-disk-state half of cross-process defense; preventing two
+  // AppleScript sends from firing (the wire-level half) needs a file lock
+  // acquired by BOTH Node and Swift before their respective sendIMessage
+  // calls — tracked as a separate hardening task.
+  if (existing.sent_at) return existing;
   const updated: Draft = { ...existing, sent_at: sentAt, send_service: service };
   // Atomic write: temp file + rename. The menu bar app watches the drafts
   // directory via DispatchSourceFileSystemObject, which fires on directory-
@@ -156,6 +176,15 @@ export function markDraftSent(id: string, sentAt: string, service: "iMessage" | 
   // just-sent message stays parked in the "pending" list until the next
   // unrelated directory event. Rename fires the watcher reliably.
   const finalPath = draftPath(id);
+  // Refuse to overwrite if finalPath is a symlink. `renameSync` follows
+  // symlinks at the destination (no O_NOFOLLOW equivalent in node:fs), so
+  // a local-UID attacker who can replace `<id>.json` with a symlink to
+  // `~/.zshrc` between getDraft above and the rename below would have us
+  // write the JSON-serialized Draft into that target. lstatSync inspects
+  // the link itself, not what it points to.
+  if (existsSync(finalPath) && lstatSync(finalPath).isSymbolicLink()) {
+    throw new Error(`draft path is a symlink, refusing to overwrite: ${finalPath}`);
+  }
   const tmpPath = `${finalPath}.tmp-${randomUUID()}`;
   writeFileSync(tmpPath, JSON.stringify(updated, null, 2), { mode: 0o600 });
   try {
