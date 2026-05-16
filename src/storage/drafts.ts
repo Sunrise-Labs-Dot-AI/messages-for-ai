@@ -27,6 +27,12 @@ export function _setDraftsDirForTesting(dir: string | null): void {
 export interface Draft {
   id: string;
   to_handle: string;
+  // Resolved contact name from the CNContactStore-backed sidecar
+  // (`~/.imessage-mcp/contacts-cache.json`, written by the menu bar
+  // app), or null if no match / sidecar absent. Surfaced in MCP tool
+  // responses so agents can confirm the recipient by name, and used
+  // by the menu bar to render a human-recognizable row header.
+  to_handle_name: string | null;
   body: string;
   in_reply_to_thread_id: number | null;
   staged_at: string;
@@ -96,6 +102,7 @@ export function stageDraft(args: StageDraftArgs): { draft: Draft; path: string }
   const draft: Draft = {
     id: randomUUID(),
     to_handle: args.to_handle,
+    to_handle_name: args.to_handle_name ?? null,
     body: args.body,
     in_reply_to_thread_id: args.in_reply_to_thread_id ?? null,
     staged_at: new Date().toISOString(),
@@ -152,6 +159,7 @@ function normalizeDraft(raw: Partial<Draft>): Draft | null {
   return {
     id: raw.id,
     to_handle: raw.to_handle,
+    to_handle_name: raw.to_handle_name ?? null,
     body: raw.body,
     in_reply_to_thread_id: raw.in_reply_to_thread_id ?? null,
     staged_at: raw.staged_at,

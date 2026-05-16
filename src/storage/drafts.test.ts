@@ -1,10 +1,11 @@
-import { describe, test, expect, beforeAll, beforeEach, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync, readdirSync, statSync, copyFileSync, symlinkSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import * as drafts from "./drafts.ts";
+import { _setContactsForTesting, _resetContactsCache, resolveHandle } from "../chatdb/contacts.ts";
 
 // Use the explicit test seam (`_setDraftsDirForTesting`). The earlier
 // approach of overriding `process.env.HOME` doesn't work on macOS —
@@ -215,6 +216,57 @@ describe("markDraftSent", () => {
     // the dir mtime will not change and the menu bar will go stale.)
     const dirMtimeAfter = statSync(tmpDraftsDir).mtimeMs;
     expect(dirMtimeAfter).toBeGreaterThan(dirMtimeBefore);
+  });
+});
+
+describe("to_handle_name resolution", () => {
+  afterEach(() => { _resetContactsCache(); });
+
+  test("resolves to contact name when handle is known", () => {
+    _setContactsForTesting(
+      new Map([["4155551234", "Alice Smith"]]),
+      [{ lower_name: "alice smith", handles: ["4155551234"] }]
+    );
+    const { draft } = drafts.stageDraft({
+      to_handle: "+14155551234",
+      to_handle_name: resolveHandle("+14155551234"),
+      body: "hi",
+    });
+    expect(draft.to_handle_name).toBe("Alice Smith");
+  });
+
+  test("to_handle_name is null when handle is unknown", () => {
+    _setContactsForTesting(new Map(), []);
+    const { draft } = drafts.stageDraft({
+      to_handle: "+14155559999",
+      to_handle_name: null,
+      body: "hi",
+    });
+    expect(draft.to_handle_name).toBeNull();
+  });
+
+  test("non-canonical phone matches via canonHandle (last-10-digits)", () => {
+    _setContactsForTesting(
+      new Map([["4045610417", "Bob Jones"]]),
+      [{ lower_name: "bob jones", handles: ["4045610417"] }]
+    );
+    // resolveHandle strips non-digits and takes last 10 → "4045610417"
+    expect(resolveHandle("+1 (404) 561-0417")).toBe("Bob Jones");
+  });
+
+  test("backward-compat: draft written without to_handle_name decodes with null", () => {
+    // Trigger ensureDir by staging once.
+    drafts.stageDraft({ to_handle: "+14155550000", body: "seed" });
+    const id = randomUUID();
+    writeFileSync(join(tmpDraftsDir, `${id}.json`), JSON.stringify({
+      id,
+      to_handle: "+14155551234",
+      body: "from v0 without name",
+      in_reply_to_thread_id: null,
+      staged_at: "2026-05-01T00:00:00Z",
+    }, null, 2));
+    const fetched = drafts.getDraft(id);
+    expect(fetched?.to_handle_name).toBeNull();
   });
 });
 

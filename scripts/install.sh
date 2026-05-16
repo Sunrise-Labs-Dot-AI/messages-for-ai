@@ -34,14 +34,41 @@ bun build src/index.ts --compile --outfile "$BIN_SRC"
 echo "› clearing xattrs on build output"
 xattr -c "$BIN_SRC"
 
-echo "› re-signing with stable identifier ($IDENTIFIER) + hardened runtime"
-# `--options=runtime` enables the Hardened Runtime: macOS now enforces
-# library validation, blocks dyld_insert_libraries attacks, refuses
-# unsigned framework loads, and disables several other gadget classes
-# even when the binary is adhoc-signed. Without this, any process
-# running as the user could LD_PRELOAD a malicious dylib into our
-# process and inherit our FDA + Automation grants.
-codesign --force --sign - --identifier "$IDENTIFIER" --options=runtime "$BIN_SRC"
+# Pick a codesigning identity. Same logic as menubar/scripts/install.sh.
+# Order of preference:
+#   1. $CODESIGN_IDENTITY (explicit override).
+#   2. First "Developer ID Application: …" cert in the user's keychain.
+#   3. Adhoc (`-`).
+#
+# Why this matters: TCC keys the Full Disk Access grant off the
+# codesigning identity. For adhoc-signed binaries that means the
+# binary's CDHash — which changes on every rebuild — so each rebuild
+# silently invalidates the FDA grant and the user has to re-toggle
+# the entry in System Settings → Privacy & Security → Full Disk
+# Access. A real Developer ID cert has a stable identity (cert
+# fingerprint), so the grant survives rebuilds.
+SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F\" '/Developer ID Application/ {print $2; exit}')
+fi
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  echo "› signing with Developer ID: $SIGN_IDENTITY"
+  # --options=runtime enables Hardened Runtime: macOS enforces
+  # library validation, blocks dyld_insert_libraries, refuses unsigned
+  # framework loads, etc. Required for Developer ID signed binaries
+  # to behave well with TCC on modern macOS.
+  codesign --force --sign "$SIGN_IDENTITY" --identifier "$IDENTIFIER" --options=runtime "$BIN_SRC"
+else
+  echo "› no Developer ID cert found; falling back to adhoc"
+  echo "  ⚠  FDA grants for adhoc-signed binaries get invalidated on each"
+  echo "     rebuild (TCC keys off the binary hash). You'll have to re-grant"
+  echo "     FDA after every install. Install a Developer ID Application"
+  echo "     cert via Xcode → Settings → Accounts → Manage Certificates"
+  echo "     to make the grant stick across rebuilds."
+  codesign --force --sign - --identifier "$IDENTIFIER" --options=runtime "$BIN_SRC"
+fi
 
 echo "› atomic-mv into $BIN_DEST"
 mkdir -p "$(dirname "$BIN_DEST")"

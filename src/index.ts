@@ -6,6 +6,7 @@ import { registerThreadTools } from "./tools/threads.ts";
 import { registerSearchTool } from "./tools/search.ts";
 import { registerDraftTools } from "./tools/drafts.ts";
 import { registerTimeTool } from "./tools/time.ts";
+import { registerHealthTools } from "./tools/health.ts";
 
 async function main() {
   const server = new McpServer(
@@ -22,6 +23,7 @@ async function main() {
   registerSearchTool(server);
   registerDraftTools(server);
   registerTimeTool(server);
+  registerHealthTools(server);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

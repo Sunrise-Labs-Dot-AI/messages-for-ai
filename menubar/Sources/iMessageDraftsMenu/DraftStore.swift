@@ -59,6 +59,7 @@ final class DraftStore: ObservableObject {
     let updated = Draft(
       id: existing.id,
       to_handle: existing.to_handle,
+      to_handle_name: existing.to_handle_name,
       body: existing.body,
       in_reply_to_thread_id: existing.in_reply_to_thread_id,
       staged_at: existing.staged_at,

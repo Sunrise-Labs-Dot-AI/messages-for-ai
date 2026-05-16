@@ -10,3 +10,7 @@ bun.lockb
 menubar/.build/
 menubar/.swiftpm/
 menubar/Package.resolved
+
+# Release artifacts produced by scripts/build-release.sh.
+# Built locally + uploaded to GitHub Releases — never committed.
+dist/

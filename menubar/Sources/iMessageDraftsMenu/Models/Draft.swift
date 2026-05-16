@@ -6,6 +6,11 @@ import Foundation
 struct Draft: Codable, Identifiable, Equatable {
   let id: String
   let to_handle: String
+  // Contact name resolved from macOS AddressBook at stage time. Null for
+  // unknown handles or when AddressBook was unreadable (FDA not granted).
+  // Older drafts that predate this field decode as nil automatically via
+  // Swift's synthesized Codable init.
+  let to_handle_name: String?
   let body: String
   let in_reply_to_thread_id: Int?
   let staged_at: String

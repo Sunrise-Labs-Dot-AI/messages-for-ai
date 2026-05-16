@@ -73,6 +73,15 @@ export const SendDraftShape = {
 
 export const CurrentTimeShape = {} as const;
 
+export const HealthCheckShape = {
+  probe_handle: z.string().optional().describe(
+    "Optional phone/email to canonicalize and look up against the loaded contacts. " +
+    "Useful when 'to_handle_name' is unexpectedly null — the response will include " +
+    "the canonical form (last-10-digits for phones, lowercased for emails) and " +
+    "whether that key resolves to a contact name."
+  ),
+} as const;
+
 export function requireSinceOrContactFilter(args: { since?: string; contact_filter?: string }): string | null {
   if (!args.since && !args.contact_filter) {
     return "either 'since' (ISO-8601, within 2 years) or 'contact_filter' (>=2 chars) is required";

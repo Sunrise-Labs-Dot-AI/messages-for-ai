@@ -6,6 +6,7 @@ struct iMessageDraftsMenuApp: App {
   @StateObject private var store = DraftStore()
   @StateObject private var loginItem = LoginItemController()
   @StateObject private var settings = SettingsStore()
+  @StateObject private var contactsExporter = ContactsExporter()
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
   var body: some Scene {
@@ -14,6 +15,14 @@ struct iMessageDraftsMenuApp: App {
         .environmentObject(store)
         .environmentObject(loginItem)
         .environmentObject(settings)
+        .environmentObject(contactsExporter)
+        .task {
+          // Kick off the Contacts export on first popover render. Using
+          // .task rather than .onAppear so async work is properly cancelled
+          // on view disappearance. Bootstrap is idempotent — safe across
+          // multiple popover opens.
+          await contactsExporter.bootstrap()
+        }
     } label: {
       // Dynamic label: badge count when there are pending drafts.
       // SF Symbols + Text composed via Image+Text in a HStack would not
