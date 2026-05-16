@@ -1,24 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  Hardened Runtime entitlements for the iMessage Drafts menu bar app.
-
-  Under `codesign --options=runtime`, macOS applies stricter authorization
-  checks on TCC-gated APIs. For Developer-ID-signed (not sandboxed) apps,
-  Contacts access nominally only needs NSContactsUsageDescription in
-  Info.plist — but empirical testing on macOS Sequoia shows
-  CNContactStore.requestAccess can throw "Access Denied" synchronously
-  without this entitlement, even when the cert and plist are correct.
-
-  com.apple.security.automation.apple-events is the Hardened Runtime
-  permission for sending Apple Events to other apps. Our send-iMessage
-  path uses NSAppleScript to talk to Messages.app, so this is required
-  for the same reasons.
-
-  com.apple.security.personal-information.addressbook is the Hardened
-  Runtime permission for reading the Contacts database via the
-  Contacts framework.
--->
 <plist version="1.0">
 <dict>
     <key>com.apple.security.personal-information.addressbook</key>
