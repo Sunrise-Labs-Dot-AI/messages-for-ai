@@ -10,7 +10,7 @@ import { stageDraft, listDrafts, getDraft, discardDraft, markDraftSent, draftsDi
 import { recentContextForRecipient } from "../chatdb/queries.ts";
 import type { DraftContextMessage, ContextLookupDiagnostic } from "../chatdb/queries.ts";
 import { sendIMessage } from "../imessage/send.ts";
-import { appendAudit, checkDailyCap } from "../imessage/audit.ts";
+import { appendAudit, checkDailyCap, wasSentInAudit } from "../imessage/audit.ts";
 import { requireApproval } from "../storage/settings.ts";
 import { errorResult, jsonResult } from "./_result.ts";
 import { wrapBodyInPlace } from "./_untrusted.ts";
@@ -176,6 +176,20 @@ export function registerDraftTools(server: McpServer): void {
             `draft ${args.draft_id} was already sent at ${draft.sent_at} via ${draft.send_service ?? "unknown"}; refusing duplicate send`
           );
         }
+        // Second source of truth: the audit log. If a prior run crashed
+        // between appendAudit and markDraftSent (or markDraftSent failed
+        // permanently), the on-disk draft would show sent_at:null but the
+        // audit log would record the send. Without this check, a retry
+        // would fire AppleScript a second time and the recipient would
+        // get the message twice. The audit log is read fresh per call —
+        // see audit.ts for the durability semantics.
+        if (wasSentInAudit(args.draft_id)) {
+          return errorResult(
+            `draft ${args.draft_id} appears in the send audit log already but its draft state was not marked sent. ` +
+            `This indicates a previous run crashed between the wire-level send and the bookkeeping write. ` +
+            `Refusing to retry to avoid duplicate delivery — call discard_imessage_draft to clear the draft from the menu bar.`
+          );
+        }
 
         // Guardrail #0: user-controlled "require draft approval" toggle.
         // When on (default), the MCP send path is disabled entirely and
@@ -221,10 +235,37 @@ export function registerDraftTools(server: McpServer): void {
           return errorResult(`send failed: ${result.error ?? "unknown error"} (took ${result.duration_ms}ms)`);
         }
         const sentAt = new Date().toISOString();
-        const updated = markDraftSent(draft.id, sentAt, result.service);
+
+        // Post-send bookkeeping. The wire-level send already happened —
+        // bookkeeping failures must NEVER fall through to the outer catch
+        // and return errorResult, because callers that see ok:false will
+        // retry, and a retry sends the same message a second time. So
+        // wrap each step in its own try/catch and surface failures as
+        // non-fatal warnings on an ok:true response.
+        const response: {
+          ok: true;
+          draft_id: string;
+          service: "iMessage" | "SMS";
+          sent_at: string;
+          duration_ms: number;
+          draft?: Draft;
+          audit_warning?: string;
+          mark_warning?: string;
+          duplicate_send_warning?: string;
+        } = {
+          ok: true,
+          draft_id: draft.id,
+          service: result.service,
+          sent_at: sentAt,
+          duration_ms: result.duration_ms,
+        };
 
         // Guardrail #3: audit log. Append-only record per send, for
-        // forensic review and as input to the daily-cap counter.
+        // forensic review and as input to the daily-cap counter. Runs
+        // FIRST (before markDraftSent) because it's the durable ledger
+        // that gates `checkDailyCap` on the next call — keeping the cap
+        // calibrated is what stops runaway-retry loops from sending
+        // hundreds of messages even when the draft-state write is flaky.
         try {
           appendAudit({
             draft_id: draft.id,
@@ -234,28 +275,40 @@ export function registerDraftTools(server: McpServer): void {
             ts: new Date(sentAt),
           });
         } catch (e) {
-          // Don't fail the send if the audit write fails — the message
-          // already went out. Surface the error in the response so a
-          // human reviewer sees it.
-          return jsonResult({
-            ok: true,
-            draft_id: draft.id,
-            service: result.service,
-            sent_at: sentAt,
-            duration_ms: result.duration_ms,
-            draft: updated,
-            audit_warning: `send succeeded but audit log write failed: ${(e as Error).message}`,
-          });
+          response.audit_warning = `send succeeded but audit log write failed: ${(e as Error).message}`;
         }
 
-        return jsonResult({
-          ok: true,
-          draft_id: draft.id,
-          service: result.service,
-          sent_at: sentAt,
-          duration_ms: result.duration_ms,
-          draft: updated,
-        });
+        // Mark the on-disk draft as sent so the menu bar app moves it
+        // from the pending list to "Recently sent". Best-effort: if the
+        // rename throws (e.g. transient Spotlight EBUSY), the send still
+        // happened, so we surface a warning rather than failing the
+        // response. The draft will appear stuck as pending in the menu
+        // bar until the user discards it.
+        try {
+          const updated = markDraftSent(draft.id, sentAt, result.service);
+          if (updated) {
+            response.draft = updated;
+            // markDraftSent's idempotency guard returns the *existing* draft
+            // unchanged when another writer (typically the Swift menu bar
+            // app) already marked it sent. If the returned sent_at doesn't
+            // match the timestamp we just generated, we lost a race — and
+            // since each writer fires its own AppleScript send, the recipient
+            // likely received the message twice. The user-visible top-of-
+            // handler guards (draft.sent_at + audit log) catch this for
+            // sequential retries; this catches the simultaneous-race case
+            // where both writers passed their guards before either flushed.
+            if (updated.sent_at !== sentAt) {
+              response.duplicate_send_warning =
+                `another writer marked this draft sent at ${updated.sent_at} via ${updated.send_service ?? "unknown"} ` +
+                `before our markDraftSent ran — the recipient may have received this message twice. ` +
+                `This typically means the menu bar app's hold-to-send fired in the same window as this MCP call.`;
+            }
+          }
+        } catch (e) {
+          response.mark_warning = `send succeeded but draft state update failed; the draft will appear pending in the menu bar — discard it manually: ${(e as Error).message}`;
+        }
+
+        return jsonResult(response);
       } catch (e) {
         return errorResult(`send_imessage_draft failed: ${(e as Error).message}`);
       }

@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, existsSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, lstatSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -50,7 +50,31 @@ export interface Draft {
 
 function ensureDir(): void {
   const d = draftsDirPath();
-  if (!existsSync(d)) mkdirSync(d, { recursive: true });
+  // Walk up one level: check that the *parent* (`~/.imessage-mcp`) isn't
+  // a symlink before we let `mkdirSync(recursive:true)` traverse it.
+  // Without this, an attacker who pre-symlinked the parent before our
+  // first run wins — mkdirSync creates `drafts/` *inside* the symlink
+  // target and our subsequent same-dir check sees a real directory and
+  // proceeds. The drafts-dir-itself check below still matters for the
+  // already-bootstrapped case (parent is a real dir, attacker replaces
+  // just `drafts/` with a symlink). We use lstatSync directly (not
+  // existsSync+lstatSync) because existsSync follows symlinks and would
+  // return false for a dangling-symlink parent, skipping the guard.
+  const parent = join(d, "..");
+  try {
+    if (lstatSync(parent).isSymbolicLink()) {
+      throw new Error(`drafts parent directory is a symlink, refusing to use: ${parent}`);
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  if (existsSync(d)) {
+    if (lstatSync(d).isSymbolicLink()) {
+      throw new Error(`drafts directory is a symlink, refusing to use: ${d}`);
+    }
+    return;
+  }
+  mkdirSync(d, { recursive: true });
 }
 
 function draftPath(id: string): string {
@@ -59,6 +83,7 @@ function draftPath(id: string): string {
 
 export interface StageDraftArgs {
   to_handle: string;
+  to_handle_name?: string | null;
   body: string;
   in_reply_to_thread_id?: number | null;
   source?: string | null;
@@ -145,8 +170,48 @@ function normalizeDraft(raw: Partial<Draft>): Draft | null {
 export function markDraftSent(id: string, sentAt: string, service: "iMessage" | "SMS"): Draft | null {
   const existing = getDraft(id);
   if (!existing) return null;
+  // Idempotency guard — match the Swift menubar app's `guard !existing.isSent`
+  // check (DraftStore.swift). Without this, a race between the Node MCP
+  // server and the Swift app (e.g. user holds Send in menubar while an
+  // agent is mid-send_imessage_draft) lets the second writer clobber the
+  // first writer's `sent_at` + `send_service` + `source` on disk. This is
+  // the on-disk-state half of cross-process defense; preventing two
+  // AppleScript sends from firing (the wire-level half) needs a file lock
+  // acquired by BOTH Node and Swift before their respective sendIMessage
+  // calls — tracked as a separate hardening task.
+  if (existing.sent_at) return existing;
   const updated: Draft = { ...existing, sent_at: sentAt, send_service: service };
-  writeFileSync(draftPath(id), JSON.stringify(updated, null, 2), { mode: 0o600 });
+  // Atomic write: temp file + rename. The menu bar app watches the drafts
+  // directory via DispatchSourceFileSystemObject, which fires on directory-
+  // entry changes (create/delete/rename) but NOT on in-place modifications
+  // of existing files. A plain writeFileSync over the existing path leaves
+  // the menu bar with a stale in-memory draft (sent_at still null), so the
+  // just-sent message stays parked in the "pending" list until the next
+  // unrelated directory event. Rename fires the watcher reliably.
+  const finalPath = draftPath(id);
+  // Refuse to overwrite if finalPath is a symlink. `renameSync` follows
+  // symlinks at the destination (no O_NOFOLLOW equivalent in node:fs), so
+  // a local-UID attacker who can replace `<id>.json` with a symlink to
+  // `~/.zshrc` between getDraft above and the rename below would have us
+  // write the JSON-serialized Draft into that target. lstatSync inspects
+  // the link itself, not what it points to.
+  if (existsSync(finalPath) && lstatSync(finalPath).isSymbolicLink()) {
+    throw new Error(`draft path is a symlink, refusing to overwrite: ${finalPath}`);
+  }
+  const tmpPath = `${finalPath}.tmp-${randomUUID()}`;
+  writeFileSync(tmpPath, JSON.stringify(updated, null, 2), { mode: 0o600 });
+  try {
+    renameSync(tmpPath, finalPath);
+  } catch (err) {
+    // Rename can throw on EACCES, ENOSPC, EROFS, or transient EBUSY (e.g.
+    // Spotlight indexing holds an fd on the tmp file). Without this cleanup
+    // the orphan `.tmp-<uuid>` persists at 0600 with the full draft body —
+    // recipient handle, message text, and the context_messages snapshot of
+    // recent thread messages. Backup tools (Time Machine, Backblaze) and
+    // local indexers will happily ingest it.
+    try { unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+    throw err;
+  }
   return updated;
 }
 

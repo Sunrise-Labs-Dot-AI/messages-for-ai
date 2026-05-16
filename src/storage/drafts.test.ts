@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, statSync, copyFileSync, symlinkSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -107,6 +107,114 @@ describe("markDraftSent", () => {
 
   test("returns null for unknown id", () => {
     expect(drafts.markDraftSent(randomUUID(), "2026-05-13T00:00:00.000Z", "iMessage")).toBeNull();
+  });
+
+  test("idempotent: calling twice on a sent draft returns the existing record without overwriting", () => {
+    // Defends against a race between the Node MCP server and the Swift
+    // menubar app — both can call their respective markDraftSent in
+    // overlapping windows. The Swift side already has a `guard !isSent`;
+    // this test pins the Node-side equivalent so a future refactor that
+    // restores blind-overwrite behavior (clobbering the Swift writer's
+    // sent_at + send_service + source) fails CI.
+    const { draft } = drafts.stageDraft({
+      to_handle: "+14155551234",
+      body: "hi",
+      source: "first-writer",
+    });
+    const first = drafts.markDraftSent(draft.id, "2026-05-13T00:00:00.000Z", "iMessage");
+    expect(first?.sent_at).toBe("2026-05-13T00:00:00.000Z");
+    expect(first?.send_service).toBe("iMessage");
+
+    // Second call simulates the racing writer — different timestamp + service.
+    const second = drafts.markDraftSent(draft.id, "2026-05-14T00:00:00.000Z", "SMS");
+    expect(second?.sent_at).toBe("2026-05-13T00:00:00.000Z"); // original preserved
+    expect(second?.send_service).toBe("iMessage"); // original preserved
+    expect(second?.source).toBe("first-writer"); // metadata preserved
+
+    // And on disk too — the second call must not have written.
+    const fromDisk = drafts.getDraft(draft.id);
+    expect(fromDisk?.sent_at).toBe("2026-05-13T00:00:00.000Z");
+    expect(fromDisk?.send_service).toBe("iMessage");
+  });
+
+  test("refuses if the parent ~/.imessage-mcp is a symlink", () => {
+    // Defense-in-depth: even if the drafts dir itself is a real dir, an
+    // attacker who pre-symlinked the parent before our first run wins —
+    // mkdirSync(recursive:true) would create `drafts/` inside the symlink
+    // target and every staged draft + audit log entry would land in the
+    // attacker-controlled location.
+    //
+    // Setup: blow away the test home, redirect the test seam to a NEW
+    // path whose parent IS a symlink, and assert any operation that runs
+    // through ensureDir throws. Restore the original test seam afterward
+    // so subsequent tests pass.
+    const malHome = mkdtempSync(join(tmpdir(), "imessage-mcp-malhome-"));
+    const decoyTarget = join(malHome, "real-imessage-mcp-dir");
+    const symlinkedParent = join(malHome, ".imessage-mcp");
+    const draftsUnderSymlink = join(symlinkedParent, "drafts");
+    // Create the decoy as a real directory.
+    writeFileSync(join(malHome, "marker"), "marker");  // touch to materialize malHome
+    rmSync(symlinkedParent, { recursive: true, force: true });
+    // Symlink the parent.
+    symlinkSync(decoyTarget, symlinkedParent);
+    drafts._setDraftsDirForTesting(draftsUnderSymlink);
+    try {
+      expect(() => drafts.stageDraft({ to_handle: "+14155551234", body: "hi" }))
+        .toThrow(/parent directory is a symlink/);
+    } finally {
+      // Restore the canonical test seam so the rest of the suite keeps working.
+      drafts._setDraftsDirForTesting(tmpDraftsDir);
+      rmSync(malHome, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses to overwrite a symlinked draft path", () => {
+    // Symlink-clobber defense — if a local-UID attacker pre-creates the
+    // draft file as a symlink to ~/.zshrc, renameSync would happily
+    // replace the symlink target with our JSON. lstatSync rejects.
+    //
+    // Setup: stage normally, copy the resulting JSON aside, then replace
+    // the real path with a symlink pointing at the copy. getDraft reads
+    // through the symlink and parses valid JSON, but the lstatSync check
+    // in markDraftSent sees a symbolic link and throws BEFORE the rename.
+    const { draft } = drafts.stageDraft({ to_handle: "+14155551234", body: "hi" });
+    const draftFile = join(tmpDraftsDir, `${draft.id}.json`);
+    const decoyTarget = join(tmpHome, "decoy-target.json");
+    copyFileSync(draftFile, decoyTarget);
+    const decoyContentsBefore = readFileSync(decoyTarget, "utf8");
+    rmSync(draftFile);
+    symlinkSync(decoyTarget, draftFile);
+
+    expect(() => drafts.markDraftSent(draft.id, "2026-05-13T00:00:00.000Z", "iMessage"))
+      .toThrow(/symlink/);
+    // Decoy target must be untouched — our JSON did NOT clobber it.
+    expect(readFileSync(decoyTarget, "utf8")).toBe(decoyContentsBefore);
+  });
+
+  test("writes atomically: no .tmp leftovers and the drafts dir mtime advances", () => {
+    // Atomicity matters because the menu bar app's directory watcher
+    // (DispatchSourceFileSystemObject on the drafts dir) only fires on
+    // directory-entry changes — create/delete/rename — not on in-place
+    // writes. A rename bumps the parent directory's mtime; a plain
+    // in-place writeFileSync does not.
+    const { draft } = drafts.stageDraft({ to_handle: "+14155551234", body: "hi" });
+    const dirMtimeBefore = statSync(tmpDraftsDir).mtimeMs;
+    // Tiny sleep so the post-rename mtime is observably newer than the
+    // post-stage mtime on filesystems with coarse mtime granularity.
+    Bun.sleepSync(15);
+
+    const updated = drafts.markDraftSent(draft.id, "2026-05-13T00:00:00.000Z", "iMessage");
+    expect(updated?.sent_at).toBe("2026-05-13T00:00:00.000Z");
+
+    // No .tmp-* leftovers in the drafts dir — they should all be renamed away.
+    const leftoverTmps = readdirSync(tmpDraftsDir).filter((f) => f.includes(".tmp-"));
+    expect(leftoverTmps).toEqual([]);
+
+    // Directory mtime advanced, which is the file-watcher signal the menu
+    // bar app relies on. (If this ever regresses to plain writeFileSync,
+    // the dir mtime will not change and the menu bar will go stale.)
+    const dirMtimeAfter = statSync(tmpDraftsDir).mtimeMs;
+    expect(dirMtimeAfter).toBeGreaterThan(dirMtimeBefore);
   });
 });
 
