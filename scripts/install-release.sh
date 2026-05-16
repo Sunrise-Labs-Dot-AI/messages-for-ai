@@ -5,14 +5,32 @@
 # copies the already-signed-and-notarized artifacts into the conventional
 # locations and prints next steps.
 #
-# If you're a developer building from source, use scripts/install.sh and
-# menubar/scripts/install.sh in the repo root instead.
+# If you're a developer building from source, use scripts/dev-install.sh
+# and menubar/scripts/dev-install.sh in the repo root instead.
 
 set -euo pipefail
 
+# ─── Configuration ──────────────────────────────────────────────────────────
+
+# The only Apple Developer Team ID this installer accepts. If the bundle
+# extracted from the release zip was signed by a different Team ID
+# (e.g. a phishing-site forged release signed under an attacker's
+# Developer ID), the install ABORTS with a clear error rather than
+# silently installing the attacker's binary. Override only if you know
+# you're testing against a fork.
+EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-LQ93LRM9QU}"
+
+# Absolute paths to macOS-system binaries. Defends against PATH-shimmed
+# `codesign` / `spctl` (e.g. a malicious shell rc planting an attacker
+# binary on $PATH).
+CODESIGN=/usr/bin/codesign
+SPCTL=/usr/sbin/spctl
+
 # Resolve script directory (works whether invoked via `bash install.sh`
-# from the unzip target, or `./install.sh`).
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# from the unzip target, or `./install.sh`). Also normalize with -P
+# (physical, follows symlinks) so we have a canonical path for sanity
+# checks below.
+SCRIPT_DIR="$( cd -P "$( dirname "${BASH_SOURCE[0]}" )" && pwd -P )"
 cd "$SCRIPT_DIR"
 
 BIN_SRC="$SCRIPT_DIR/bin/imessage-mcp"
@@ -20,7 +38,8 @@ APP_SRC="$SCRIPT_DIR/iMessage Drafts.app"
 BIN_DEST="$HOME/bin/imessage-mcp"
 APP_DEST="/Applications/iMessage Drafts.app"
 
-# Sanity check the bundle.
+# ─── Sanity check the archive ───────────────────────────────────────────────
+
 if [[ ! -x "$BIN_SRC" ]]; then
   echo "✗ missing $BIN_SRC — is the release archive intact?" >&2
   exit 1
@@ -30,32 +49,78 @@ if [[ ! -d "$APP_SRC" ]]; then
   exit 1
 fi
 
+# ─── Verify the archive's signing identity matches EXPECTED_TEAM_ID ─────────
+#
+# This is the headline check that defends against a phishing-site
+# release. Even if the user is tricked into downloading a malicious
+# zip, the bundle inside will have been signed by the attacker's
+# Developer ID — its embedded TeamIdentifier won't match ours, and
+# this script will refuse to install it. The check runs BEFORE any
+# files are copied to destination paths, so a refused install leaves
+# the user's existing setup untouched.
+
+echo "=== Verifying release artifact identity ==="
+
+verify_team_id() {
+  local target="$1"
+  local kind="$2"
+  local detected
+  detected=$("$CODESIGN" -dv --verbose=2 "$target" 2>&1 | sed -nE 's/^TeamIdentifier=([A-Z0-9]+)$/\1/p' | head -1)
+  if [[ -z "$detected" ]]; then
+    echo "✗ $kind has no embedded TeamIdentifier — refusing to install." >&2
+    echo "  Expected signature from Team ID $EXPECTED_TEAM_ID." >&2
+    return 1
+  fi
+  if [[ "$detected" != "$EXPECTED_TEAM_ID" ]]; then
+    echo "✗ $kind is signed by Team ID '$detected', expected '$EXPECTED_TEAM_ID'." >&2
+    echo "  This release zip may be a forgery — REFUSING to install." >&2
+    echo "  If you intentionally built from a fork, set EXPECTED_TEAM_ID=$detected." >&2
+    return 1
+  fi
+  # Run the actual seal verification too. `codesign --verify` walks the
+  # binary and checks every signed component against the embedded code
+  # directory. A passing exit code means the contents match the signature.
+  if ! "$CODESIGN" --verify --strict --verbose "$target" >/dev/null 2>&1; then
+    echo "✗ $kind failed codesign --verify (seal is corrupted or modified)." >&2
+    return 1
+  fi
+  echo "  ✓ $kind: Team $detected, seal intact"
+}
+
+verify_team_id "$BIN_SRC" "imessage-mcp binary" || exit 1
+verify_team_id "$APP_SRC" "iMessage Drafts.app" || exit 1
+
+# Gatekeeper-assess the .app. This is the system's own "would I allow
+# this app to run?" check, which incorporates notarization status.
+echo "› Gatekeeper assess on iMessage Drafts.app"
+if ! "$SPCTL" --assess --type execute "$APP_SRC" 2>&1; then
+  echo "✗ Gatekeeper rejected $APP_SRC — refusing to install." >&2
+  exit 1
+fi
+
 echo "=== Installing imessage-mcp ==="
 
-# ---------------------------------------------------------------------------
-# imessage-mcp binary → ~/bin/
-# ---------------------------------------------------------------------------
+# ─── imessage-mcp binary → ~/bin/ ───────────────────────────────────────────
+
 echo
 echo "› ~/bin/imessage-mcp"
 mkdir -p "$HOME/bin"
-# Use atomic copy + rename so a running MCP child doesn't get its file
+# Atomic copy + rename so a running MCP child doesn't get its file
 # yanked mid-exec.
 cp "$BIN_SRC" "$BIN_DEST.new"
 xattr -cr "$BIN_DEST.new" || true
 mv "$BIN_DEST.new" "$BIN_DEST"
 chmod +x "$BIN_DEST"
 
-# Sanity-check the signature was preserved through the copy.
-if codesign -dv "$BIN_DEST" 2>&1 | grep -q "Authority=Developer ID Application"; then
-  echo "  ✓ signature intact"
-else
-  echo "  ⚠  signature could not be verified — the binary may still run, but" >&2
-  echo "     you may see Gatekeeper warnings on first launch." >&2
+# Confirm the seal survived the copy.
+if ! "$CODESIGN" --verify --strict --verbose "$BIN_DEST" >/dev/null 2>&1; then
+  echo "✗ post-install codesign --verify failed on $BIN_DEST" >&2
+  exit 1
 fi
+echo "  ✓ signature preserved through copy"
 
-# ---------------------------------------------------------------------------
-# Menu bar app → /Applications/
-# ---------------------------------------------------------------------------
+# ─── Menu bar app → /Applications/ ──────────────────────────────────────────
+
 echo
 echo "› /Applications/iMessage Drafts.app"
 if [[ ! -w "/Applications" ]]; then
@@ -66,10 +131,20 @@ if [[ ! -w "/Applications" ]]; then
 fi
 
 # Remove any existing copy at the same path so we don't leave stale
-# resource forks. Use rsync for the copy to handle the (admittedly
-# unlikely) case where the app contains symlinks.
+# resource forks. We've already verified the source bundle's identity
+# above, so this rm is safe even though TOCTOU-wise an attacker
+# couldn't have raced us to substitute it.
 rm -rf "$APP_DEST"
 ditto "$APP_SRC" "$APP_DEST"
+
+# Re-verify the seal on the installed copy. ditto preserves attributes
+# but the bytes are different files now, so this is a separate signature
+# check from the one we did on the source.
+if ! "$CODESIGN" --verify --strict --verbose "$APP_DEST" >/dev/null 2>&1; then
+  echo "✗ post-install codesign --verify failed on $APP_DEST" >&2
+  exit 1
+fi
+echo "  ✓ signature preserved through copy"
 
 # Remove the legacy ~/Applications/ copy from old installs that wrote there.
 LEGACY_APP="$HOME/Applications/iMessage Drafts.app"
@@ -85,13 +160,8 @@ if [[ -x "$LSREGISTER" ]]; then
   "$LSREGISTER" -f "$APP_DEST" >/dev/null 2>&1 || true
 fi
 
-if codesign -dv "$APP_DEST" 2>&1 | grep -q "Authority=Developer ID Application"; then
-  echo "  ✓ signature intact"
-fi
+# ─── Smoke test ─────────────────────────────────────────────────────────────
 
-# ---------------------------------------------------------------------------
-# Smoke test
-# ---------------------------------------------------------------------------
 echo
 echo "› smoke test (initialize call against the MCP)"
 SMOKE_OUTPUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"install-smoke","version":"0"}}}' | "$BIN_DEST" 2>&1 | head -1)
@@ -101,13 +171,12 @@ else
   echo "  ⚠  smoke test failed: $SMOKE_OUTPUT" >&2
 fi
 
-# ---------------------------------------------------------------------------
-# Next steps printout
-# ---------------------------------------------------------------------------
+# ─── Next steps printout ────────────────────────────────────────────────────
+
 cat <<EOF
 
 ==================================================================
-✓ Install complete.
+✓ Install complete. Bundle signed by Team $EXPECTED_TEAM_ID, seal verified.
 
 Three things you need to do manually:
 

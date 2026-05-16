@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 #
-# Build and install the iMessage Drafts menu bar app.
+# DEV build + install of the iMessage Drafts menu bar app.
 #
-# This produces a proper .app bundle (rather than a bare executable) so:
-#   - macOS can show a real app icon / name in TCC prompts.
-#   - LSUIElement = true keeps the app out of the Dock and ⌘-Tab switcher.
-#   - The Automation permission grant is per-bundle-id and survives rebuilds.
+# This is the dev-loop installer. End users should get the release zip
+# from GitHub Releases and run its bundled `install.sh` (sourced from
+# scripts/install-release.sh in this repo) — that path installs a pre-
+# built notarized .app without needing Xcode or a Developer ID cert.
+#
+# This script (in contrast):
+#   - Compiles the menu bar app from source via `swift build -c release`.
+#   - Assembles a proper `.app` bundle so macOS shows a real icon / name
+#     in TCC prompts.
+#   - Sets LSUIElement = true so the app lives in the menu bar with no
+#     Dock icon or ⌘-Tab presence.
+#   - Codesigns with a Developer ID cert matching EXPECTED_TEAM_ID if
+#     present, falls back to adhoc with a warning.
 #
 # After install, launch via:    open /Applications/iMessage\ Drafts.app
 # Or set it as a Login Item:    System Settings → General → Login Items.
@@ -14,11 +23,26 @@
 # sidebar "Applications" item points and where Launchpad indexes. Override
 # with INSTALL_ROOT=/some/other/path if /Applications isn't writable (e.g.
 # on a managed Mac):
-#   INSTALL_ROOT="$HOME/Applications" bash scripts/install.sh
+#   INSTALL_ROOT="$HOME/Applications" bash scripts/dev-install.sh
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# ─── Configuration ──────────────────────────────────────────────────────────
+
+# The only Apple Developer Team ID accepted for non-adhoc signing.
+# Auto-detected `Developer ID Application: ...` certs whose parenthesized
+# Team ID doesn't match this value are REJECTED — script falls back to
+# adhoc rather than silently signing with an attacker-planted cert.
+EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-LQ93LRM9QU}"
+
+# Absolute paths to macOS-system binaries. Defends against PATH-shimmed
+# `security` / `codesign` (e.g. a malicious npm postinstall planting an
+# attacker binary on $PATH).
+SECURITY=/usr/bin/security
+CODESIGN=/usr/bin/codesign
+AWK=/usr/bin/awk
 
 APP_NAME="iMessage Drafts"
 # Bundle ID changed from `com.local.imessage-drafts` after that one got
@@ -46,9 +70,9 @@ if [[ ! -d "$INSTALL_ROOT" ]]; then
 fi
 if [[ ! -w "$INSTALL_ROOT" ]]; then
   echo "✗ install root is not writable by $USER: $INSTALL_ROOT" >&2
-  echo "  Either re-run with sudo:    sudo bash scripts/install.sh" >&2
+  echo "  Either re-run with sudo:    sudo bash scripts/dev-install.sh" >&2
   echo "  Or install to your per-user folder:" >&2
-  echo "    INSTALL_ROOT=\"\$HOME/Applications\" bash scripts/install.sh" >&2
+  echo "    INSTALL_ROOT=\"\$HOME/Applications\" bash scripts/dev-install.sh" >&2
   exit 1
 fi
 
@@ -108,53 +132,68 @@ echo "› clearing xattrs"
 xattr -cr "$APP"
 
 # Pick a codesigning identity. Order of preference:
-#   1. $CODESIGN_IDENTITY (explicit override — used by CI / scripts).
-#   2. First "Developer ID Application: …" cert in the user's keychain.
+#   1. $CODESIGN_IDENTITY (explicit override — bypasses Team ID check;
+#      caller's responsibility).
+#   2. First `Developer ID Application: ... (<EXPECTED_TEAM_ID>)` cert
+#      in the keychain.
 #   3. Adhoc (`-`) as a last-resort fallback.
 #
 # Why this matters: macOS Sequoia silently blocks CNContactStore.
 # requestAccess for any adhoc-signed app, regardless of bundle ID,
 # Info.plist, or TCC state — verified empirically. A real Developer
-# ID cert (whether downloaded via Xcode or generated via developer.
-# apple.com) unblocks it. Adhoc still works for sending iMessages
-# via Automation, just not for CNContacts. The CONTACTS_REQUIRE_DEVID
-# env var lets a hostile-environment build fail loudly instead of
-# silently falling back.
+# ID cert unblocks it. Adhoc still works for sending iMessages via
+# Automation, just not for CNContacts. The CONTACTS_REQUIRE_DEVID env
+# var lets a hostile-environment build fail loudly instead of silently
+# falling back.
 SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 if [[ -z "$SIGN_IDENTITY" ]]; then
-  # `security find-identity` output lines look like:
-  #   1) <40-char-hash> "Developer ID Application: James Heath (XXXXXXXXXX)"
-  # We extract the quoted identity name and feed it to codesign by name.
-  SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-    | awk -F\" '/Developer ID Application/ {print $2; exit}')
+  # Match the FULL identity line including the Team ID suffix. This
+  # rejects an attacker-planted "Developer ID Application: Victim
+  # (FAKEID)" cert because (FAKEID) ≠ (EXPECTED_TEAM_ID).
+  SIGN_IDENTITY=$("$SECURITY" find-identity -v -p codesigning 2>/dev/null \
+    | "$AWK" -F\" -v team="$EXPECTED_TEAM_ID" \
+        '/Developer ID Application/ && $2 ~ "\\("team"\\)$" {print $2; exit}')
 fi
 
 ENTITLEMENTS="$(dirname "$0")/imessage-drafts.entitlements"
 if [[ -n "$SIGN_IDENTITY" ]]; then
+  # Defense-in-depth: re-verify Team ID embedded in the chosen identity.
+  # The awk filter above already enforces this for auto-detection; a
+  # CODESIGN_IDENTITY override skips that filter.
+  DETECTED_TEAM=$(echo "$SIGN_IDENTITY" | sed -nE 's/.*\(([A-Z0-9]+)\)$/\1/p')
+  if [[ "$DETECTED_TEAM" != "$EXPECTED_TEAM_ID" ]]; then
+    echo "✗ signing identity Team ID '$DETECTED_TEAM' ≠ expected '$EXPECTED_TEAM_ID'" >&2
+    echo "  Refusing to sign with an unknown identity." >&2
+    exit 1
+  fi
   echo "› signing with Developer ID: $SIGN_IDENTITY"
   # --entitlements passes the per-feature permissions Hardened Runtime
   # requires for Contacts framework access and Apple Events. Without
   # the addressbook entitlement, CNContactStore.requestAccess throws
   # "Access Denied" synchronously even for Developer-ID-signed apps.
-  codesign --force --deep --sign "$SIGN_IDENTITY" \
+  "$CODESIGN" --force --deep --sign "$SIGN_IDENTITY" \
     --identifier "${BUNDLE_ID}" --options=runtime \
     --entitlements "$ENTITLEMENTS" "$APP"
 else
   if [[ "${CONTACTS_REQUIRE_DEVID:-}" == "1" ]]; then
-    echo "✗ no Developer ID Application certificate found in keychain, but CONTACTS_REQUIRE_DEVID=1" >&2
+    echo "✗ no Developer ID Application cert from team $EXPECTED_TEAM_ID found, but CONTACTS_REQUIRE_DEVID=1" >&2
     echo "  Install one via Xcode → Settings → Accounts → Manage Certificates," >&2
     echo "  then re-run." >&2
     exit 1
   fi
-  echo "› no Developer ID cert found; falling back to adhoc"
+  echo "› no Developer ID cert from team $EXPECTED_TEAM_ID found; falling back to adhoc"
   echo "  ⚠  CNContactStore.requestAccess will fail under adhoc signing —"
   echo "     Contacts resolution will be unavailable until you install a"
   echo "     Developer ID Application cert. Sending iMessages still works."
-  codesign --force --deep --sign - --identifier "${BUNDLE_ID}" --options=runtime "$APP"
+  "$CODESIGN" --force --deep --sign - --identifier "${BUNDLE_ID}" --options=runtime "$APP"
 fi
 
-echo "› verifying signature"
-codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature" || true
+echo "› verifying signature seal"
+if ! "$CODESIGN" --verify --strict --verbose "$APP" 2>&1; then
+  echo "✗ codesign --verify failed on $APP" >&2
+  exit 1
+fi
+"$CODESIGN" -dv --verbose=2 "$APP" 2>&1 | grep -E "Identifier|Authority|TeamIdentifier" || true
 
 # Re-register the bundle with LaunchServices. Without this, `open
 # "$APP"` can fail with error -600 (procNotFound) if LaunchServices

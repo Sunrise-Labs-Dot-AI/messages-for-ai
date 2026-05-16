@@ -30,8 +30,21 @@
 
 set -euo pipefail
 
-VERSION="${1:?usage: build-release.sh <version>, e.g. v0.1.0}"
+VERSION="${1:?usage: build-release.sh <version>, e.g. v0.1.1}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-imessage-mcp-notary}"
+
+# The only Apple Developer Team ID this build accepts. Auto-detected
+# certs from a different Team ID will be REJECTED rather than silently
+# used — defends against an attacker who plants a Developer ID cert in
+# the maintainer's keychain (via malicious npm postinstall, p12 import,
+# stolen cert, etc.) and tries to ship attacker-signed releases.
+EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-LQ93LRM9QU}"
+
+# Absolute paths to macOS-system binaries. Defends against PATH-shimmed
+# `security` / `codesign` from a compromised dev environment.
+SECURITY=/usr/bin/security
+CODESIGN=/usr/bin/codesign
+AWK=/usr/bin/awk
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
@@ -39,20 +52,36 @@ DIST="$REPO_ROOT/dist"
 STAGE="$DIST/stage"
 RELEASE_NAME="imessage-mcp-$VERSION"
 
-# Find the Developer ID cert. Fails loudly if not present — notarized
-# releases REQUIRE Developer ID signing; adhoc isn't valid.
+# Find the Developer ID cert. Filters by EXPECTED_TEAM_ID to refuse
+# attacker-planted certs in the same keychain. Fails loudly if no
+# matching cert exists — notarized releases REQUIRE Developer ID
+# signing; adhoc isn't valid.
 SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 if [[ -z "$SIGN_IDENTITY" ]]; then
-  SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-    | awk -F\" '/Developer ID Application/ {print $2; exit}')
+  SIGN_IDENTITY=$("$SECURITY" find-identity -v -p codesigning 2>/dev/null \
+    | "$AWK" -F\" -v team="$EXPECTED_TEAM_ID" \
+        '/Developer ID Application/ && $2 ~ "\\("team"\\)$" {print $2; exit}')
 fi
 if [[ -z "$SIGN_IDENTITY" ]]; then
-  echo "✗ no 'Developer ID Application' cert found in keychain." >&2
+  echo "✗ no 'Developer ID Application' cert from team $EXPECTED_TEAM_ID found." >&2
   echo "  Install one via Xcode → Settings → Accounts → Manage Certificates," >&2
-  echo "  or set CODESIGN_IDENTITY=<identity-name> in the environment." >&2
+  echo "  or set CODESIGN_IDENTITY=<identity-name> in the environment (bypasses" >&2
+  echo "  the team-id filter — caller's responsibility to ensure it's the right cert)." >&2
   exit 1
 fi
+# Belt-and-suspenders: re-parse the chosen identity's Team ID and
+# verify. This catches the CODESIGN_IDENTITY override case.
+DETECTED_TEAM=$(echo "$SIGN_IDENTITY" | sed -nE 's/.*\(([A-Z0-9]+)\)$/\1/p')
+if [[ "$DETECTED_TEAM" != "$EXPECTED_TEAM_ID" ]]; then
+  echo "✗ signing identity Team ID '$DETECTED_TEAM' ≠ expected '$EXPECTED_TEAM_ID'" >&2
+  exit 1
+fi
+# Print fingerprint so a maintainer auditing build logs can confirm
+# which cert in the keychain was selected.
+SIGN_HASH=$("$SECURITY" find-identity -v -p codesigning 2>/dev/null \
+  | "$AWK" -v ident="$SIGN_IDENTITY" '$0 ~ ident {print $2; exit}')
 echo "› signing identity: $SIGN_IDENTITY"
+echo "› identity SHA-1:   $SIGN_HASH"
 
 # Sanity-check that the notarytool credential profile exists before
 # spending several minutes on a build that can't be notarized.
@@ -81,8 +110,12 @@ bun build src/index.ts --compile --outfile "bin/imessage-mcp"
 xattr -cr bin/imessage-mcp
 
 echo "› signing with Developer ID + Hardened Runtime"
-codesign --force --timestamp --sign "$SIGN_IDENTITY" \
-  --identifier "com.local.imessage-mcp" \
+# Identifier `com.sunriselabs.imessage-mcp` (distinct from the dev
+# identifier `com.local.imessage-mcp.dev` used by scripts/dev-install.sh).
+# Different identifiers prevent a dev rebuild from clobbering the TCC
+# grant established when a release binary is installed.
+"$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
+  --identifier "com.sunriselabs.imessage-mcp" \
   --options=runtime \
   bin/imessage-mcp
 
@@ -102,7 +135,7 @@ xcrun notarytool submit "$NOTARIZE_DIR/imessage-mcp.zip" \
 # The binary is unchanged by notarization — we just need to verify
 # Apple stamped it. The codesign --verify --deep --strict already
 # proves the signature is valid; the cloud check happens at runtime.
-codesign --verify --verbose=2 bin/imessage-mcp
+"$CODESIGN" --verify --strict --verbose=2 bin/imessage-mcp
 
 cp bin/imessage-mcp "$STAGE/$RELEASE_NAME/bin/imessage-mcp"
 
@@ -169,7 +202,7 @@ cat > "$APP_PATH/Contents/Info.plist" <<EOF
 EOF
 
 echo "› signing app with Developer ID + Hardened Runtime + entitlements"
-codesign --force --deep --timestamp \
+"$CODESIGN" --force --deep --timestamp \
   --sign "$SIGN_IDENTITY" \
   --identifier "$BUNDLE_ID" \
   --options=runtime \
