@@ -18,10 +18,14 @@
 // callers in production mode. (See src/daemon/peer-auth.ts.)
 
 import { connect, type Socket } from "node:net";
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import qrcode from "qrcode";
 
 import { PATHS } from "../src/paths.ts";
+
+const PNG_PATH = join(tmpdir(), "whatsapp-mcp-pair.png");
 
 const CONNECT_TIMEOUT_MS = 3000;
 
@@ -130,12 +134,28 @@ async function main() {
   console.log("Subscribing to QR + connection-state channels...");
   await call("subscribe", { channel: "qr" });
   await call("subscribe", { channel: "state" });
-  console.log("Waiting for QR. On your phone: WhatsApp → Settings → Linked Devices → Link a Device.\n");
+  printScanInstructions();
 }
 
+function printScanInstructions() {
+  const line = "═".repeat(64);
+  console.log(`\n${line}`);
+  console.log("  HOW TO SCAN — this is NOT a URL, do NOT use Camera/Chrome");
+  console.log(line);
+  console.log("  1. On your iPhone, open the WhatsApp app");
+  console.log("  2. Tap Settings (gear icon, bottom right)");
+  console.log("  3. Tap 'Linked Devices'");
+  console.log("  4. Tap 'Link a Device' (Face ID auth)");
+  console.log("  5. Point WhatsApp's camera at the QR code below");
+  console.log(`${line}\n`);
+  console.log("Waiting for daemon to push a QR...\n");
+}
+
+let firstQr = true;
+
 function renderQr(qr: string) {
-  // The terminal-rendered QR is the QR that the phone scans. ASCII output
-  // is more portable than half-block; both work in any monospace terminal.
+  // Terminal render (works on most setups but terminal QRs can be
+  // distorted by font/spacing and small density).
   qrcode.toString(qr, { type: "terminal", small: true }, (err, str) => {
     if (err != null) {
       console.error(`qrcode error: ${err.message}`);
@@ -144,8 +164,30 @@ function renderQr(qr: string) {
     console.log("─".repeat(60));
     console.log(str);
     console.log("─".repeat(60));
-    console.log("(scan within ~20s; daemon will push a fresh QR if this one expires)");
   });
+
+  // PNG render — high resolution, auto-opens in Preview on macOS the
+  // first time. Subsequent QRs overwrite the same file so Preview just
+  // refreshes the image rather than spawning new windows.
+  qrcode.toFile(PNG_PATH, qr, { width: 600, margin: 2 }, (pngErr) => {
+    if (pngErr != null) {
+      console.error(`PNG render error: ${pngErr.message}`);
+      return;
+    }
+    if (firstQr) {
+      firstQr = false;
+      try {
+        Bun.spawn({ cmd: ["open", PNG_PATH], stdout: "ignore", stderr: "ignore" });
+        console.log(`(opened ${PNG_PATH} in Preview — easier to scan than the terminal QR)`);
+      } catch {
+        console.log(`(saved high-res QR to ${PNG_PATH})`);
+      }
+    } else {
+      // Subsequent QRs: just announce the file refreshed.
+      console.log(`(refreshed ${PNG_PATH})`);
+    }
+  });
+  console.log("scan within ~20s; daemon will push a fresh QR if this one expires");
 }
 
 main().catch((err) => {

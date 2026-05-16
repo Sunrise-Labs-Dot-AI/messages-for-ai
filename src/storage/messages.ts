@@ -124,6 +124,20 @@ export function getMessagesDb(): Database {
     try { chmodSync(path + suffix, 0o600); } catch { /* not created yet */ }
   }
   _db = db;
+
+  // One-time backfill: heal any threads whose last_message_ts is 0 but
+  // for which we actually have messages. This recovers from a bug where
+  // an earlier daemon version stored last_message_ts=0 because it didn't
+  // unpack Baileys' protobuf-Long conversationTimestamp. Idempotent —
+  // a fresh install has 0 rows in both tables and this no-ops.
+  db.exec(`
+    UPDATE threads SET last_message_ts = COALESCE((
+      SELECT MAX(ts) FROM messages WHERE messages.thread_jid = threads.thread_jid
+    ), 0)
+    WHERE last_message_ts = 0
+      AND EXISTS (SELECT 1 FROM messages WHERE messages.thread_jid = threads.thread_jid)
+  `);
+
   return db;
 }
 
@@ -140,6 +154,10 @@ function sha256(input: string): string {
  *   get_whatsapp_message_full retrieval.
  * - body_sha256 hashes the FULL sanitized body (not the truncated one) so
  *   audit comparisons remain stable.
+ * - Also UPSERTs threads.last_message_ts to MAX(existing, new). This is
+ *   the authoritative source for thread recency — never trust Baileys'
+ *   conversationTimestamp because it's emitted as a protobuf Long that
+ *   we'd have to unpack correctly in every event handler.
  */
 export function insertMessage(m: IngestMessage): { inserted: boolean } {
   const db = getMessagesDb();
@@ -176,6 +194,18 @@ export function insertMessage(m: IngestMessage): { inserted: boolean } {
     Date.now(),
     m.source,
   );
+
+  // Also bump threads.last_message_ts so list_whatsapp_threads can filter
+  // by recency. UPSERT semantics: create the thread row if it didn't
+  // already exist (which can happen if messaging-history.set delivered
+  // messages before the chat metadata), otherwise raise last_message_ts.
+  db.prepare(`
+    INSERT INTO threads (thread_jid, display_name, is_group, last_message_ts)
+    VALUES (?, NULL, ?, ?)
+    ON CONFLICT(thread_jid) DO UPDATE SET
+      last_message_ts = MAX(threads.last_message_ts, excluded.last_message_ts)
+  `).run(m.thread_jid, m.thread_jid.endsWith("@g.us") ? 1 : 0, m.ts);
+
   return { inserted: result.changes > 0 };
 }
 
