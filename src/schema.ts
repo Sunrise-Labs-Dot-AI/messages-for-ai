@@ -60,6 +60,24 @@ const GetMessageFullObj = z.object({
 export const GetMessageFullShape = GetMessageFullObj.shape;
 export const GetMessageFullInput = GetMessageFullObj;
 
+// WhatsApp JID: either a phone-number user JID like "12025550001@s.whatsapp.net"
+// or a group JID like "120363xxxx@g.us". We don't try to enforce the full
+// shape — Baileys returns errors for malformed JIDs anyway — but we require
+// a non-empty string with no whitespace and the "@" separator.
+const WhatsAppJid = z.string().min(1).regex(/^[^@\s]+@[^@\s]+$/, "expected a WhatsApp JID like 12025550001@s.whatsapp.net or 12036xx@g.us");
+
+const StageDraftObj = z.object({
+  to_handle: WhatsAppJid,
+  body: z.string().min(1, "body must not be empty").max(60_000, "body too long"),
+  source: z.string().optional(),
+});
+export const StageDraftShape = StageDraftObj.shape;
+export const StageDraftInput = StageDraftObj;
+
+const DraftIdObj = z.object({ draft_id: z.string().uuid("draft_id must be a UUID") });
+export const DraftIdShape = DraftIdObj.shape;
+export const DraftIdInput = DraftIdObj;
+
 export type ListThreadsArgs = z.infer<typeof ListThreadsInput>;
 export type GetThreadArgs = z.infer<typeof GetThreadInput>;
 export type SearchArgs = z.infer<typeof SearchInput>;

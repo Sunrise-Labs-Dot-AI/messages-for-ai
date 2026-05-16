@@ -28,6 +28,17 @@ import {
   getMessageFull,
 } from "../storage/messages.ts";
 import { deleteSession } from "../storage/session.ts";
+import {
+  type StageInput,
+  discardDraft,
+  getDraft,
+  listDrafts,
+  stageDraft,
+  updateDraft,
+  DraftSchemaError,
+} from "../storage/drafts.ts";
+import { reserveSend, SEND_ERR } from "../storage/audit.ts";
+import { readSettings, SettingsError } from "../settings.ts";
 
 const RPC_ERR = {
   PEER_NOT_AUTHORIZED: -32001,
@@ -35,6 +46,16 @@ const RPC_ERR = {
   INVALID_PARAMS: -32602,
   INTERNAL: -32603,
   NOT_CONNECTED: -32010,
+  // Send-path errors map to specific codes so the MCP layer can
+  // surface a stable error name to Claude without parsing strings.
+  PENDING_APPROVAL: -32020,
+  MIN_AGE_NOT_REACHED: -32021,
+  INTER_SEND_TOO_FAST: -32022,
+  BURST_LIMIT_HIT: -32023,
+  DAILY_CAP_HIT: -32024,
+  SEND_FAILED: -32025,
+  DRAFT_NOT_FOUND: -32026,
+  SETTINGS_ERROR: -32027,
 };
 
 interface RpcRequest {
@@ -225,6 +246,88 @@ async function handle(
         try { unlinkSync(PATHS.loggedOutSentinel); } catch { /* ignore */ }
         return ok(id, { ok: true, note: "Session deleted. Restart daemon to re-pair." });
       }
+      // ──────────────────────────────────────────────────────────────────
+      // Phase 2 — Draft + Send
+      // ──────────────────────────────────────────────────────────────────
+      case "stageDraft": {
+        const p = req.params as StageInput;
+        if (typeof p?.to_handle !== "string" || typeof p?.body !== "string") {
+          return err(id, RPC_ERR.INVALID_PARAMS, "to_handle and body required");
+        }
+        if (p.body.length === 0) {
+          return err(id, RPC_ERR.INVALID_PARAMS, "body must not be empty");
+        }
+        // Pull last 5 messages from messages.db as the context snapshot.
+        let ctx: ReturnType<typeof getThreadMessages> = [];
+        let diag: "no_thread_match" | "thread_empty" | "error" | null = null;
+        try {
+          ctx = getThreadMessages({ thread_jid: p.to_handle, limit: 5 });
+          if (ctx.length === 0) diag = "thread_empty";
+        } catch {
+          diag = "error";
+        }
+        const draft = stageDraft({
+          to_handle: p.to_handle,
+          body: p.body,
+          source: p.source,
+          context_messages: ctx.map((m) => ({
+            message_id: m.message_id,
+            sender_jid: m.sender_jid,
+            from_me: m.from_me,
+            ts: m.ts,
+            body: m.body,
+          })),
+          context_diagnostic: diag,
+          induced_by_unknown_contact: p.induced_by_unknown_contact ?? false,
+        });
+        return ok(id, { draft });
+      }
+      case "getDrafts": {
+        const r = listDrafts();
+        return ok(id, r);
+      }
+      case "getDraft": {
+        const p = req.params as { draft_id: string };
+        if (typeof p?.draft_id !== "string") return err(id, RPC_ERR.INVALID_PARAMS, "draft_id required");
+        try {
+          const draft = getDraft(p.draft_id);
+          if (draft == null) return err(id, RPC_ERR.DRAFT_NOT_FOUND, `no draft ${p.draft_id}`);
+          return ok(id, { draft });
+        } catch (e) {
+          if (e instanceof DraftSchemaError) return err(id, RPC_ERR.INVALID_PARAMS, e.message);
+          throw e;
+        }
+      }
+      case "discardDraft": {
+        const p = req.params as { draft_id: string };
+        if (typeof p?.draft_id !== "string") return err(id, RPC_ERR.INVALID_PARAMS, "draft_id required");
+        try {
+          const existed = discardDraft(p.draft_id);
+          return ok(id, { ok: true, existed });
+        } catch (e) {
+          if (e instanceof DraftSchemaError) return err(id, RPC_ERR.INVALID_PARAMS, e.message);
+          throw e;
+        }
+      }
+      case "approveDraft": {
+        // Called by the menu bar app's hold-to-fire BEFORE sendDraft.
+        // Also callable from MCP when settings.require_approval = false
+        // (the MCP tool side handles that gate).
+        const p = req.params as { draft_id: string };
+        if (typeof p?.draft_id !== "string") return err(id, RPC_ERR.INVALID_PARAMS, "draft_id required");
+        try {
+          const d = updateDraft(p.draft_id, { approval_state: "approved" });
+          return ok(id, { draft: d });
+        } catch (e) {
+          if (e instanceof DraftSchemaError) return err(id, RPC_ERR.INVALID_PARAMS, e.message);
+          throw e;
+        }
+      }
+      case "sendDraft": {
+        const p = req.params as { draft_id: string };
+        if (typeof p?.draft_id !== "string") return err(id, RPC_ERR.INVALID_PARAMS, "draft_id required");
+        return await handleSendDraft(id, p.draft_id, connection);
+      }
       default:
         return err(id, RPC_ERR.METHOD_NOT_FOUND, `Method not found: ${req.method}`);
     }
@@ -238,4 +341,88 @@ function ok(id: string | number | null, result: unknown): RpcResponse {
 }
 function err(id: string | number | null, code: number, message: string): RpcResponse {
   return { jsonrpc: "2.0", id, error: { code, message } };
+}
+
+/** SHA-256 of the body, hex-encoded. Audit-only — body itself never logged. */
+function bodyHash(body: string): string {
+  return new Bun.CryptoHasher("sha256").update(body).digest("hex");
+}
+
+async function handleSendDraft(
+  id: string | number | null,
+  draftId: string,
+  connection: WhatsAppConnection,
+): Promise<RpcResponse> {
+  // 1. Settings (fail-closed on any error).
+  let settings;
+  try {
+    settings = readSettings();
+  } catch (e) {
+    if (e instanceof SettingsError) return err(id, RPC_ERR.SETTINGS_ERROR, e.message);
+    throw e;
+  }
+
+  // 2. Load draft.
+  let draft;
+  try {
+    draft = getDraft(draftId);
+  } catch (e) {
+    if (e instanceof DraftSchemaError) return err(id, RPC_ERR.INVALID_PARAMS, e.message);
+    throw e;
+  }
+  if (draft == null) return err(id, RPC_ERR.DRAFT_NOT_FOUND, `no draft ${draftId}`);
+  if (draft.sent_at != null) return err(id, RPC_ERR.INVALID_PARAMS, "draft already sent");
+
+  // 3. Approval gate.
+  if (draft.approval_state !== "approved") {
+    return err(id, RPC_ERR.PENDING_APPROVAL, "draft has not been approved");
+  }
+
+  // 4. Min staged age.
+  const stagedMs = Date.parse(draft.staged_at);
+  if (Number.isFinite(stagedMs)) {
+    const age = Date.now() - stagedMs;
+    if (age < settings.min_staged_age_ms) {
+      return err(id, RPC_ERR.MIN_AGE_NOT_REACHED, `staged ${age}ms ago, min ${settings.min_staged_age_ms}ms`);
+    }
+  }
+
+  // 5. Atomic cap + burst + inter-send reservation.
+  const reservation = reserveSend({
+    draft_id: draft.id,
+    to_handle: draft.to_handle,
+    body_sha256: bodyHash(draft.body),
+    settings,
+  });
+  if (!reservation.ok) {
+    switch (reservation.error) {
+      case SEND_ERR.DAILY_CAP_HIT: return err(id, RPC_ERR.DAILY_CAP_HIT, reservation.detail);
+      case SEND_ERR.BURST_LIMIT_HIT: return err(id, RPC_ERR.BURST_LIMIT_HIT, reservation.detail);
+      case SEND_ERR.INTER_SEND_TOO_FAST: return err(id, RPC_ERR.INTER_SEND_TOO_FAST, reservation.detail);
+    }
+  }
+
+  // 6. Inter-send jitter (±500ms) — burned AFTER reservation so the slot
+  // is already counted but Meta's anti-bot heuristics see staggered timing.
+  const jitterMs = Math.floor((Math.random() * 2 - 1) * 500);
+  if (jitterMs > 0) {
+    await new Promise<void>((resolve) => setTimeout(resolve, jitterMs));
+  }
+
+  // 7. Baileys send.
+  try {
+    const result = await connection.sendText(draft.to_handle, draft.body);
+    reservation.commit("ok");
+    const sent_at = new Date().toISOString();
+    try { updateDraft(draft.id, { sent_at }); } catch { /* draft sweep handles cleanup */ }
+    return ok(id, {
+      ok: true,
+      draft_id: draft.id,
+      message_id: result.message_id,
+      sent_at,
+    });
+  } catch (e) {
+    reservation.commit("send_failed");
+    return err(id, RPC_ERR.SEND_FAILED, (e as Error).message);
+  }
 }

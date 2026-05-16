@@ -5,15 +5,9 @@
 // One row per (type, id). WAL mode for concurrent safety even though we
 // only have one writer. mode 0600 on the DB file + WAL/SHM sidecars.
 //
-// AES-GCM-WRAP NOTE (deferred from this scaffold):
-//   The plan calls for the session blob to be wrapped with a Keychain-
-//   stored AES-256-GCM key. That wrapping happens at the row level —
-//   `value` is the ciphertext + 96-bit nonce prepended. Wiring up
-//   Keychain access via the `security` CLI subprocess (or @marsroverone/
-//   keychain native binding) is a follow-up — the schema below already
-//   supports it via the BLOB column. For now this writes plaintext SQLite
-//   under 0600; deferring crypto until the rest of the daemon is wired
-//   up. Marked TODO(keychain).
+// Row values are AES-256-GCM wrapped with a Keychain-stored master key
+// (see storage/crypto.ts + storage/keychain.ts). A copy-out attacker
+// who reads the .db file off disk gets ciphertext only.
 
 import { Database } from "bun:sqlite";
 import {
@@ -28,6 +22,8 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { PATHS } from "../paths.ts";
+import { unwrap, wrap } from "./crypto.ts";
+import { deleteMasterKey } from "./keychain.ts";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS auth_state (
@@ -68,23 +64,26 @@ function readCreds(): AuthenticationCreds | null {
   const db = getDb();
   const row = db.prepare("SELECT value FROM auth_creds WHERE k = ?").get(CREDS_KEY) as { value: Buffer } | null;
   if (row == null) return null;
-  return JSON.parse(row.value.toString("utf8"), BufferJSON.reviver) as AuthenticationCreds;
+  const plaintext = unwrap(Buffer.from(row.value));
+  return JSON.parse(plaintext, BufferJSON.reviver) as AuthenticationCreds;
 }
 
 function writeCreds(creds: AuthenticationCreds): void {
   const db = getDb();
   const serialized = JSON.stringify(creds, BufferJSON.replacer);
+  const blob = wrap(serialized);
   db.prepare(`
     INSERT INTO auth_creds (k, value) VALUES (?, ?)
     ON CONFLICT(k) DO UPDATE SET value = excluded.value
-  `).run(CREDS_KEY, Buffer.from(serialized, "utf8"));
+  `).run(CREDS_KEY, blob);
 }
 
 function readKey<T extends keyof SignalDataTypeMap>(type: T, id: string): SignalDataTypeMap[T] | undefined {
   const db = getDb();
   const row = db.prepare("SELECT value FROM auth_state WHERE type = ? AND id = ?").get(type, id) as { value: Buffer } | null;
   if (row == null) return undefined;
-  const decoded = JSON.parse(row.value.toString("utf8"), BufferJSON.reviver);
+  const plaintext = unwrap(Buffer.from(row.value));
+  const decoded = JSON.parse(plaintext, BufferJSON.reviver);
   // Baileys stores app-state-sync-keys as proto.Message.AppStateSyncKeyData;
   // the rest are plain objects/Buffers. proto.fromObject reconstitutes the
   // protobuf shape so Baileys can use it.
@@ -103,10 +102,11 @@ function writeKey<T extends keyof SignalDataTypeMap>(type: T, id: string, value:
     return;
   }
   const serialized = JSON.stringify(value, BufferJSON.replacer);
+  const blob = wrap(serialized);
   db.prepare(`
     INSERT INTO auth_state (type, id, value) VALUES (?, ?, ?)
     ON CONFLICT(type, id) DO UPDATE SET value = excluded.value
-  `).run(type, id, Buffer.from(serialized, "utf8"));
+  `).run(type, id, blob);
 }
 
 /**
@@ -160,11 +160,18 @@ export async function useSqliteAuthState(): Promise<{
   };
 }
 
-/** Wipe the session entirely. Called from unlinkAndReset recovery path. */
+/** Wipe the session entirely. Called from unlinkAndReset recovery path.
+ *  Also deletes the Keychain master key so a fresh re-pair generates a
+ *  fresh wrapping key (defense in depth). */
 export function deleteSession(): void {
   const db = getDb();
   db.exec("DELETE FROM auth_state");
   db.exec("DELETE FROM auth_creds");
+  try { deleteMasterKey(); } catch (e) {
+    // Best-effort: if Keychain delete fails, surface to stderr but don't
+    // block the reset. The session ciphertext is gone either way.
+    process.stderr.write(`Keychain key delete warning: ${(e as Error).message}\n`);
+  }
 }
 
 /** Test seam. */

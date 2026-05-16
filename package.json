@@ -30,6 +30,7 @@
     "install:bin": "bash scripts/install.sh",
     "dev:daemon": "bun run src/daemon/index.ts",
     "dev:mcp": "bun run src/index.ts",
+    "pair": "bun run scripts/pair.ts",
     "test": "bun test",
     "typecheck": "bun --bun tsc --noEmit"
   },
