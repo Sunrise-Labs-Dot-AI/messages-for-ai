@@ -237,11 +237,41 @@ The installer will:
 See the full README in the GitHub repo for the full feature/permission story.
 EOF
 
-# Zip the stage dir into the release artifact.
+# Strip any extended attributes / quarantine flags from the stage tree
+# before zipping. `ditto -c -k` (which we previously used here) faithfully
+# encodes macOS xattrs as AppleDouble `._*` companion files inside the
+# zip, which:
+#   - bloats the archive
+#   - breaks the .app bundle's codesign seal after unzip
+#     ("a sealed resource is missing or invalid")
+# Modern codesigns are stored in-place — inside the Mach-O for binaries,
+# in Contents/_CodeSignature/CodeResources + Contents/CodeResources
+# (stapled ticket) for bundles — so clearing xattrs is signature-safe.
+xattr -cr "$STAGE/$RELEASE_NAME"
+
+# Zip the stage dir into the release artifact. Using plain `zip` instead
+# of `ditto -c -k` because zip doesn't generate AppleDouble files and
+# is the universal portable archive format end users expect.
 RELEASE_ZIP="$DIST/$RELEASE_NAME.zip"
 echo "› writing $RELEASE_ZIP"
 cd "$STAGE"
-ditto -c -k --keepParent "$RELEASE_NAME" "$RELEASE_ZIP"
+zip -r -q "$RELEASE_ZIP" "$RELEASE_NAME"
+
+# Post-zip verify: ensure the staple still validates on the bundle
+# inside the archive. We extract to a temp dir and spctl-assess. If
+# this fails, the release zip would Gatekeeper-reject on end-user
+# machines — bail out so we don't ship a broken bundle.
+echo "› verifying packaged bundle (extract to temp + spctl-assess)"
+VERIFY_DIR=$(mktemp -d)
+unzip -q "$RELEASE_ZIP" -d "$VERIFY_DIR"
+if ! spctl --assess --type execute --verbose=2 "$VERIFY_DIR/$RELEASE_NAME/iMessage Drafts.app" >/dev/null 2>&1; then
+  echo "✗ spctl --assess FAILED on the unzipped .app — refusing to ship." >&2
+  spctl --assess --type execute --verbose=2 "$VERIFY_DIR/$RELEASE_NAME/iMessage Drafts.app" >&2 || true
+  rm -rf "$VERIFY_DIR"
+  exit 1
+fi
+echo "  ✓ Gatekeeper-accepts the bundle"
+rm -rf "$VERIFY_DIR"
 
 # Cleanup intermediates.
 rm -rf "$STAGE" "$DIST/notarize-mcp" "$DIST/notarize-app.zip"
