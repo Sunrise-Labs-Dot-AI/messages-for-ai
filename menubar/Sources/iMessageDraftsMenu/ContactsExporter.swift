@@ -70,18 +70,46 @@ final class ContactsExporter: ObservableObject {
 
   // Kick off the initial sync at app launch. Safe to call repeatedly —
   // each call refreshes the sidecar atomically.
+  //
+  // If status is `.notDetermined`, ACTIVELY request access here so the
+  // system dialog appears on first popover open. The previous version
+  // was too passive — it just wrote an empty sidecar and waited for
+  // the user to click the banner button. That left users stuck when
+  // status was reported as `.denied` due to TCC caching from a prior
+  // build that lacked `NSContactsUsageDescription` (macOS auto-denies
+  // when the usage string is missing, and the denial sticks across
+  // re-installs until `tccutil reset Contacts com.local.imessage-drafts`).
   func bootstrap() async {
-    await exportNow()
+    let initial = CNContactStore.authorizationStatus(for: .contacts)
+    authorizationStatus = initial
+    logger.info("bootstrap: contacts auth status = \(initial.rawValue) (\(Self.statusDescription(initial), privacy: .public))")
+
+    if initial == .notDetermined {
+      // Fire the native consent dialog right now.
+      await requestAccessAndExport()
+    } else {
+      await exportNow()
+    }
   }
 
   // Force a re-prompt or re-export. Called from the
-  // ContactsPermissionBanner's "Grant Access" / "Refresh" button.
+  // ContactsPermissionBanner's "Grant Access" / "Refresh" button and
+  // from `bootstrap()` when the initial status is `.notDetermined`.
+  //
+  // requestAccess only shows the system dialog when status is
+  // `.notDetermined`. For `.denied`/`.restricted`, the call is a
+  // no-op — the user has to flip the toggle in System Settings (or
+  // run `tccutil reset Contacts com.local.imessage-drafts` if the
+  // denial was due to an earlier build missing `NSContactsUsageDescription`).
   func requestAccessAndExport() async {
     let current = CNContactStore.authorizationStatus(for: .contacts)
+    logger.info("requestAccessAndExport: status before request = \(Self.statusDescription(current), privacy: .public)")
     if current == .notDetermined {
       do {
         let granted = try await store.requestAccess(for: .contacts)
-        authorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
+        let after = CNContactStore.authorizationStatus(for: .contacts)
+        authorizationStatus = after
+        logger.info("requestAccessAndExport: granted=\(granted), status after request = \(Self.statusDescription(after), privacy: .public)")
         if !granted {
           // The user declined the system dialog. Write a sidecar with
           // permission_status: "denied" so the MCP can fall back to
@@ -92,17 +120,19 @@ final class ContactsExporter: ObservableObject {
         }
       } catch {
         lastError = "requestAccess failed: \(error.localizedDescription)"
+        logger.error("requestAccess threw: \(error.localizedDescription, privacy: .public)")
         return
       }
     }
     await exportNow()
   }
 
-  // The core export path. Safe to call from the timer / change observer
-  // / explicit refresh button.
+  // The core export path. Safe to call from the change observer /
+  // explicit refresh button.
   func exportNow() async {
     let status = CNContactStore.authorizationStatus(for: .contacts)
     authorizationStatus = status
+    logger.info("exportNow: status=\(Self.statusDescription(status), privacy: .public)")
 
     let statusString: String
     switch status {
@@ -220,6 +250,20 @@ final class ContactsExporter: ObservableObject {
     await writeSidecar(payload: payload)
     lastExportCount = 0
     lastExportAt = Date()
+  }
+
+  // Human-readable label for `CNAuthorizationStatus`. The framework
+  // returns an int from a Swift-side enum but `.rawValue` alone isn't
+  // useful in logs. New cases (e.g. `.limited` added in macOS 14) hit
+  // the @unknown default and log as "future_<n>".
+  private static func statusDescription(_ s: CNAuthorizationStatus) -> String {
+    switch s {
+    case .notDetermined: return "notDetermined"
+    case .restricted:    return "restricted"
+    case .denied:        return "denied"
+    case .authorized:    return "authorized"
+    @unknown default:    return "future_\(s.rawValue)"
+    }
   }
 
   // MARK: - Canonicalization (must mirror canonHandle in TS)

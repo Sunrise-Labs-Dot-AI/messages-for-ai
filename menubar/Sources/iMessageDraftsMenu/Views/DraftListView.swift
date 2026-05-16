@@ -7,13 +7,6 @@ struct DraftListView: View {
   @EnvironmentObject var settings: SettingsStore
   @EnvironmentObject var contactsExporter: ContactsExporter
 
-  // FDA state is probed on first appearance of the popover and on user
-  // click of the banner's "Recheck" button. We deliberately don't
-  // re-probe on every popover open — the user has to actively dismiss
-  // the popover to grant FDA in System Settings, and clicking Recheck
-  // is a more honest signal of "I just changed something, check again."
-  @State private var fdaState: FDAState = FDAProbe.probe()
-
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   // Cap for the inner ScrollView. We subtract a rough estimate of the
   // surrounding chrome (header + divider + footer + padding ~ 180pt)
@@ -53,21 +46,16 @@ struct DraftListView: View {
           .padding(.vertical, 8)
       }
 
-      // Contacts-permission banner takes priority over the FDA banner
-      // because Contacts is the primary path for name resolution under
-      // the new sidecar architecture — FDA on the MCP binary is now a
-      // secondary fallback for chat.db thread-context only.
+      // Contacts-permission banner — the menu bar app's only TCC
+      // dependency under the sidecar architecture. The FDA banner
+      // that lived here previously was misleading: it probed the
+      // menu bar app's own FDA grant, but the only process that
+      // actually needs FDA is the imessage-mcp binary (for chat.db
+      // thread-context reads). That signal is surfaced per-draft
+      // via the context_diagnostic in the Details disclosure.
       ContactsPermissionBanner()
         .padding(.horizontal, 12)
         .padding(.top, contactsExporter.authorizationStatus != .authorized ? 8 : 0)
-
-      // FDA banner sits above the draft list (or empty state) so it's
-      // the first thing the user sees on every popover open when FDA
-      // is missing. The banner renders nothing when state != .denied,
-      // so there's no chrome cost when permissions are healthy.
-      FDABanner(state: $fdaState)
-        .padding(.horizontal, 12)
-        .padding(.top, fdaState == .denied ? 8 : 0)
 
       // ScrollView inside MenuBarExtra(.window) collapses to ~0 height
       // when its parent has no concrete height to grant — there's no

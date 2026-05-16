@@ -74,9 +74,16 @@ struct ContactsPermissionBanner: View {
   private var bodyText: String {
     switch exporter.authorizationStatus {
     case .notDetermined:
-      return "iMessage Drafts uses Contacts to resolve recipient names. This is the same data Messages.app sees, including iCloud-synced contacts. The MCP can also fall back to AddressBook via Full Disk Access, but Contacts permission is the cleaner path."
+      return "iMessage Drafts uses Contacts to resolve recipient names. This is the same data Messages.app sees, including iCloud-synced contacts."
     case .denied:
-      return "Open System Settings and turn on Contacts access for iMessage Drafts. Without it, the MCP falls back to AddressBook SQLite (requires Full Disk Access on the imessage-mcp binary) which doesn't see iCloud-only contacts."
+      // Most likely cause of seeing "denied" without ever seeing the
+      // consent dialog: an earlier build of this app launched without
+      // NSContactsUsageDescription in its Info.plist, macOS auto-denied
+      // it, and TCC remembers that across re-installs. The tccutil
+      // reset is the only way back out — System Settings won't show
+      // the app in the Contacts list until it has successfully called
+      // requestAccess at least once.
+      return "If you never saw the system consent dialog, TCC may have cached a stale denial from a previous build. From Terminal run:\n\n  tccutil reset Contacts com.local.imessage-drafts\n\nThen quit and reopen this app to trigger the prompt. Otherwise, open System Settings → Privacy & Security → Contacts and turn on iMessage Drafts."
     case .restricted:
       return "Your organization's MDM policy disallows Contacts access. The MCP will fall back to AddressBook SQLite, which requires Full Disk Access on the imessage-mcp binary and may miss iCloud-only contacts."
     default:
