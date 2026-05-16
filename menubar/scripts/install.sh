@@ -104,12 +104,47 @@ cat > "${APP}/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-echo "› clearing xattrs + re-signing with stable identifier (${BUNDLE_ID}) + hardened runtime"
+echo "› clearing xattrs"
 xattr -cr "$APP"
-# Hardened Runtime: enforces library validation, blocks dyld injection,
-# disables several other class of gadget attacks. Even though we're
-# adhoc-signing, the runtime flags still kick in.
-codesign --force --deep --sign - --identifier "${BUNDLE_ID}" --options=runtime "$APP"
+
+# Pick a codesigning identity. Order of preference:
+#   1. $CODESIGN_IDENTITY (explicit override — used by CI / scripts).
+#   2. First "Developer ID Application: …" cert in the user's keychain.
+#   3. Adhoc (`-`) as a last-resort fallback.
+#
+# Why this matters: macOS Sequoia silently blocks CNContactStore.
+# requestAccess for any adhoc-signed app, regardless of bundle ID,
+# Info.plist, or TCC state — verified empirically. A real Developer
+# ID cert (whether downloaded via Xcode or generated via developer.
+# apple.com) unblocks it. Adhoc still works for sending iMessages
+# via Automation, just not for CNContacts. The CONTACTS_REQUIRE_DEVID
+# env var lets a hostile-environment build fail loudly instead of
+# silently falling back.
+SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  # `security find-identity` output lines look like:
+  #   1) <40-char-hash> "Developer ID Application: James Heath (XXXXXXXXXX)"
+  # We extract the quoted identity name and feed it to codesign by name.
+  SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F\" '/Developer ID Application/ {print $2; exit}')
+fi
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  echo "› signing with Developer ID: $SIGN_IDENTITY"
+  codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "${BUNDLE_ID}" --options=runtime "$APP"
+else
+  if [[ "${CONTACTS_REQUIRE_DEVID:-}" == "1" ]]; then
+    echo "✗ no Developer ID Application certificate found in keychain, but CONTACTS_REQUIRE_DEVID=1" >&2
+    echo "  Install one via Xcode → Settings → Accounts → Manage Certificates," >&2
+    echo "  then re-run." >&2
+    exit 1
+  fi
+  echo "› no Developer ID cert found; falling back to adhoc"
+  echo "  ⚠  CNContactStore.requestAccess will fail under adhoc signing —"
+  echo "     Contacts resolution will be unavailable until you install a"
+  echo "     Developer ID Application cert. Sending iMessages still works."
+  codesign --force --deep --sign - --identifier "${BUNDLE_ID}" --options=runtime "$APP"
+fi
 
 echo "› verifying signature"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature" || true
