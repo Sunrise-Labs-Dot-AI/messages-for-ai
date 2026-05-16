@@ -55,7 +55,7 @@ struct DraftListView: View {
       // via the context_diagnostic in the Details disclosure.
       ContactsPermissionBanner()
         .padding(.horizontal, 12)
-        .padding(.top, contactsExporter.authorizationStatus != .authorized ? 8 : 0)
+        .padding(.top, contactsExporter.state == .ok ? 0 : 8)
 
       // ScrollView inside MenuBarExtra(.window) collapses to ~0 height
       // when its parent has no concrete height to grant — there's no

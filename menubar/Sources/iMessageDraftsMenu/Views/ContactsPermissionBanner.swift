@@ -1,27 +1,16 @@
 import SwiftUI
-import Contacts
 
-// Sister banner to FDABanner, shown when the menu bar app's Contacts
-// authorization is not `.authorized`. The product reasoning:
-// CNContactStore is the user-facing path for contact name resolution —
-// it sees iCloud-synced data and pops a native consent dialog. When
-// it's denied, we want the user to know the menu bar app is the
-// gating dependency (not Full Disk Access on the MCP binary), and we
-// want to make granting one click away.
-//
-// Behavior by status:
-//   - .notDetermined → "Allow Contacts access" button calls
-//     ContactsExporter.requestAccessAndExport() which fires the native
-//     "iMessage Drafts would like to access your Contacts" dialog.
-//   - .denied / .restricted → "Open Contacts Settings" button deep-links
-//     to System Settings → Privacy & Security → Contacts where the
-//     user can flip the toggle.
-//   - .authorized → banner renders nothing.
+// Shown when Contacts.app Automation permission is missing or failed.
+// Under the AppleScript-via-Contacts.app architecture (see comments in
+// ContactsExporter.swift for why we don't use CNContactStore), the only
+// permission gate is Automation — the same family used for Messages.app
+// sending. macOS prompts for it natively on the first NSAppleScript
+// call; users approve it once and we never see the banner again.
 struct ContactsPermissionBanner: View {
   @EnvironmentObject var exporter: ContactsExporter
 
   var body: some View {
-    if exporter.authorizationStatus != .authorized {
+    if shouldShow {
       VStack(alignment: .leading, spacing: 6) {
         HStack(spacing: 6) {
           Image(systemName: "person.crop.circle.badge.exclamationmark")
@@ -40,13 +29,11 @@ struct ContactsPermissionBanner: View {
           }
           .buttonStyle(.borderedProminent)
           .controlSize(.small)
-          if exporter.authorizationStatus == .denied || exporter.authorizationStatus == .restricted {
-            Button("Recheck") {
-              Task { await exporter.exportNow() }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+          Button("Recheck") {
+            Task { await exporter.exportNow() }
           }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
         }
       }
       .padding(10)
@@ -60,50 +47,50 @@ struct ContactsPermissionBanner: View {
     }
   }
 
-  // MARK: - Status-driven copy
+  private var shouldShow: Bool {
+    switch exporter.state {
+    case .ok: return false
+    case .unknown, .automationDenied, .automationNotDetermined, .failed:
+      return true
+    }
+  }
 
   private var headlineText: String {
-    switch exporter.authorizationStatus {
-    case .notDetermined: return "Allow Contacts access"
-    case .denied:        return "Contacts access denied"
-    case .restricted:    return "Contacts access restricted by policy"
-    default:             return "Contacts access unavailable"
+    switch exporter.state {
+    case .automationDenied: return "Contacts access denied"
+    case .automationNotDetermined: return "Allow Contacts access"
+    case .unknown: return "Setting up Contacts…"
+    case .failed: return "Couldn't read Contacts"
+    case .ok: return ""
     }
   }
 
   private var bodyText: String {
-    switch exporter.authorizationStatus {
-    case .notDetermined:
-      return "iMessage Drafts uses Contacts to resolve recipient names. This is the same data Messages.app sees, including iCloud-synced contacts."
-    case .denied:
-      // Most likely cause of seeing "denied" without ever seeing the
-      // consent dialog: an earlier build of this app launched without
-      // NSContactsUsageDescription in its Info.plist, macOS auto-denied
-      // it, and TCC remembers that across re-installs. The tccutil
-      // reset is the only way back out — System Settings won't show
-      // the app in the Contacts list until it has successfully called
-      // requestAccess at least once.
-      return "If you never saw the system consent dialog, TCC may have cached a stale denial from a previous build. From Terminal run:\n\n  tccutil reset Contacts com.local.imessage-drafts\n\nThen quit and reopen this app to trigger the prompt. Otherwise, open System Settings → Privacy & Security → Contacts and turn on iMessage Drafts."
-    case .restricted:
-      return "Your organization's MDM policy disallows Contacts access. The MCP will fall back to AddressBook SQLite, which requires Full Disk Access on the imessage-mcp binary and may miss iCloud-only contacts."
-    default:
-      return "An unexpected Contacts authorization status was reported."
+    switch exporter.state {
+    case .unknown, .automationNotDetermined:
+      return "iMessage Drafts reads your Contacts via Contacts.app — the same source Messages.app uses, including iCloud contacts. Click 'Allow…' and macOS will ask you to approve access to Contacts.app."
+    case .automationDenied:
+      return "Open System Settings → Privacy & Security → Automation, find iMessage Drafts, and turn on Contacts. Then click Recheck."
+    case .failed(let msg):
+      return "AppleScript error: \(msg). Click Recheck to try again."
+    case .ok:
+      return ""
     }
   }
 
   private var actionLabel: String {
-    switch exporter.authorizationStatus {
-    case .notDetermined: return "Allow…"
-    default:             return "Open Settings"
+    switch exporter.state {
+    case .automationDenied, .failed: return "Open Settings"
+    default: return "Allow…"
     }
   }
 
   private func primaryAction() async {
-    switch exporter.authorizationStatus {
-    case .notDetermined:
-      await exporter.requestAccessAndExport()
+    switch exporter.state {
+    case .automationDenied, .failed:
+      ContactsExporter.openAutomationSettings()
     default:
-      ContactsExporter.openContactsSettings()
+      await exporter.requestAccessAndExport()
     }
   }
 }
