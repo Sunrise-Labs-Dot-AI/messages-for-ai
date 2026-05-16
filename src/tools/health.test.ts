@@ -3,10 +3,15 @@ import {
   canonHandlePublic,
   resolveHandle,
   getContactsLoadDiagnostic,
+  getLastContactsLoadSource,
   _setContactsForTesting,
   _resetContactsCache,
 } from "../chatdb/contacts.ts";
-import { _setSidecarPathForTesting } from "../storage/contacts-cache.ts";
+import {
+  _setSidecarPathForTesting,
+  CONTACTS_CACHE_SCHEMA_VERSION,
+} from "../storage/contacts-cache.ts";
+import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -114,5 +119,41 @@ describe("getContactsLoadDiagnostic", () => {
     expect(["sqlite_fallback", "none"]).toContain(diag.source);
     expect(diag.sidecar_present).toBe(false);
     expect(typeof diag.count).toBe("number");
+  });
+
+  // PR 11 review finding #10 — the sidecar_granted_empty branch was
+  // shipped without a test. Covers the menubar-granted-but-zero-handles
+  // first-run state (fresh Mac, iCloud not synced).
+  test("surfaces sidecar_granted_empty when the menubar is granted but the sidecar has zero handles", () => {
+    const granted_empty_root = mkdtempSync(join(tmpdir(), "imessage-mcp-granted-empty-test-"));
+    const granted_empty_sidecar = join(granted_empty_root, "contacts-cache.json");
+    try {
+      writeFileSync(granted_empty_sidecar, JSON.stringify({
+        version: CONTACTS_CACHE_SCHEMA_VERSION,
+        generated_at: "2026-05-15T12:00:00Z",
+        source: "menubar-cnContactStore",
+        permission_status: "granted",
+        count: 0,
+        handles: {},
+      }, null, 2));
+      chmodSync(granted_empty_sidecar, 0o600);
+      _setSidecarPathForTesting(granted_empty_sidecar);
+      _resetContactsCache(); // force load() to re-run with the new path
+
+      // Trigger load() via resolveHandle. Without TCC-grant we expect
+      // the SQLite fallback to also find nothing, so lastLoadSource
+      // stays "sidecar_granted_empty". On a dev machine with FDA
+      // granted, SQLite would find contacts and the branch would
+      // upgrade to "sqlite_fallback" — accept either since both are
+      // legitimate outcomes of the same branch logic.
+      resolveHandle("+15555550000");
+      expect(["sidecar_granted_empty", "sqlite_fallback"]).toContain(getLastContactsLoadSource());
+
+      const diag = getContactsLoadDiagnostic();
+      expect(["sidecar_granted_empty", "sqlite_fallback"]).toContain(diag.source);
+      expect(diag.sidecar_present).toBe(true);
+    } finally {
+      rmSync(granted_empty_root, { recursive: true, force: true });
+    }
   });
 });

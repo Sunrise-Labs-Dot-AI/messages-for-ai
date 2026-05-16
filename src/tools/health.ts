@@ -6,7 +6,6 @@ import {
   getContactsLoadDiagnostic,
   canonHandlePublic,
   resolveHandle,
-  _resetContactsCache,
 } from "../chatdb/contacts.ts";
 import { getChatDbDiagnostic } from "../chatdb/open.ts";
 import { getContactsSidecarDiagnostic } from "../storage/contacts-cache.ts";
@@ -44,16 +43,13 @@ export function registerHealthTools(server: McpServer): void {
         const sidecar = getContactsSidecarDiagnostic();
         // SQLite-only diagnostic — `contacts_loaded` reflects strictly
         // the AddressBook SQLite layer, NOT whichever layer happened to
-        // serve the data. Important: this resets and re-loads the cache
-        // from SQLite only, so we restore the normal cache state below
-        // by calling _resetContactsCache before returning so subsequent
-        // resolveHandle calls go through the normal layered path.
+        // serve the data. The function encapsulates its own cache reset
+        // (PR 11 review finding #2), so we don't need to clean up after
+        // it ourselves.
         const addressbook = getAddressBookSqliteDiagnostic();
         // Layer-of-record diagnostic — answers "where did the contact
-        // names actually come from in production load()?". This RE-runs
-        // load() through the normal sidecar-first path, so it leaves the
-        // cache in the same state production calls would.
-        _resetContactsCache();
+        // names actually come from in production load()?". Re-runs
+        // load() through the normal sidecar-first path.
         const contacts_load = getContactsLoadDiagnostic();
         const chatdb = getChatDbDiagnostic();
 

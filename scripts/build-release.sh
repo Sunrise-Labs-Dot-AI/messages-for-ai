@@ -114,7 +114,10 @@ mkdir -p "$STAGE/$RELEASE_NAME/bin"
 # exits non-zero (or the user Ctrl-Cs), wipe dist/ so we never leave
 # a signed-but-not-notarized binary that looks like a valid release.
 # The trap is cleared right before the final success echoes.
-trap 'rc=$?; echo; echo "✗ build aborted (exit $rc); wiping $DIST/" >&2; rm -rf "$DIST"' INT TERM EXIT
+# Ignore further SIGINTs inside the cleanup handler so a double-Ctrl-C
+# can't half-delete dist/ and leave a signed-but-not-notarized .app
+# behind. PR 11 review finding #4.
+trap 'rc=$?; trap "" INT TERM; echo; echo "✗ build aborted (exit $rc); wiping $DIST/" >&2; rm -rf "$DIST"' INT TERM EXIT
 
 # ============================================================================
 # 1. imessage-mcp binary

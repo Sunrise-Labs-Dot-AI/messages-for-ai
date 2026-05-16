@@ -492,28 +492,34 @@ export function getAddressBookSqliteDiagnostic(): AddressBookDiagnostic {
   }
 
   // Force a fresh SQLite scan. Skip readContactsSidecar — we want to
-  // report THIS layer's state, not the sidecar's. After this runs the
-  // cache is loaded from SQLite only; production `resolveHandle` calls
-  // will use that data until the cache is reset again. The health tool
-  // calls _resetContactsCache + load() at the end so subsequent
-  // resolutions reflect the normal layered behavior.
+  // report THIS layer's state, not the sidecar's. The function
+  // encapsulates its own cache cleanup: we snapshot the SQLite-only
+  // result, then `_resetContactsCache()` BEFORE returning so the very
+  // next `resolveHandle` call goes through the normal layered load().
+  // This invariant is enforced inside the function rather than left
+  // as a caller-must-remember contract — PR 11 review finding #2.
   _resetContactsCache();
   loaded = true; // prevent a parallel load() from also running
   runSqliteBulkLoad();
-  lastLoadSource = handleToName.size > 0 ? "sqlite_fallback" : "none";
+  const sqliteCount = handleToName.size;
+  const sqliteOpenStatus = lastLoadReport.find((r) => r.path === primary)?.open_status ?? "error";
+  const sqliteOpenError = lastLoadReport.find((r) => r.path === primary)?.open_error;
+  const sqlitePerDb = [...lastLoadReport]; // snapshot before reset
 
-  const per_db = getLastContactsLoadReport();
-  const primaryReport = per_db.find((r) => r.path === primary);
-  const open_status: DbOpenStatus = primaryReport?.open_status ?? "error";
-  const open_error = primaryReport?.open_error;
+  // Restore the cache to a fresh state so production resolveHandle
+  // calls go through the normal sidecar-first path on next access.
+  // Critical: callers that previously relied on this function leaving
+  // the cache in SQLite-only state will now see normal behavior. The
+  // only intended caller (health tool) didn't need that anyway.
+  _resetContactsCache();
 
   return {
     db_path: primary,
     db_path_exists: primary != null && existsSync(primary),
     db_paths,
-    open_status,
-    open_error,
-    contacts_loaded: handleToName.size,
-    per_db,
+    open_status: sqliteOpenStatus,
+    open_error: sqliteOpenError,
+    contacts_loaded: sqliteCount,
+    per_db: sqlitePerDb,
   };
 }

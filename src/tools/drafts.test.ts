@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { wrapDraftForResponse } from "./drafts.ts";
+import { _wrapDraftForResponse } from "./drafts.ts";
 import * as storage from "../storage/drafts.ts";
 import type { Draft } from "../storage/drafts.ts";
 
@@ -14,7 +14,7 @@ import type { Draft } from "../storage/drafts.ts";
 // treat the resolved name as untrusted data when surfacing it to
 // an LLM.
 //
-// We deliberately test wrapDraftForResponse as a pure function
+// We deliberately test _wrapDraftForResponse as a pure function
 // rather than spinning up an McpServer fixture — matches the
 // existing health.test.ts pattern. The three call sites in
 // drafts.ts (stage / list / get) all funnel through this helper,
@@ -38,9 +38,9 @@ beforeEach(() => {
   rmSync(tmpDraftsDir, { recursive: true, force: true });
 });
 
-describe("wrapDraftForResponse", () => {
+describe("_wrapDraftForResponse", () => {
   test("returns null when passed null", () => {
-    expect(wrapDraftForResponse(null)).toBeNull();
+    expect(_wrapDraftForResponse(null)).toBeNull();
   });
 
   test("wraps to_handle_name in <untrusted_content> delimiters", () => {
@@ -57,7 +57,7 @@ describe("wrapDraftForResponse", () => {
       context_messages: null,
       context_diagnostic: null,
     };
-    const wrapped = wrapDraftForResponse(d);
+    const wrapped = _wrapDraftForResponse(d);
     expect(wrapped!.to_handle_name).toBe("<untrusted_content>\nAllegra Heath\n</untrusted_content>");
   });
 
@@ -78,7 +78,7 @@ describe("wrapDraftForResponse", () => {
       context_messages: null,
       context_diagnostic: null,
     };
-    expect(wrapDraftForResponse(d)!.to_handle_name).toBeNull();
+    expect(_wrapDraftForResponse(d)!.to_handle_name).toBeNull();
   });
 
   test("wraps the prompt-injection payload that motivated the fix", () => {
@@ -108,7 +108,7 @@ describe("wrapDraftForResponse", () => {
       context_messages: null,
       context_diagnostic: null,
     };
-    const wrapped = wrapDraftForResponse(d);
+    const wrapped = _wrapDraftForResponse(d);
     expect(wrapped!.to_handle_name).toContain("<untrusted_content>");
     expect(wrapped!.to_handle_name).toContain(attackName);
     expect(wrapped!.to_handle_name).toContain("</untrusted_content>");
@@ -134,7 +134,7 @@ describe("wrapDraftForResponse", () => {
       ],
       context_diagnostic: null,
     };
-    const wrapped = wrapDraftForResponse(d)!;
+    const wrapped = _wrapDraftForResponse(d)!;
     expect(wrapped.body).toBe("agent-typed body — stays raw");
     expect(wrapped.context_messages![0]!.body).toBe("<untrusted_content>\npeer-sent — should be wrapped\n</untrusted_content>");
     expect(wrapped.context_messages![1]!.body).toBe("<untrusted_content>\nmy own reply — also wrapped (we don't distinguish)\n</untrusted_content>");
@@ -159,7 +159,7 @@ describe("wrapDraftForResponse", () => {
       context_messages: null,
       context_diagnostic: null,
     };
-    wrapDraftForResponse(d);
+    _wrapDraftForResponse(d);
     expect(d.to_handle_name).toBe("Allegra");
     expect(d.body).toBe("hi");
   });

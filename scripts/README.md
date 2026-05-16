@@ -78,6 +78,24 @@ Before copying anything, this script verifies:
 Override `EXPECTED_TEAM_ID=...` if you're intentionally installing a
 fork's release.
 
+## Menu bar app entitlements
+
+The signed menu bar app embeds `menubar/scripts/imessage-drafts.entitlements`.
+It declares **`com.apple.security.automation.apple-events: true`** (required
+for hardened-runtime non-sandboxed apps to send any Apple Event at all —
+removing it would block the AppleScript path the app uses to talk to
+Messages.app) and **`com.apple.security.scripting-targets`** scoped to
+`com.apple.iChat` (the historical bundle ID Messages.app still ships with).
+
+⚠️ The `scripting-targets` entry is **not enforced** by the OS for
+non-sandboxed apps — it documents intent but doesn't bound the Apple
+Events scope at runtime. Real enforcement requires turning the menubar
+into a sandboxed app with `com.apple.security.app-sandbox`, which needs
+temporary-exception entries for `~/.imessage-mcp/` filesystem access.
+That's a deferred refactor (v0.1.2). The full reasoning lives in the
+XML comment at the top of the entitlement file. A reviewer auditing
+Apple-events exposure should read both this section AND that comment.
+
 ## `diagnose-contacts.ts`
 
 Not an installer — a standalone diagnostic that runs the contact-

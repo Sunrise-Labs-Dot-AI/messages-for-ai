@@ -78,11 +78,31 @@ export interface ContactsSidecarDiagnostic {
 // keys to last-10-digit phones or lowercase emails; values come from
 // CNContact display names which are user-controlled but realistic names
 // don't contain control characters or newlines.
-const HANDLE_KEY_RE = /^[a-z0-9@.+_-]{1,256}$/;
+//
+// HANDLE_KEY_RE allows Unicode letters / numbers (\p{L}\p{N}) so emails
+// with non-ASCII localparts (e.g. `héctor@example.com`) survive — the
+// Swift writer's `.lowercased()` doesn't strip accents, so rejecting
+// them would silently lock out users with international contacts.
+// PR 11 review finding #6.
+const HANDLE_KEY_RE = /^[\p{L}\p{N}@.+_-]{1,256}$/u;
 const HANDLE_VALUE_BAD_CHARS_RE = /[\x00-\x1f\x7f]/u;
+
+// Keys that match the regex but would surprise consumers iterating via
+// `Object.keys` / `for..in` because they collide with JS object-shape
+// machinery. JSON.parse in modern V8/Bun does NOT pollute the prototype
+// chain via these names (they become own properties instead), but a
+// returned object that has `__proto__: "<string>"` as an own property
+// still breaks any consumer that does `handles.__proto__` expecting
+// the prototype. The Swift writer canonicalizes phones to digit strings
+// and emails to lowercased local@domain — neither produces these names
+// legitimately. PR 11 review finding #5.
+const BANNED_KEY_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 
 function validateHandleEntry(key: unknown, value: unknown): { ok: true } | { ok: false; reason: string } {
   if (typeof key !== "string") return { ok: false, reason: `handle key is not a string (${typeof key})` };
+  if (BANNED_KEY_NAMES.has(key)) {
+    return { ok: false, reason: `handle key uses reserved name: ${JSON.stringify(key)}` };
+  }
   if (!HANDLE_KEY_RE.test(key)) {
     return { ok: false, reason: `handle key fails canonical-form check: ${JSON.stringify(key.slice(0, 40))}` };
   }
@@ -102,7 +122,13 @@ function validateHandleEntry(key: unknown, value: unknown): { ok: true } | { ok:
 // sidecar to a file they wrote.
 function lstatSafe(path: string): string | null {
   const parent = dirname(path);
-  // Parent directory must exist as a real directory (not a symlink).
+  const getuid = (process as NodeJS.Process & { getuid?: () => number }).getuid;
+  const myUid = typeof getuid === "function" ? getuid.call(process) : null;
+
+  // Parent directory must exist as a real directory (not a symlink),
+  // owned by the calling UID, and not group-/other-writable. The
+  // file-level 0600 check is moot if any local user can `rename()` a
+  // sidecar into the parent. PR 11 review finding #3.
   // lstatSync on a missing path throws — handle that explicitly so the
   // "no sidecar" case stays distinguishable from "rejected sidecar".
   try {
@@ -112,6 +138,17 @@ function lstatSafe(path: string): string | null {
     }
     if (!parentStat.isDirectory()) {
       return `parent is not a directory: ${parent}`;
+    }
+    if (myUid !== null && parentStat.uid !== myUid) {
+      return `parent directory ${parent} owned by uid ${parentStat.uid} but process runs as uid ${myUid}`;
+    }
+    // Reject if group OR other has write permission. We tolerate read
+    // because $TMPDIR on macOS is 0755-via-symlink and the contacts
+    // dir under it is sometimes provisioned that way — but write would
+    // be the actual privilege boundary.
+    const parentMode = parentStat.mode & 0o777;
+    if (parentMode & 0o022) {
+      return `parent directory ${parent} has world-/group-writable mode 0${parentMode.toString(8)}`;
     }
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
@@ -142,12 +179,8 @@ function lstatSafe(path: string): string | null {
   }
   // Ownership check — only run when process has a uid (not on Windows;
   // bun on macOS exposes getuid via the node:process shim).
-  const getuid = (process as NodeJS.Process & { getuid?: () => number }).getuid;
-  if (typeof getuid === "function") {
-    const myUid = getuid.call(process);
-    if (fileStat.uid !== myUid) {
-      return `sidecar owned by uid ${fileStat.uid} but process runs as uid ${myUid}`;
-    }
+  if (myUid !== null && fileStat.uid !== myUid) {
+    return `sidecar owned by uid ${fileStat.uid} but process runs as uid ${myUid}`;
   }
   return null;
 }
