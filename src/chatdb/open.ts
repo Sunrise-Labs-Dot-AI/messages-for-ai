@@ -61,6 +61,10 @@ export function getChatDbDiagnostic(): ChatDbDiagnostic {
       code === "EACCES" ||
       code === "EPERM" ||
       e?.errno === -13 ||
+      // bun:sqlite via macOS's TCC authorizer hook reports FDA denial
+      // as the literal string "authorization denied" — keep this in
+      // sync with the matching list in contacts.ts.
+      msg.includes("authorization denied") ||
       msg.includes("permission denied") ||
       msg.includes("operation not permitted") ||
       msg.includes("unable to open")

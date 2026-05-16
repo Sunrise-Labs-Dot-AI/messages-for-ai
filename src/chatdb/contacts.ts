@@ -17,33 +17,49 @@ let loaded = false;
 let handleToName = new Map<string, string>(); // canonicalized handle -> name
 let nameIndex: { lower_name: string; handles: string[] }[] = []; // for substring search
 
-function findAddressBookDb(): string | null {
-  // Prefer a source-specific DB (Sources/{uuid}/AddressBook-v22.abcddb) since
-  // it's the canonical location used by multi-account setups. Fall through to
-  // the top-level path when the Sources scan is unavailable or empty.
-  //
-  // IMPORTANT: the Sources-scan try/catch is intentionally separate from the
-  // outer guard. readdirSync(sourcesRoot) raises EPERM when TCC hasn't yet
-  // granted access to that specific sub-path (even when FDA is granted for the
-  // top-level AddressBook dir). Catching the inner error lets us fall through
-  // to the top-level path rather than short-circuiting to null.
+// Return EVERY AddressBook database we can find. On a multi-account Mac
+// (iCloud Contacts + Google + Exchange + local "On My Mac"), each source
+// stores its contacts in a separate Sources/{uuid}/AddressBook-v22.abcddb
+// file. The previous version of this function returned only the first
+// match, which routinely missed iCloud contacts on machines where the
+// local source happened to be enumerated first.
+//
+// We also include the top-level AddressBook-v22.abcddb when present — it
+// historically held the consolidated DB before macOS split into per-source
+// files, and some users still have a populated copy there.
+//
+// IMPORTANT: the Sources-scan try/catch is intentionally separate from the
+// outer guard. readdirSync(sourcesRoot) raises EPERM when TCC hasn't yet
+// granted access to that specific sub-path (even when FDA is granted for
+// the top-level AddressBook dir). Catching the inner error lets us fall
+// through to the top-level path rather than short-circuiting to [].
+function findAddressBookDbs(): string[] {
+  const out: string[] = [];
   try {
     const sourcesRoot = join(homedir(), "Library", "Application Support", "AddressBook", "Sources");
     if (existsSync(sourcesRoot)) {
       try {
         for (const source of readdirSync(sourcesRoot)) {
           const candidate = join(sourcesRoot, source, "AddressBook-v22.abcddb");
-          if (existsSync(candidate)) return candidate;
+          if (existsSync(candidate)) out.push(candidate);
         }
       } catch {
         // Sources scan failed (EPERM or similar) — fall through to top-level path.
       }
     }
     const top = join(homedir(), "Library", "Application Support", "AddressBook", "AddressBook-v22.abcddb");
-    return existsSync(top) ? top : null;
+    if (existsSync(top)) out.push(top);
   } catch {
-    return null;
+    // Outer fs surface failed entirely — return whatever we collected so far.
   }
+  return out;
+}
+
+// Single-path accessor kept for backward compat with callers that just
+// want a "primary" DB to display in a diagnostic. Returns the first DB
+// from `findAddressBookDbs()` or null when there are none.
+function findAddressBookDb(): string | null {
+  return findAddressBookDbs()[0] ?? null;
 }
 
 // Canonicalize a phone or email for handle-lookup. For phones: digits only,
@@ -76,18 +92,37 @@ function nameFromRow(row: RecordRow | undefined): string | null {
   return name || org || null;
 }
 
-function load(): void {
-  if (loaded) return;
-  loaded = true; // mark loaded even on failure to avoid retry storms
-  const path = findAddressBookDb();
-  if (!path) return;
+// Per-DB load report, surfaced to `getAddressBookDiagnostic` so the
+// menu bar / health_check tool can show "loaded 3 DBs — local + iCloud
+// + Google — 412 contacts total" rather than a flat number.
+interface PerDbReport {
+  path: string;
+  open_status: DbOpenStatus;
+  open_error?: string;
+  records: number;
+  emails: number;
+  phones: number;
+  contacts_contributed: number; // new handle keys added by THIS DB
+}
 
+let lastLoadReport: PerDbReport[] = [];
+
+function loadOneDb(path: string): PerDbReport {
   let db: Database;
   try {
     db = new Database(path, { readonly: true });
     db.exec("PRAGMA query_only = ON;");
-  } catch {
-    return; // FDA likely denied; keep empty maps as the graceful fallback
+  } catch (err) {
+    const { status, message } = classifyDbError(err);
+    return {
+      path,
+      open_status: status,
+      open_error: message,
+      records: 0,
+      emails: 0,
+      phones: 0,
+      contacts_contributed: 0,
+    };
   }
 
   let records: RecordRow[];
@@ -97,11 +132,20 @@ function load(): void {
     records = db.query<RecordRow, []>("SELECT Z_PK, ZFIRSTNAME, ZLASTNAME, ZORGANIZATION FROM ZABCDRECORD").all();
     emails = db.query<EmailRow, []>("SELECT ZOWNER, ZADDRESS FROM ZABCDEMAILADDRESS").all();
     phones = db.query<PhoneRow, []>("SELECT ZOWNER, ZFULLNUMBER FROM ZABCDPHONENUMBER").all();
-  } catch {
-    return;
-  } finally {
+  } catch (err) {
     try { db.close(); } catch { /* ignore */ }
+    const { status, message } = classifyDbError(err);
+    return {
+      path,
+      open_status: status,
+      open_error: message,
+      records: 0,
+      emails: 0,
+      phones: 0,
+      contacts_contributed: 0,
+    };
   }
+  try { db.close(); } catch { /* ignore */ }
 
   const recordsByPk = new Map<number, RecordRow>();
   for (const r of records) recordsByPk.set(r.Z_PK, r);
@@ -115,6 +159,7 @@ function load(): void {
     handlesPerRecord.set(owner, arr);
   }
 
+  const sizeBefore = handleToName.size;
   for (const e of emails) {
     if (!e.ZADDRESS || e.ZOWNER == null) continue;
     const name = nameFromRow(recordsByPk.get(e.ZOWNER));
@@ -136,6 +181,52 @@ function load(): void {
     if (!name) continue;
     nameIndex.push({ lower_name: name.toLowerCase(), handles });
   }
+
+  return {
+    path,
+    open_status: "ok",
+    records: records.length,
+    emails: emails.length,
+    phones: phones.length,
+    contacts_contributed: handleToName.size - sizeBefore,
+  };
+}
+
+function load(): void {
+  if (loaded) return;
+  loaded = true; // mark loaded even on failure to avoid retry storms
+
+  const paths = findAddressBookDbs();
+  const reports: PerDbReport[] = [];
+
+  // Iterate every AddressBook DB and union the resulting handle→name
+  // map. A user with iCloud + local + Google contacts has each source
+  // in a separate Sources/{uuid}/AddressBook-v22.abcddb file, and
+  // earlier versions of this loader returned only the first match —
+  // which silently dropped everyone in the other sources.
+  for (const path of paths) {
+    reports.push(loadOneDb(path));
+  }
+  lastLoadReport = reports;
+
+  // Stderr breadcrumb so the user can see what happened by tailing
+  // ~/Library/Logs/Claude/mcp-server-imessage-mcp.log. Stays out of
+  // stdout (which is reserved for JSON-RPC).
+  if (reports.length > 0) {
+    const summary = reports
+      .map((r) => `${r.open_status === "ok" ? "ok" : `[${r.open_status}]`} ${r.path.replace(homedir(), "~")} (+${r.contacts_contributed})`)
+      .join("; ");
+    process.stderr.write(`[contacts] bulk-load: ${reports.length} db(s); ${handleToName.size} total contacts. ${summary}\n`);
+  } else {
+    process.stderr.write(`[contacts] bulk-load: no AddressBook databases found\n`);
+  }
+}
+
+// Expose the last bulk-load report so the diagnostic tool can show
+// per-DB stats (which DBs were found, which opened, contacts each
+// contributed). Empty array before the first load() call.
+export function getLastContactsLoadReport(): readonly PerDbReport[] {
+  return lastLoadReport;
 }
 
 export function resolveHandle(handleId: string): string | null {
@@ -197,11 +288,28 @@ export function canonHandlePublic(s: string): string {
 export type DbOpenStatus = "ok" | "permission_denied" | "not_found" | "error";
 
 export interface AddressBookDiagnostic {
+  // Primary DB path for backward compat. First entry of `db_paths`.
   db_path: string | null;
   db_path_exists: boolean;
+  // Every AddressBook DB the loader found. Multi-account Macs typically
+  // have several Sources/{uuid}/AddressBook-v22.abcddb files (one per
+  // CardDAV source: iCloud, Google, Exchange, "On My Mac") plus the
+  // top-level path.
+  db_paths: string[];
+  // Open status for the PRIMARY DB. Aggregate state for callers that
+  // just want a single yes/no; `per_db` has the breakdown.
   open_status: DbOpenStatus;
   open_error?: string;
   contacts_loaded: number;
+  per_db: ReadonlyArray<{
+    path: string;
+    open_status: DbOpenStatus;
+    open_error?: string;
+    records: number;
+    emails: number;
+    phones: number;
+    contacts_contributed: number;
+  }>;
 }
 
 // Classify a thrown error from `new Database(path, { readonly: true })`
@@ -217,6 +325,11 @@ function classifyDbError(err: unknown): { status: DbOpenStatus; message: string 
     code === "EACCES" ||
     code === "EPERM" ||
     e?.errno === -13 ||
+    // bun:sqlite (and the system libsqlite TCC authorizer hook on macOS)
+    // surface FDA denial as the literal "authorization denied" error
+    // message — verified empirically running this loader without FDA.
+    // We also catch the older / generic SQLite phrasings here.
+    msg.includes("authorization denied") ||
     msg.includes("permission denied") ||
     msg.includes("operation not permitted") ||
     msg.includes("unable to open")
@@ -229,64 +342,48 @@ function classifyDbError(err: unknown): { status: DbOpenStatus; message: string 
   return { status: "error", message: e?.message ?? String(err) };
 }
 
-// Run the AddressBook open + bulk-load probe and report what happened.
-// Resets the cache first so the result reflects current TCC state — this
-// is intended for one-off diagnostic calls, not the hot path. Production
+// Run the AddressBook bulk-load and report per-DB stats. Resets the
+// cache first so the result reflects current TCC state — this is
+// intended for one-off diagnostic calls, not the hot path. Production
 // `resolveHandle` keeps using the cached map.
+//
+// The shape distinguishes "primary DB status" (back-compat for callers
+// that just want a one-line yes/no) from `per_db` (the breakdown for
+// multi-account Macs where iCloud + local + Google all live in
+// separate files).
 export function getAddressBookDiagnostic(): AddressBookDiagnostic {
-  const db_path = findAddressBookDb();
-  const db_path_exists = db_path != null && existsSync(db_path);
+  const db_paths = findAddressBookDbs();
+  const primary = db_paths[0] ?? null;
 
-  if (!db_path) {
+  if (db_paths.length === 0) {
     return {
       db_path: null,
       db_path_exists: false,
+      db_paths: [],
       open_status: "not_found",
-      open_error: "findAddressBookDb returned null (no Sources/* match and top-level path missing or unreadable)",
+      open_error: "findAddressBookDbs returned [] (no Sources/* match and top-level path missing or unreadable)",
       contacts_loaded: 0,
+      per_db: [],
     };
   }
 
-  // Try to open the DB directly so we can distinguish "FDA missing" from
-  // "file missing" from "schema mismatch". This is a parallel probe — it
-  // does NOT replace the bulk loader. If it succeeds, we then run the
-  // real load() to get the contact count.
-  let db: Database;
-  try {
-    db = new Database(db_path, { readonly: true });
-    db.exec("PRAGMA query_only = ON;");
-    db.close();
-  } catch (err) {
-    const { status, message } = classifyDbError(err);
-    return {
-      db_path,
-      db_path_exists,
-      open_status: status,
-      open_error: message,
-      contacts_loaded: 0,
-    };
-  }
-
-  // Open succeeded. Force a fresh load so contacts_loaded reflects right-
-  // now state (FDA could have been granted between server start and now).
+  // Force a fresh load so contacts_loaded reflects right-now state
+  // (FDA could have been granted between server start and now).
   _resetContactsCache();
-  try {
-    load();
-  } catch (err) {
-    const { status, message } = classifyDbError(err);
-    return {
-      db_path,
-      db_path_exists,
-      open_status: status,
-      open_error: message,
-      contacts_loaded: 0,
-    };
-  }
+  load();
+
+  const per_db = getLastContactsLoadReport();
+  const primaryReport = per_db.find((r) => r.path === primary);
+  const open_status: DbOpenStatus = primaryReport?.open_status ?? "error";
+  const open_error = primaryReport?.open_error;
 
   return {
-    db_path,
-    db_path_exists,
-    open_status: "ok",
+    db_path: primary,
+    db_path_exists: primary != null && existsSync(primary),
+    db_paths,
+    open_status,
+    open_error,
     contacts_loaded: handleToName.size,
+    per_db,
   };
 }
