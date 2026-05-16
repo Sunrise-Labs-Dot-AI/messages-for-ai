@@ -105,6 +105,17 @@ codesign --force --deep --sign - --identifier "${BUNDLE_ID}" --options=runtime "
 echo "› verifying signature"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature" || true
 
+# Re-register the bundle with LaunchServices. Without this, `open
+# "$APP"` can fail with error -600 (procNotFound) if LaunchServices
+# still has the legacy ~/Applications/ path cached — common on machines
+# that previously installed there. lsregister with -f forces a refresh
+# of the bundle metadata at the new location.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+  echo "› refreshing LaunchServices registration"
+  "$LSREGISTER" -f "$APP" >/dev/null 2>&1 || true
+fi
+
 # Remove the legacy ~/Applications/iMessage Drafts.app left over from
 # earlier installs that wrote there. Two reasons: (1) Spotlight indexes
 # both locations and would otherwise return the stale per-user copy
