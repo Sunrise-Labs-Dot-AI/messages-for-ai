@@ -12,6 +12,7 @@ import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { readContactsSidecar } from "../storage/contacts-cache.ts";
 
 let loaded = false;
 let handleToName = new Map<string, string>(); // canonicalized handle -> name
@@ -192,9 +193,53 @@ function loadOneDb(path: string): PerDbReport {
   };
 }
 
+// Tracks which source actually populated the in-memory map on the most
+// recent load(). Surfaced via getAddressBookDiagnostic so the health
+// tool can show "sidecar" vs "sqlite_fallback" vs "none".
+let lastLoadSource: "sidecar" | "sqlite_fallback" | "none" | "test_seam" = "none";
+
 function load(): void {
   if (loaded) return;
   loaded = true; // mark loaded even on failure to avoid retry storms
+
+  // Primary path: contacts sidecar written by the Swift menu bar app
+  // via CNContactStore. This is preferred because:
+  //   - It sees CloudKit-only iCloud contacts that don't appear in
+  //     the local AddressBook SQLite files.
+  //   - It runs under NSContacts permission (native consent dialog),
+  //     not FDA — so the menu bar can be granted access without the
+  //     manual drag-into-System-Settings dance.
+  //   - It survives MCP-binary rebuilds, which can lose their FDA
+  //     grant if the codesign identifier shifts.
+  const sidecar = readContactsSidecar();
+  if (sidecar && sidecar.permission_status === "granted" && Object.keys(sidecar.handles).length > 0) {
+    for (const [canon, name] of Object.entries(sidecar.handles)) {
+      handleToName.set(canon, name);
+    }
+    lastLoadSource = "sidecar";
+    lastLoadReport = []; // sqlite path didn't run
+    process.stderr.write(
+      `[contacts] loaded from sidecar: ${handleToName.size} contacts ` +
+      `(written ${sidecar.generated_at} by ${sidecar.source})\n`
+    );
+    return;
+  }
+
+  // Fallback: bulk-load from AddressBook SQLite. Used when the sidecar
+  // is missing (menu bar app not installed), unreadable, or empty (the
+  // user denied Contacts permission to the menu bar app). Requires
+  // Full Disk Access on this binary; will report empty maps without it.
+  if (sidecar) {
+    process.stderr.write(
+      `[contacts] sidecar present but unusable (status=${sidecar.permission_status}, ` +
+      `count=${Object.keys(sidecar.handles).length}); falling back to SQLite\n`
+    );
+  } else {
+    process.stderr.write(
+      `[contacts] no sidecar at ~/.imessage-mcp/contacts-cache.json; ` +
+      `falling back to SQLite (install the menu bar app and grant Contacts permission to skip the FDA dependency)\n`
+    );
+  }
 
   const paths = findAddressBookDbs();
   const reports: PerDbReport[] = [];
@@ -208,6 +253,7 @@ function load(): void {
     reports.push(loadOneDb(path));
   }
   lastLoadReport = reports;
+  lastLoadSource = handleToName.size > 0 ? "sqlite_fallback" : "none";
 
   // Stderr breadcrumb so the user can see what happened by tailing
   // ~/Library/Logs/Claude/mcp-server-imessage-mcp.log. Stays out of
@@ -216,10 +262,14 @@ function load(): void {
     const summary = reports
       .map((r) => `${r.open_status === "ok" ? "ok" : `[${r.open_status}]`} ${r.path.replace(homedir(), "~")} (+${r.contacts_contributed})`)
       .join("; ");
-    process.stderr.write(`[contacts] bulk-load: ${reports.length} db(s); ${handleToName.size} total contacts. ${summary}\n`);
+    process.stderr.write(`[contacts] sqlite bulk-load: ${reports.length} db(s); ${handleToName.size} total contacts. ${summary}\n`);
   } else {
-    process.stderr.write(`[contacts] bulk-load: no AddressBook databases found\n`);
+    process.stderr.write(`[contacts] sqlite bulk-load: no AddressBook databases found\n`);
   }
+}
+
+export function getLastContactsLoadSource(): "sidecar" | "sqlite_fallback" | "none" | "test_seam" {
+  return lastLoadSource;
 }
 
 // Expose the last bulk-load report so the diagnostic tool can show
@@ -263,6 +313,8 @@ export function _resetContactsCache(): void {
   loaded = false;
   handleToName = new Map();
   nameIndex = [];
+  lastLoadReport = [];
+  lastLoadSource = "none";
 }
 
 // Test seam: inject contacts data directly, bypassing the AddressBook
@@ -275,6 +327,7 @@ export function _setContactsForTesting(
   loaded = true;
   handleToName = new Map(handles);
   nameIndex = names.map((e) => ({ lower_name: e.lower_name, handles: [...e.handles] }));
+  lastLoadSource = "test_seam";
 }
 
 // Public accessor for the canonicalization rule, exposed so the

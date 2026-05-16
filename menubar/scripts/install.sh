@@ -87,6 +87,8 @@ cat > "${APP}/Contents/Info.plist" <<EOF
   <true/>
   <key>NSAppleEventsUsageDescription</key>
   <string>iMessage Drafts sends staged iMessage drafts via Messages.app.</string>
+  <key>NSContactsUsageDescription</key>
+  <string>iMessage Drafts reads your Contacts to resolve recipient names. The same data Messages.app shows, including iCloud-synced contacts. The exported list is written only to ~/.imessage-mcp/contacts-cache.json on this Mac and never leaves the machine.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Local-only utility. No data leaves this Mac.</string>
 </dict>

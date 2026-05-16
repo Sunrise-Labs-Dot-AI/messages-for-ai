@@ -5,8 +5,10 @@ import {
   getAddressBookDiagnostic,
   canonHandlePublic,
   resolveHandle,
+  getLastContactsLoadSource,
 } from "../chatdb/contacts.ts";
 import { getChatDbDiagnostic } from "../chatdb/open.ts";
+import { getContactsSidecarDiagnostic } from "../storage/contacts-cache.ts";
 
 // `imessage_mcp_health_check` exists to break a specific debugging
 // deadlock: when `to_handle_name` keeps coming back null for a known
@@ -38,11 +40,20 @@ export function registerHealthTools(server: McpServer): void {
     },
     async (args) => {
       try {
+        const sidecar = getContactsSidecarDiagnostic();
         const addressbook = getAddressBookDiagnostic();
         const chatdb = getChatDbDiagnostic();
+
+        // FDA matters only for the SQLite fallback. When the sidecar is
+        // serving fresh data with granted permission, FDA is irrelevant
+        // for contact resolution — but still required for chat.db
+        // (thread context lookup). So we keep reporting fda_likely_missing
+        // based on chat.db state, and separately note whether contacts
+        // were served by the sidecar or fell back to SQLite.
+        const contacts_source = getLastContactsLoadSource();
         const fda_likely_missing =
-          addressbook.open_status === "permission_denied" ||
-          chatdb.open_status === "permission_denied";
+          chatdb.open_status === "permission_denied" ||
+          (contacts_source !== "sidecar" && addressbook.open_status === "permission_denied");
 
         const probe = args.probe_handle
           ? {
@@ -52,25 +63,51 @@ export function registerHealthTools(server: McpServer): void {
             }
           : undefined;
 
+        // Pick the most actionable remediation message based on what's
+        // wrong. Order matters: contacts-sidecar-missing is friendlier
+        // than FDA-missing, and we should nudge users toward the menu
+        // bar app's CNContactStore path before asking them to drag
+        // binaries around.
+        const instructions = (() => {
+          if (sidecar.read_status === "missing") {
+            return "Install the menu bar app: `cd menubar && bash scripts/install.sh`, " +
+              "then launch /Applications/iMessage Drafts.app and grant Contacts permission " +
+              "when prompted. The app writes ~/.imessage-mcp/contacts-cache.json which this " +
+              "MCP reads instead of needing Full Disk Access for AddressBook.";
+          }
+          if (sidecar.permission_status === "denied" || sidecar.permission_status === "restricted") {
+            return "The menu bar app is installed but doesn't have Contacts permission. " +
+              "Open System Settings → Privacy & Security → Contacts and enable 'iMessage Drafts', " +
+              "then click 'Refresh contacts' in the menu bar popover.";
+          }
+          if (fda_likely_missing) {
+            return "Open System Settings → Privacy & Security → Full Disk Access. " +
+              "If `binary_path` is already in the list, toggle it OFF then ON " +
+              "(macOS sometimes retains a stale grant after a rebuild). If it's " +
+              "not in the list, drag the file at `binary_path` into the list. " +
+              "Then quit and reopen Claude Desktop so the MCP child process " +
+              "re-spawns and picks up the new grant. (FDA is needed for chat.db " +
+              "thread-context lookup even when the sidecar handles contact names.)";
+          }
+          return "Permissions look good. If contact resolution still fails, the " +
+            "issue is likely canonicalization — call this tool again with " +
+            "`probe_handle` set to the recipient's number to see exactly what " +
+            "key the lookup uses.";
+        })();
+
         return jsonResult({
+          contacts_source,
+          contacts_sidecar: sidecar,
           addressbook,
           chatdb,
           fda_likely_missing,
           remediation: {
             settings_url:
               "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+            contacts_settings_url:
+              "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
             binary_path: process.execPath,
-            instructions: fda_likely_missing
-              ? "Open System Settings → Privacy & Security → Full Disk Access. " +
-                "If `binary_path` is already in the list, toggle it OFF then ON " +
-                "(macOS sometimes retains a stale grant after a rebuild). If it's " +
-                "not in the list, drag the file at `binary_path` into the list. " +
-                "Then quit and reopen Claude Desktop so the MCP child process " +
-                "re-spawns and picks up the new grant."
-              : "Permissions look good. If contact resolution still fails, the " +
-                "issue is likely canonicalization — call this tool again with " +
-                "`probe_handle` set to the recipient's number to see exactly what " +
-                "key the lookup uses.",
+            instructions,
           },
           probe,
         });

@@ -5,6 +5,7 @@ struct DraftListView: View {
   @EnvironmentObject var store: DraftStore
   @EnvironmentObject var loginItem: LoginItemController
   @EnvironmentObject var settings: SettingsStore
+  @EnvironmentObject var contactsExporter: ContactsExporter
 
   // FDA state is probed on first appearance of the popover and on user
   // click of the banner's "Recheck" button. We deliberately don't
@@ -51,6 +52,14 @@ struct DraftListView: View {
           .padding(.horizontal, 12)
           .padding(.vertical, 8)
       }
+
+      // Contacts-permission banner takes priority over the FDA banner
+      // because Contacts is the primary path for name resolution under
+      // the new sidecar architecture — FDA on the MCP binary is now a
+      // secondary fallback for chat.db thread-context only.
+      ContactsPermissionBanner()
+        .padding(.horizontal, 12)
+        .padding(.top, contactsExporter.authorizationStatus != .authorized ? 8 : 0)
 
       // FDA banner sits above the draft list (or empty state) so it's
       // the first thing the user sees on every popover open when FDA
