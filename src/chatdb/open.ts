@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 const CHAT_DB_PATH = join(homedir(), "Library", "Messages", "chat.db");
@@ -23,6 +24,54 @@ export function _setChatDbForTesting(db: Database | null): void {
 
 export function chatDbPath(): string {
   return CHAT_DB_PATH;
+}
+
+export type ChatDbOpenStatus = "ok" | "permission_denied" | "not_found" | "error";
+
+export interface ChatDbDiagnostic {
+  db_path: string;
+  db_path_exists: boolean;
+  open_status: ChatDbOpenStatus;
+  open_error?: string;
+}
+
+// Probe-open chat.db without caching the handle or throwing. Used by the
+// `imessage_mcp_health_check` tool to distinguish "FDA missing" from
+// "file missing" from "schema mismatch" without taking down the rest of
+// the server. We deliberately don't reuse `openChatDb()`'s cached
+// instance — diagnostics should reflect live state, not a stale cache.
+export function getChatDbDiagnostic(): ChatDbDiagnostic {
+  const db_path = CHAT_DB_PATH;
+  // existsSync without FDA returns false even when the file is there
+  // (TCC denies the stat). Treat false-with-permission-denied open as
+  // FDA-missing rather than not-found.
+  const db_path_exists = existsSync(db_path);
+  let probe: Database | null = null;
+  try {
+    probe = new Database(db_path, { readonly: true });
+    probe.exec("PRAGMA query_only = ON;");
+    probe.close();
+    return { db_path, db_path_exists, open_status: "ok" };
+  } catch (err) {
+    try { probe?.close(); } catch { /* ignore */ }
+    const e = err as NodeJS.ErrnoException & { message?: string };
+    const code = e?.code ?? "";
+    const msg = (e?.message ?? String(err)).toLowerCase();
+    if (
+      code === "EACCES" ||
+      code === "EPERM" ||
+      e?.errno === -13 ||
+      msg.includes("permission denied") ||
+      msg.includes("operation not permitted") ||
+      msg.includes("unable to open")
+    ) {
+      return { db_path, db_path_exists, open_status: "permission_denied", open_error: e?.message ?? String(err) };
+    }
+    if (code === "ENOENT" || msg.includes("no such file")) {
+      return { db_path, db_path_exists, open_status: "not_found", open_error: e?.message ?? String(err) };
+    }
+    return { db_path, db_path_exists, open_status: "error", open_error: e?.message ?? String(err) };
+  }
 }
 
 // Apple Cocoa epoch: 2001-01-01 00:00:00 UTC, in unix-ms terms.

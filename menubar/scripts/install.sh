@@ -7,8 +7,14 @@
 #   - LSUIElement = true keeps the app out of the Dock and ⌘-Tab switcher.
 #   - The Automation permission grant is per-bundle-id and survives rebuilds.
 #
-# After install, launch via:    open ~/Applications/iMessage\ Drafts.app
+# After install, launch via:    open /Applications/iMessage\ Drafts.app
 # Or set it as a Login Item:    System Settings → General → Login Items.
+#
+# Install destination: /Applications by default. This is where Finder's
+# sidebar "Applications" item points and where Launchpad indexes. Override
+# with INSTALL_ROOT=/some/other/path if /Applications isn't writable (e.g.
+# on a managed Mac):
+#   INSTALL_ROOT="$HOME/Applications" bash scripts/install.sh
 
 set -euo pipefail
 
@@ -16,9 +22,26 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="iMessage Drafts"
 BUNDLE_ID="com.local.imessage-drafts"
-INSTALL_ROOT="${HOME}/Applications"
+INSTALL_ROOT="${INSTALL_ROOT:-/Applications}"
 APP="${INSTALL_ROOT}/${APP_NAME}.app"
+LEGACY_APP="${HOME}/Applications/${APP_NAME}.app"
 EXE_NAME="iMessageDraftsMenu"
+
+# Pre-flight: make sure we can write to the install root before doing the
+# slow swift build. /Applications is writable by the local admin user on
+# a default macOS setup (no sudo required), but managed / multi-user Macs
+# can have it locked down.
+if [[ ! -d "$INSTALL_ROOT" ]]; then
+  echo "✗ install root does not exist: $INSTALL_ROOT" >&2
+  exit 1
+fi
+if [[ ! -w "$INSTALL_ROOT" ]]; then
+  echo "✗ install root is not writable by $USER: $INSTALL_ROOT" >&2
+  echo "  Either re-run with sudo:    sudo bash scripts/install.sh" >&2
+  echo "  Or install to your per-user folder:" >&2
+  echo "    INSTALL_ROOT=\"\$HOME/Applications\" bash scripts/install.sh" >&2
+  exit 1
+fi
 
 echo "› swift build -c release"
 swift build -c release
@@ -79,6 +102,18 @@ codesign --force --deep --sign - --identifier "${BUNDLE_ID}" --options=runtime "
 
 echo "› verifying signature"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature" || true
+
+# Remove the legacy ~/Applications/iMessage Drafts.app left over from
+# earlier installs that wrote there. Two reasons: (1) Spotlight indexes
+# both locations and would otherwise return the stale per-user copy
+# half the time; (2) the user's "I quit the app — where do I find it?"
+# muscle memory points at Finder → Applications (the /Applications
+# folder, surfaced in Finder's sidebar). Done AFTER the new install
+# succeeds so a failed install never leaves the user with neither copy.
+if [[ -d "$LEGACY_APP" && "$LEGACY_APP" != "$APP" ]]; then
+  echo "› removing legacy install at $LEGACY_APP"
+  rm -rf "$LEGACY_APP"
+fi
 
 echo
 echo "installed: $APP"

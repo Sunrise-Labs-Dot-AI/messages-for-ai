@@ -185,3 +185,108 @@ export function _setContactsForTesting(
   handleToName = new Map(handles);
   nameIndex = names.map((e) => ({ lower_name: e.lower_name, handles: [...e.handles] }));
 }
+
+// Public accessor for the canonicalization rule, exposed so the
+// `imessage_mcp_health_check` diagnostic tool can show callers exactly
+// what their handle string canonicalizes to. The rule itself stays
+// private — this just publishes the result for inspection.
+export function canonHandlePublic(s: string): string {
+  return canonHandle(s);
+}
+
+export type DbOpenStatus = "ok" | "permission_denied" | "not_found" | "error";
+
+export interface AddressBookDiagnostic {
+  db_path: string | null;
+  db_path_exists: boolean;
+  open_status: DbOpenStatus;
+  open_error?: string;
+  contacts_loaded: number;
+}
+
+// Classify a thrown error from `new Database(path, { readonly: true })`
+// or a filesystem read. macOS surfaces FDA denial as EACCES on the file
+// open; bun:sqlite tends to surface the same as a SQLite open failure
+// with "permission denied" / "unable to open" in the message. ENOENT
+// only appears if the file genuinely isn't there.
+function classifyDbError(err: unknown): { status: DbOpenStatus; message: string } {
+  const e = err as NodeJS.ErrnoException & { message?: string };
+  const code = e?.code ?? "";
+  const msg = (e?.message ?? String(err)).toLowerCase();
+  if (
+    code === "EACCES" ||
+    code === "EPERM" ||
+    e?.errno === -13 ||
+    msg.includes("permission denied") ||
+    msg.includes("operation not permitted") ||
+    msg.includes("unable to open")
+  ) {
+    return { status: "permission_denied", message: e?.message ?? String(err) };
+  }
+  if (code === "ENOENT" || msg.includes("no such file")) {
+    return { status: "not_found", message: e?.message ?? String(err) };
+  }
+  return { status: "error", message: e?.message ?? String(err) };
+}
+
+// Run the AddressBook open + bulk-load probe and report what happened.
+// Resets the cache first so the result reflects current TCC state — this
+// is intended for one-off diagnostic calls, not the hot path. Production
+// `resolveHandle` keeps using the cached map.
+export function getAddressBookDiagnostic(): AddressBookDiagnostic {
+  const db_path = findAddressBookDb();
+  const db_path_exists = db_path != null && existsSync(db_path);
+
+  if (!db_path) {
+    return {
+      db_path: null,
+      db_path_exists: false,
+      open_status: "not_found",
+      open_error: "findAddressBookDb returned null (no Sources/* match and top-level path missing or unreadable)",
+      contacts_loaded: 0,
+    };
+  }
+
+  // Try to open the DB directly so we can distinguish "FDA missing" from
+  // "file missing" from "schema mismatch". This is a parallel probe — it
+  // does NOT replace the bulk loader. If it succeeds, we then run the
+  // real load() to get the contact count.
+  let db: Database;
+  try {
+    db = new Database(db_path, { readonly: true });
+    db.exec("PRAGMA query_only = ON;");
+    db.close();
+  } catch (err) {
+    const { status, message } = classifyDbError(err);
+    return {
+      db_path,
+      db_path_exists,
+      open_status: status,
+      open_error: message,
+      contacts_loaded: 0,
+    };
+  }
+
+  // Open succeeded. Force a fresh load so contacts_loaded reflects right-
+  // now state (FDA could have been granted between server start and now).
+  _resetContactsCache();
+  try {
+    load();
+  } catch (err) {
+    const { status, message } = classifyDbError(err);
+    return {
+      db_path,
+      db_path_exists,
+      open_status: status,
+      open_error: message,
+      contacts_loaded: 0,
+    };
+  }
+
+  return {
+    db_path,
+    db_path_exists,
+    open_status: "ok",
+    contacts_loaded: handleToName.size,
+  };
+}

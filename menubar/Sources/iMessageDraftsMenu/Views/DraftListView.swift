@@ -6,6 +6,13 @@ struct DraftListView: View {
   @EnvironmentObject var loginItem: LoginItemController
   @EnvironmentObject var settings: SettingsStore
 
+  // FDA state is probed on first appearance of the popover and on user
+  // click of the banner's "Recheck" button. We deliberately don't
+  // re-probe on every popover open — the user has to actively dismiss
+  // the popover to grant FDA in System Settings, and clicking Recheck
+  // is a more honest signal of "I just changed something, check again."
+  @State private var fdaState: FDAState = FDAProbe.probe()
+
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   // Cap for the inner ScrollView. We subtract a rough estimate of the
   // surrounding chrome (header + divider + footer + padding ~ 180pt)
@@ -44,6 +51,14 @@ struct DraftListView: View {
           .padding(.horizontal, 12)
           .padding(.vertical, 8)
       }
+
+      // FDA banner sits above the draft list (or empty state) so it's
+      // the first thing the user sees on every popover open when FDA
+      // is missing. The banner renders nothing when state != .denied,
+      // so there's no chrome cost when permissions are healthy.
+      FDABanner(state: $fdaState)
+        .padding(.horizontal, 12)
+        .padding(.top, fdaState == .denied ? 8 : 0)
 
       // ScrollView inside MenuBarExtra(.window) collapses to ~0 height
       // when its parent has no concrete height to grant — there's no

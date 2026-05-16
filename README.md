@@ -226,7 +226,7 @@ shows only a draft UUID.
 ```sh
 cd menubar
 bash scripts/install.sh
-# → produces ~/Applications/iMessage Drafts.app
+# → produces /Applications/iMessage Drafts.app
 ```
 
 Requires Swift 5.9+ (Xcode 15 / macOS 14+ ships it). The script wraps the
@@ -234,11 +234,22 @@ SPM-built executable in a proper `.app` bundle with `LSUIElement = true`
 so it lives in the menu bar with no Dock icon, and code-signs it with a
 stable bundle ID so the macOS Automation grant survives rebuilds.
 
+The default install root is `/Applications`. On a default macOS setup the
+local admin user can write there without sudo. If `/Applications` is
+locked down (managed Mac, restricted account), set `INSTALL_ROOT` to
+override:
+
+```sh
+INSTALL_ROOT="$HOME/Applications" bash scripts/install.sh
+```
+
 Then:
 
 ```sh
-open ~/Applications/iMessage\ Drafts.app
+open "/Applications/iMessage Drafts.app"
 ```
+
+…or just open Finder → Applications and double-click the app.
 
 The first Send will trigger a macOS Automation prompt — "iMessage Drafts
 wants to control Messages" — click OK.
