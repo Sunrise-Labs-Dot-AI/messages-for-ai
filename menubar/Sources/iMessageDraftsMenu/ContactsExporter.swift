@@ -45,6 +45,23 @@ final class ContactsExporter: ObservableObject {
   // matches the running app.
   private let logger = Logger(subsystem: "com.sunriselabs.imessage-drafts", category: "contacts")
 
+  // Concurrency guards for exportNow.
+  //
+  // The class is @MainActor, but exportNow() awaits store.enumerateContacts
+  // (1-5s on a large AddressBook). During that await the main actor is
+  // free, and the .CNContactStoreDidChange observer or a manual refresh
+  // tap can call exportNow() again. Two concurrent runs would both
+  // JSONSerialization + Data.write(.atomic), with no ordering guarantee
+  // on the renames — the loser's snapshot silently lands and could be
+  // missing contacts that the winner had picked up.
+  //
+  // isExporting + pendingExport collapse overlapping calls: the second
+  // caller sets pendingExport and returns immediately; whoever holds
+  // isExporting re-fires after their defer block runs. Safe because all
+  // reads/writes are main-actor-serialized.
+  private var isExporting = false
+  private var pendingExport = false
+
   // Schema version must match `CONTACTS_CACHE_SCHEMA_VERSION` in
   // src/storage/contacts-cache.ts. Bumping breaks the read path on
   // older MCP binaries — coordinate the change.
@@ -131,8 +148,27 @@ final class ContactsExporter: ObservableObject {
   }
 
   // The core export path. Safe to call from the change observer /
-  // explicit refresh button.
+  // explicit refresh button. Concurrent calls collapse — the second
+  // caller queues a re-run and returns immediately.
   func exportNow() async {
+    if isExporting {
+      pendingExport = true
+      logger.info("exportNow: in-flight; queued re-run")
+      return
+    }
+    isExporting = true
+    defer {
+      isExporting = false
+      // If a CNContactStoreDidChange fired while we were enumerating,
+      // catch up now. Use Task so we don't recurse on the same await
+      // chain and risk unbounded stack growth under a notification
+      // storm.
+      if pendingExport {
+        pendingExport = false
+        Task { await self.exportNow() }
+      }
+    }
+
     let status = CNContactStore.authorizationStatus(for: .contacts)
     authorizationStatus = status
     logger.info("exportNow: status=\(Self.statusDescription(status), privacy: .public)")

@@ -27,6 +27,17 @@
 #         --apple-id <your-apple-id-email> \
 #         --team-id <your-team-id> \
 #         --password <app-specific-password-from-appleid.apple.com>
+#
+# Resuming after an Apple notary backlog timeout:
+#   Submission UUIDs are written to $DIST/notarize-mcp.uuid and
+#   $DIST/notarize-app.uuid BEFORE we poll Apple. If `xcrun notarytool
+#   wait` times out, you can re-poll without re-uploading (which would
+#   burn another ~5-15 minutes) via:
+#     xcrun notarytool wait $(cat dist/notarize-mcp.uuid) \
+#       --keychain-profile imessage-mcp-notary
+#   The trap on INT/TERM/EXIT wipes dist/ on abort, so you must save
+#   the UUID elsewhere FIRST if you Ctrl-C during the wait. A future
+#   refactor (deferred WARNING #14) will add a proper --resume flag.
 
 set -euo pipefail
 
@@ -99,6 +110,12 @@ echo "› notarytool profile: $NOTARY_PROFILE"
 rm -rf "$DIST"
 mkdir -p "$STAGE/$RELEASE_NAME/bin"
 
+# Abort guard: if anything between here and the final success echo
+# exits non-zero (or the user Ctrl-Cs), wipe dist/ so we never leave
+# a signed-but-not-notarized binary that looks like a valid release.
+# The trap is cleared right before the final success echoes.
+trap 'rc=$?; echo; echo "✗ build aborted (exit $rc); wiping $DIST/" >&2; rm -rf "$DIST"' INT TERM EXIT
+
 # ============================================================================
 # 1. imessage-mcp binary
 # ============================================================================
@@ -124,13 +141,28 @@ echo "› notarizing imessage-mcp"
 # submit, wait for approval, then extract the signed binary back out.
 # (Binaries can't be stapled — the notarization is verified at
 # runtime via a cloud lookup against Apple's CDN.)
+#
+# Two-step submit-then-wait so we can stash the submission UUID
+# BEFORE the wait blocks. If Apple's notary backlog times us out,
+# a maintainer can resume polling against the saved UUID instead
+# of paying another upload round-trip — see script header.
 NOTARIZE_DIR="$DIST/notarize-mcp"
 mkdir -p "$NOTARIZE_DIR"
 cp bin/imessage-mcp "$NOTARIZE_DIR/"
 ditto -c -k --keepParent "$NOTARIZE_DIR/imessage-mcp" "$NOTARIZE_DIR/imessage-mcp.zip"
-xcrun notarytool submit "$NOTARIZE_DIR/imessage-mcp.zip" \
+MCP_SUBMIT_JSON=$(xcrun notarytool submit "$NOTARIZE_DIR/imessage-mcp.zip" \
   --keychain-profile "$NOTARY_PROFILE" \
-  --wait
+  --output-format json \
+  --no-wait)
+MCP_UUID=$(echo "$MCP_SUBMIT_JSON" | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))')
+if [[ -z "$MCP_UUID" ]]; then
+  echo "✗ failed to parse mcp notarytool submission UUID from:" >&2
+  echo "$MCP_SUBMIT_JSON" >&2
+  exit 1
+fi
+echo "$MCP_UUID" > "$DIST/notarize-mcp.uuid"
+echo "› mcp submission uuid: $MCP_UUID (resumable via: xcrun notarytool wait $MCP_UUID --keychain-profile $NOTARY_PROFILE)"
+xcrun notarytool wait "$MCP_UUID" --keychain-profile "$NOTARY_PROFILE"
 
 # The binary is unchanged by notarization — we just need to verify
 # Apple stamped it. The codesign --verify --deep --strict already
@@ -212,9 +244,19 @@ echo "› signing app with Developer ID + Hardened Runtime + entitlements"
 echo "› notarizing app"
 NOTARIZE_APP_ZIP="$DIST/notarize-app.zip"
 ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_APP_ZIP"
-xcrun notarytool submit "$NOTARIZE_APP_ZIP" \
+APP_SUBMIT_JSON=$(xcrun notarytool submit "$NOTARIZE_APP_ZIP" \
   --keychain-profile "$NOTARY_PROFILE" \
-  --wait
+  --output-format json \
+  --no-wait)
+APP_UUID=$(echo "$APP_SUBMIT_JSON" | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))')
+if [[ -z "$APP_UUID" ]]; then
+  echo "✗ failed to parse app notarytool submission UUID from:" >&2
+  echo "$APP_SUBMIT_JSON" >&2
+  exit 1
+fi
+echo "$APP_UUID" > "$DIST/notarize-app.uuid"
+echo "› app submission uuid: $APP_UUID (resumable via: xcrun notarytool wait $APP_UUID --keychain-profile $NOTARY_PROFILE)"
+xcrun notarytool wait "$APP_UUID" --keychain-profile "$NOTARY_PROFILE"
 
 echo "› stapling notarization ticket to app"
 xcrun stapler staple "$APP_PATH"
@@ -306,8 +348,12 @@ fi
 echo "  ✓ Gatekeeper-accepts the bundle"
 rm -rf "$VERIFY_DIR"
 
-# Cleanup intermediates.
+# Cleanup intermediates. Leaves the release zip and the two .uuid
+# files (for post-hoc resume / audit) in $DIST.
 rm -rf "$STAGE" "$DIST/notarize-mcp" "$DIST/notarize-app.zip"
+
+# Build succeeded — clear the abort guard so dist/ survives the exit.
+trap - INT TERM EXIT
 
 echo
 echo "✓ release built: $RELEASE_ZIP"

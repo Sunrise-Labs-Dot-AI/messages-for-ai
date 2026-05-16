@@ -1,4 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entitlements for iMessage Drafts (hardened-runtime, non-sandboxed).
+
+  Apple Events scope (v0.1.1, PR 5b code-review finding #10):
+
+  `com.apple.security.automation.apple-events` is required for ANY
+  Apple Event sending under hardened-runtime. Removing it would break
+  the menubar's send path (DraftSender.swift calls Messages.app via
+  AppleScript). The user's TCC consent prompt gates each new target
+  app the first time it's contacted, so the actual scope at runtime
+  is still bounded by user consent — but the *static* entitlement
+  allows AE to any scriptable app.
+
+  `com.apple.security.scripting-targets` below declares INTENT:
+  Messages.app is the only target the app expects to send to. This
+  entry is enforced for sandboxed apps but is documentation-only for
+  the non-sandboxed hardened-runtime case we're in here. Properly
+  enforcing the scope requires turning the menubar into a sandboxed
+  app (com.apple.security.app-sandbox + temporary-exception entries
+  for ~/.imessage-mcp/ filesystem access) — that's a larger refactor
+  deferred to v0.1.2.
+
+  When that refactor lands: add `<key>com.apple.security.app-sandbox</key>
+  <true/>` and a `<key>com.apple.security.temporary-exception.files.
+  home-relative-path.read-write</key><array><string>.imessage-mcp/
+  </string></array>` block so the sidecar + drafts writes still work.
+-->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -6,5 +33,10 @@
     <true/>
     <key>com.apple.security.automation.apple-events</key>
     <true/>
+    <key>com.apple.security.scripting-targets</key>
+    <dict>
+        <key>com.apple.iChat</key>
+        <array/>
+    </dict>
 </dict>
 </plist>

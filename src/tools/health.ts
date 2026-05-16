@@ -2,10 +2,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { HealthCheckShape } from "../schema.ts";
 import { jsonResult, errorResult } from "./_result.ts";
 import {
-  getAddressBookDiagnostic,
+  getAddressBookSqliteDiagnostic,
+  getContactsLoadDiagnostic,
   canonHandlePublic,
   resolveHandle,
-  getLastContactsLoadSource,
+  _resetContactsCache,
 } from "../chatdb/contacts.ts";
 import { getChatDbDiagnostic } from "../chatdb/open.ts";
 import { getContactsSidecarDiagnostic } from "../storage/contacts-cache.ts";
@@ -41,7 +42,19 @@ export function registerHealthTools(server: McpServer): void {
     async (args) => {
       try {
         const sidecar = getContactsSidecarDiagnostic();
-        const addressbook = getAddressBookDiagnostic();
+        // SQLite-only diagnostic — `contacts_loaded` reflects strictly
+        // the AddressBook SQLite layer, NOT whichever layer happened to
+        // serve the data. Important: this resets and re-loads the cache
+        // from SQLite only, so we restore the normal cache state below
+        // by calling _resetContactsCache before returning so subsequent
+        // resolveHandle calls go through the normal layered path.
+        const addressbook = getAddressBookSqliteDiagnostic();
+        // Layer-of-record diagnostic — answers "where did the contact
+        // names actually come from in production load()?". This RE-runs
+        // load() through the normal sidecar-first path, so it leaves the
+        // cache in the same state production calls would.
+        _resetContactsCache();
+        const contacts_load = getContactsLoadDiagnostic();
         const chatdb = getChatDbDiagnostic();
 
         // FDA matters only for the SQLite fallback. When the sidecar is
@@ -50,7 +63,7 @@ export function registerHealthTools(server: McpServer): void {
         // (thread context lookup). So we keep reporting fda_likely_missing
         // based on chat.db state, and separately note whether contacts
         // were served by the sidecar or fell back to SQLite.
-        const contacts_source = getLastContactsLoadSource();
+        const contacts_source = contacts_load.source;
         const fda_likely_missing =
           chatdb.open_status === "permission_denied" ||
           (contacts_source !== "sidecar" && addressbook.open_status === "permission_denied");
@@ -70,7 +83,7 @@ export function registerHealthTools(server: McpServer): void {
         // binaries around.
         const instructions = (() => {
           if (sidecar.read_status === "missing") {
-            return "Install the menu bar app: `cd menubar && bash scripts/install.sh`, " +
+            return "Install the menu bar app: `cd menubar && bash scripts/dev-install.sh`, " +
               "then launch /Applications/iMessage Drafts.app and grant Contacts permission " +
               "when prompted. The app writes ~/.imessage-mcp/contacts-cache.json which this " +
               "MCP reads instead of needing Full Disk Access for AddressBook.";
@@ -96,8 +109,19 @@ export function registerHealthTools(server: McpServer): void {
         })();
 
         return jsonResult({
+          // `contacts_source` is the back-compat single-value field
+          // (string union: sidecar | sidecar_granted_empty |
+          // sqlite_fallback | none | test_seam). `contacts_load`
+          // provides the structured equivalent — prefer that for new
+          // callers. They will always agree on the `.source` value.
           contacts_source,
+          contacts_load,
           contacts_sidecar: sidecar,
+          // STRICTLY the AddressBook SQLite layer's state. The
+          // `contacts_loaded` field here is the SQLite-sourced count
+          // and may differ from `contacts_load.count` when the sidecar
+          // is winning the resolution race. This separation is the
+          // PR 5b fix for code-review finding #7.
           addressbook,
           chatdb,
           fda_likely_missing,
