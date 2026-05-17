@@ -27,11 +27,35 @@
 #         --apple-id <your-apple-id-email> \
 #         --team-id <your-team-id> \
 #         --password <app-specific-password-from-appleid.apple.com>
+#
+# Resuming after an Apple notary backlog timeout:
+#   Submission UUIDs are written to $DIST/notarize-mcp.uuid and
+#   $DIST/notarize-app.uuid BEFORE we poll Apple. If `xcrun notarytool
+#   wait` times out, you can re-poll without re-uploading (which would
+#   burn another ~5-15 minutes) via:
+#     xcrun notarytool wait $(cat dist/notarize-mcp.uuid) \
+#       --keychain-profile imessage-mcp-notary
+#   The trap on INT/TERM/EXIT wipes dist/ on abort, so you must save
+#   the UUID elsewhere FIRST if you Ctrl-C during the wait. A future
+#   refactor (deferred WARNING #14) will add a proper --resume flag.
 
 set -euo pipefail
 
-VERSION="${1:?usage: build-release.sh <version>, e.g. v0.1.0}"
+VERSION="${1:?usage: build-release.sh <version>, e.g. v0.1.1}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-imessage-mcp-notary}"
+
+# The only Apple Developer Team ID this build accepts. Auto-detected
+# certs from a different Team ID will be REJECTED rather than silently
+# used — defends against an attacker who plants a Developer ID cert in
+# the maintainer's keychain (via malicious npm postinstall, p12 import,
+# stolen cert, etc.) and tries to ship attacker-signed releases.
+EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-LQ93LRM9QU}"
+
+# Absolute paths to macOS-system binaries. Defends against PATH-shimmed
+# `security` / `codesign` from a compromised dev environment.
+SECURITY=/usr/bin/security
+CODESIGN=/usr/bin/codesign
+AWK=/usr/bin/awk
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
@@ -39,20 +63,36 @@ DIST="$REPO_ROOT/dist"
 STAGE="$DIST/stage"
 RELEASE_NAME="imessage-mcp-$VERSION"
 
-# Find the Developer ID cert. Fails loudly if not present — notarized
-# releases REQUIRE Developer ID signing; adhoc isn't valid.
+# Find the Developer ID cert. Filters by EXPECTED_TEAM_ID to refuse
+# attacker-planted certs in the same keychain. Fails loudly if no
+# matching cert exists — notarized releases REQUIRE Developer ID
+# signing; adhoc isn't valid.
 SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 if [[ -z "$SIGN_IDENTITY" ]]; then
-  SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-    | awk -F\" '/Developer ID Application/ {print $2; exit}')
+  SIGN_IDENTITY=$("$SECURITY" find-identity -v -p codesigning 2>/dev/null \
+    | "$AWK" -F\" -v team="$EXPECTED_TEAM_ID" \
+        '/Developer ID Application/ && $2 ~ "\\("team"\\)$" {print $2; exit}')
 fi
 if [[ -z "$SIGN_IDENTITY" ]]; then
-  echo "✗ no 'Developer ID Application' cert found in keychain." >&2
+  echo "✗ no 'Developer ID Application' cert from team $EXPECTED_TEAM_ID found." >&2
   echo "  Install one via Xcode → Settings → Accounts → Manage Certificates," >&2
-  echo "  or set CODESIGN_IDENTITY=<identity-name> in the environment." >&2
+  echo "  or set CODESIGN_IDENTITY=<identity-name> in the environment (bypasses" >&2
+  echo "  the team-id filter — caller's responsibility to ensure it's the right cert)." >&2
   exit 1
 fi
+# Belt-and-suspenders: re-parse the chosen identity's Team ID and
+# verify. This catches the CODESIGN_IDENTITY override case.
+DETECTED_TEAM=$(echo "$SIGN_IDENTITY" | sed -nE 's/.*\(([A-Z0-9]+)\)$/\1/p')
+if [[ "$DETECTED_TEAM" != "$EXPECTED_TEAM_ID" ]]; then
+  echo "✗ signing identity Team ID '$DETECTED_TEAM' ≠ expected '$EXPECTED_TEAM_ID'" >&2
+  exit 1
+fi
+# Print fingerprint so a maintainer auditing build logs can confirm
+# which cert in the keychain was selected.
+SIGN_HASH=$("$SECURITY" find-identity -v -p codesigning 2>/dev/null \
+  | "$AWK" -v ident="$SIGN_IDENTITY" '$0 ~ ident {print $2; exit}')
 echo "› signing identity: $SIGN_IDENTITY"
+echo "› identity SHA-1:   $SIGN_HASH"
 
 # Sanity-check that the notarytool credential profile exists before
 # spending several minutes on a build that can't be notarized.
@@ -70,6 +110,15 @@ echo "› notarytool profile: $NOTARY_PROFILE"
 rm -rf "$DIST"
 mkdir -p "$STAGE/$RELEASE_NAME/bin"
 
+# Abort guard: if anything between here and the final success echo
+# exits non-zero (or the user Ctrl-Cs), wipe dist/ so we never leave
+# a signed-but-not-notarized binary that looks like a valid release.
+# The trap is cleared right before the final success echoes.
+# Ignore further SIGINTs inside the cleanup handler so a double-Ctrl-C
+# can't half-delete dist/ and leave a signed-but-not-notarized .app
+# behind. PR 11 review finding #4.
+trap 'rc=$?; trap "" INT TERM; echo; echo "✗ build aborted (exit $rc); wiping $DIST/" >&2; rm -rf "$DIST"' INT TERM EXIT
+
 # ============================================================================
 # 1. imessage-mcp binary
 # ============================================================================
@@ -81,8 +130,12 @@ bun build src/index.ts --compile --outfile "bin/imessage-mcp"
 xattr -cr bin/imessage-mcp
 
 echo "› signing with Developer ID + Hardened Runtime"
-codesign --force --timestamp --sign "$SIGN_IDENTITY" \
-  --identifier "com.local.imessage-mcp" \
+# Identifier `com.sunriselabs.imessage-mcp` (distinct from the dev
+# identifier `com.local.imessage-mcp.dev` used by scripts/dev-install.sh).
+# Different identifiers prevent a dev rebuild from clobbering the TCC
+# grant established when a release binary is installed.
+"$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
+  --identifier "com.sunriselabs.imessage-mcp" \
   --options=runtime \
   bin/imessage-mcp
 
@@ -91,18 +144,33 @@ echo "› notarizing imessage-mcp"
 # submit, wait for approval, then extract the signed binary back out.
 # (Binaries can't be stapled — the notarization is verified at
 # runtime via a cloud lookup against Apple's CDN.)
+#
+# Two-step submit-then-wait so we can stash the submission UUID
+# BEFORE the wait blocks. If Apple's notary backlog times us out,
+# a maintainer can resume polling against the saved UUID instead
+# of paying another upload round-trip — see script header.
 NOTARIZE_DIR="$DIST/notarize-mcp"
 mkdir -p "$NOTARIZE_DIR"
 cp bin/imessage-mcp "$NOTARIZE_DIR/"
 ditto -c -k --keepParent "$NOTARIZE_DIR/imessage-mcp" "$NOTARIZE_DIR/imessage-mcp.zip"
-xcrun notarytool submit "$NOTARIZE_DIR/imessage-mcp.zip" \
+MCP_SUBMIT_JSON=$(xcrun notarytool submit "$NOTARIZE_DIR/imessage-mcp.zip" \
   --keychain-profile "$NOTARY_PROFILE" \
-  --wait
+  --output-format json \
+  --no-wait)
+MCP_UUID=$(echo "$MCP_SUBMIT_JSON" | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))')
+if [[ -z "$MCP_UUID" ]]; then
+  echo "✗ failed to parse mcp notarytool submission UUID from:" >&2
+  echo "$MCP_SUBMIT_JSON" >&2
+  exit 1
+fi
+echo "$MCP_UUID" > "$DIST/notarize-mcp.uuid"
+echo "› mcp submission uuid: $MCP_UUID (resumable via: xcrun notarytool wait $MCP_UUID --keychain-profile $NOTARY_PROFILE)"
+xcrun notarytool wait "$MCP_UUID" --keychain-profile "$NOTARY_PROFILE"
 
 # The binary is unchanged by notarization — we just need to verify
 # Apple stamped it. The codesign --verify --deep --strict already
 # proves the signature is valid; the cloud check happens at runtime.
-codesign --verify --verbose=2 bin/imessage-mcp
+"$CODESIGN" --verify --strict --verbose=2 bin/imessage-mcp
 
 cp bin/imessage-mcp "$STAGE/$RELEASE_NAME/bin/imessage-mcp"
 
@@ -169,7 +237,7 @@ cat > "$APP_PATH/Contents/Info.plist" <<EOF
 EOF
 
 echo "› signing app with Developer ID + Hardened Runtime + entitlements"
-codesign --force --deep --timestamp \
+"$CODESIGN" --force --deep --timestamp \
   --sign "$SIGN_IDENTITY" \
   --identifier "$BUNDLE_ID" \
   --options=runtime \
@@ -179,9 +247,19 @@ codesign --force --deep --timestamp \
 echo "› notarizing app"
 NOTARIZE_APP_ZIP="$DIST/notarize-app.zip"
 ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_APP_ZIP"
-xcrun notarytool submit "$NOTARIZE_APP_ZIP" \
+APP_SUBMIT_JSON=$(xcrun notarytool submit "$NOTARIZE_APP_ZIP" \
   --keychain-profile "$NOTARY_PROFILE" \
-  --wait
+  --output-format json \
+  --no-wait)
+APP_UUID=$(echo "$APP_SUBMIT_JSON" | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))')
+if [[ -z "$APP_UUID" ]]; then
+  echo "✗ failed to parse app notarytool submission UUID from:" >&2
+  echo "$APP_SUBMIT_JSON" >&2
+  exit 1
+fi
+echo "$APP_UUID" > "$DIST/notarize-app.uuid"
+echo "› app submission uuid: $APP_UUID (resumable via: xcrun notarytool wait $APP_UUID --keychain-profile $NOTARY_PROFILE)"
+xcrun notarytool wait "$APP_UUID" --keychain-profile "$NOTARY_PROFILE"
 
 echo "› stapling notarization ticket to app"
 xcrun stapler staple "$APP_PATH"
@@ -273,8 +351,12 @@ fi
 echo "  ✓ Gatekeeper-accepts the bundle"
 rm -rf "$VERIFY_DIR"
 
-# Cleanup intermediates.
+# Cleanup intermediates. Leaves the release zip and the two .uuid
+# files (for post-hoc resume / audit) in $DIST.
 rm -rf "$STAGE" "$DIST/notarize-mcp" "$DIST/notarize-app.zip"
+
+# Build succeeded — clear the abort guard so dist/ survives the exit.
+trap - INT TERM EXIT
 
 echo
 echo "✓ release built: $RELEASE_ZIP"

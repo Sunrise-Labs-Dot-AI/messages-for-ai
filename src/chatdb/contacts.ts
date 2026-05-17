@@ -194,9 +194,46 @@ function loadOneDb(path: string): PerDbReport {
 }
 
 // Tracks which source actually populated the in-memory map on the most
-// recent load(). Surfaced via getAddressBookDiagnostic so the health
-// tool can show "sidecar" vs "sqlite_fallback" vs "none".
-let lastLoadSource: "sidecar" | "sqlite_fallback" | "none" | "test_seam" = "none";
+// recent load(). Surfaced via getContactsLoadDiagnostic so the health
+// tool can show "sidecar" vs "sidecar_granted_empty" vs "sqlite_fallback"
+// vs "none". The "sidecar_granted_empty" value distinguishes the case
+// where the menubar app has Contacts permission but the user has zero
+// contacts (fresh Mac, iCloud not synced) — without it, that case looks
+// indistinguishable from "menubar denied permission" or "no menubar app".
+export type ContactsLoadSource =
+  | "sidecar"
+  | "sidecar_granted_empty"
+  | "sqlite_fallback"
+  | "none"
+  | "test_seam";
+
+let lastLoadSource: ContactsLoadSource = "none";
+
+// SQLite bulk-load, factored out so the diagnostic can run a pure-SQLite
+// scan without touching the sidecar code path. Mutates the global
+// handleToName + nameIndex + lastLoadReport because loadOneDb already
+// does — this is the same scan production load() runs, just isolated
+// so we can call it without first consulting the sidecar.
+function runSqliteBulkLoad(): void {
+  const paths = findAddressBookDbs();
+  const reports: PerDbReport[] = [];
+  for (const path of paths) {
+    reports.push(loadOneDb(path));
+  }
+  lastLoadReport = reports;
+
+  // Stderr breadcrumb so the user can see what happened by tailing
+  // ~/Library/Logs/Claude/mcp-server-imessage-mcp.log. Stays out of
+  // stdout (which is reserved for JSON-RPC).
+  if (reports.length > 0) {
+    const summary = reports
+      .map((r) => `${r.open_status === "ok" ? "ok" : `[${r.open_status}]`} ${r.path.replace(homedir(), "~")} (+${r.contacts_contributed})`)
+      .join("; ");
+    process.stderr.write(`[contacts] sqlite bulk-load: ${reports.length} db(s); ${handleToName.size} total contacts. ${summary}\n`);
+  } else {
+    process.stderr.write(`[contacts] sqlite bulk-load: no AddressBook databases found\n`);
+  }
+}
 
 function load(): void {
   if (loaded) return;
@@ -225,10 +262,29 @@ function load(): void {
     return;
   }
 
+  // Granted-but-empty: distinct from "denied" or "missing sidecar". The
+  // menubar has permission but the user genuinely has zero contacts.
+  // Without this branch the failure mode silently looks identical to
+  // "FDA missing" — and a SQLite scan won't find anything either, so
+  // we still fall through but record the cause first.
+  if (sidecar && sidecar.permission_status === "granted" && Object.keys(sidecar.handles).length === 0) {
+    lastLoadSource = "sidecar_granted_empty";
+    process.stderr.write(
+      `[contacts] sidecar present and granted but contains zero handles; ` +
+      `falling back to SQLite (this typically means no contacts have synced from iCloud yet)\n`
+    );
+    runSqliteBulkLoad();
+    // If SQLite also returned nothing, lastLoadSource stays "sidecar_granted_empty".
+    // If SQLite found contacts (rare in this branch), upgrade to sqlite_fallback so
+    // the diagnostic doesn't lie about where the data came from.
+    if (handleToName.size > 0) lastLoadSource = "sqlite_fallback";
+    return;
+  }
+
   // Fallback: bulk-load from AddressBook SQLite. Used when the sidecar
-  // is missing (menu bar app not installed), unreadable, or empty (the
-  // user denied Contacts permission to the menu bar app). Requires
-  // Full Disk Access on this binary; will report empty maps without it.
+  // is missing (menu bar app not installed), unreadable (denied /
+  // restricted / rejected), or schema-mismatched. Requires Full Disk
+  // Access on this binary; will report empty maps without it.
   if (sidecar) {
     process.stderr.write(
       `[contacts] sidecar present but unusable (status=${sidecar.permission_status}, ` +
@@ -241,34 +297,11 @@ function load(): void {
     );
   }
 
-  const paths = findAddressBookDbs();
-  const reports: PerDbReport[] = [];
-
-  // Iterate every AddressBook DB and union the resulting handle→name
-  // map. A user with iCloud + local + Google contacts has each source
-  // in a separate Sources/{uuid}/AddressBook-v22.abcddb file, and
-  // earlier versions of this loader returned only the first match —
-  // which silently dropped everyone in the other sources.
-  for (const path of paths) {
-    reports.push(loadOneDb(path));
-  }
-  lastLoadReport = reports;
+  runSqliteBulkLoad();
   lastLoadSource = handleToName.size > 0 ? "sqlite_fallback" : "none";
-
-  // Stderr breadcrumb so the user can see what happened by tailing
-  // ~/Library/Logs/Claude/mcp-server-imessage-mcp.log. Stays out of
-  // stdout (which is reserved for JSON-RPC).
-  if (reports.length > 0) {
-    const summary = reports
-      .map((r) => `${r.open_status === "ok" ? "ok" : `[${r.open_status}]`} ${r.path.replace(homedir(), "~")} (+${r.contacts_contributed})`)
-      .join("; ");
-    process.stderr.write(`[contacts] sqlite bulk-load: ${reports.length} db(s); ${handleToName.size} total contacts. ${summary}\n`);
-  } else {
-    process.stderr.write(`[contacts] sqlite bulk-load: no AddressBook databases found\n`);
-  }
 }
 
-export function getLastContactsLoadSource(): "sidecar" | "sqlite_fallback" | "none" | "test_seam" {
+export function getLastContactsLoadSource(): ContactsLoadSource {
   return lastLoadSource;
 }
 
@@ -315,6 +348,35 @@ export function _resetContactsCache(): void {
   nameIndex = [];
   lastLoadReport = [];
   lastLoadSource = "none";
+}
+
+// Snapshot of which source served the last contact resolution and how
+// many handles ended up in memory. Surfaced by the health tool as a
+// separate field from the SQLite diagnostic so an agent can read
+// "contacts_load.source === 'sidecar'" without confusing it for FDA
+// state. `sidecar_present` distinguishes "no sidecar at all" from
+// "sidecar exists but didn't win" without re-running the load.
+export interface ContactsLoadDiagnostic {
+  source: ContactsLoadSource;
+  count: number;
+  sidecar_present: boolean;
+}
+
+export function getContactsLoadDiagnostic(): ContactsLoadDiagnostic {
+  // Trigger a load if one hasn't happened yet — otherwise source would
+  // be "none" simply because nobody's called resolveHandle, which is
+  // misleading.
+  load();
+  // Reading the sidecar without populating the map: safe because
+  // readContactsSidecar is pure (it never mutates state in this file).
+  // If the sidecar was rejected by trust checks, this returns null —
+  // which is the correct semantics: "no usable sidecar present".
+  const sidecar_present = readContactsSidecar() !== null;
+  return {
+    source: lastLoadSource,
+    count: handleToName.size,
+    sidecar_present,
+  };
 }
 
 // Test seam: inject contacts data directly, bypassing the AddressBook
@@ -395,16 +457,25 @@ function classifyDbError(err: unknown): { status: DbOpenStatus; message: string 
   return { status: "error", message: e?.message ?? String(err) };
 }
 
-// Run the AddressBook bulk-load and report per-DB stats. Resets the
-// cache first so the result reflects current TCC state — this is
-// intended for one-off diagnostic calls, not the hot path. Production
-// `resolveHandle` keeps using the cached map.
+// Run the AddressBook SQLite bulk-load and report per-DB stats.
+// Resets the cache first so the result reflects current TCC state
+// (FDA could have been granted between server start and now), then
+// runs the SQLite scan DIRECTLY — bypassing the sidecar code path
+// entirely. This is what makes `contacts_loaded` meaningfully report
+// the SQLite layer's state rather than whichever layer happened to
+// win in a regular `load()` call.
 //
 // The shape distinguishes "primary DB status" (back-compat for callers
 // that just want a one-line yes/no) from `per_db` (the breakdown for
 // multi-account Macs where iCloud + local + Google all live in
 // separate files).
-export function getAddressBookDiagnostic(): AddressBookDiagnostic {
+//
+// IMPORTANT: after this runs, lastLoadSource will be "sqlite_fallback"
+// or "none" — NOT "sidecar". Callers that want to know which layer
+// served the *production* data should call getContactsLoadDiagnostic()
+// instead, which preserves the layer-of-record. The health tool calls
+// both: this for FDA state, the other for "which layer served the data".
+export function getAddressBookSqliteDiagnostic(): AddressBookDiagnostic {
   const db_paths = findAddressBookDbs();
   const primary = db_paths[0] ?? null;
 
@@ -420,23 +491,35 @@ export function getAddressBookDiagnostic(): AddressBookDiagnostic {
     };
   }
 
-  // Force a fresh load so contacts_loaded reflects right-now state
-  // (FDA could have been granted between server start and now).
+  // Force a fresh SQLite scan. Skip readContactsSidecar — we want to
+  // report THIS layer's state, not the sidecar's. The function
+  // encapsulates its own cache cleanup: we snapshot the SQLite-only
+  // result, then `_resetContactsCache()` BEFORE returning so the very
+  // next `resolveHandle` call goes through the normal layered load().
+  // This invariant is enforced inside the function rather than left
+  // as a caller-must-remember contract — PR 11 review finding #2.
   _resetContactsCache();
-  load();
+  loaded = true; // prevent a parallel load() from also running
+  runSqliteBulkLoad();
+  const sqliteCount = handleToName.size;
+  const sqliteOpenStatus = lastLoadReport.find((r) => r.path === primary)?.open_status ?? "error";
+  const sqliteOpenError = lastLoadReport.find((r) => r.path === primary)?.open_error;
+  const sqlitePerDb = [...lastLoadReport]; // snapshot before reset
 
-  const per_db = getLastContactsLoadReport();
-  const primaryReport = per_db.find((r) => r.path === primary);
-  const open_status: DbOpenStatus = primaryReport?.open_status ?? "error";
-  const open_error = primaryReport?.open_error;
+  // Restore the cache to a fresh state so production resolveHandle
+  // calls go through the normal sidecar-first path on next access.
+  // Critical: callers that previously relied on this function leaving
+  // the cache in SQLite-only state will now see normal behavior. The
+  // only intended caller (health tool) didn't need that anyway.
+  _resetContactsCache();
 
   return {
     db_path: primary,
     db_path_exists: primary != null && existsSync(primary),
     db_paths,
-    open_status,
-    open_error,
-    contacts_loaded: handleToName.size,
-    per_db,
+    open_status: sqliteOpenStatus,
+    open_error: sqliteOpenError,
+    contacts_loaded: sqliteCount,
+    per_db: sqlitePerDb,
   };
 }
