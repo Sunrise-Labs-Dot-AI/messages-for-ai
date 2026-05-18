@@ -230,13 +230,23 @@ struct DraftRowView: View {
   private func send() async {
     sending = true
     lastError = nil
-    let result = await DraftSender.send(toHandle: draft.to_handle, body: draft.body)
+    let result = await DraftSender.send(draft: draft)
     if result.ok, let service = result.service {
-      do {
-        try store.markSent(id: draft.id, sentAt: Date(), service: service)
-      } catch {
-        lastError = "sent ok but failed to update draft file: \(error.localizedDescription)"
+      // For iMessage drafts, the menubar owns the sent_at write —
+      // markSent updates the draft JSON.
+      // For WhatsApp drafts, the daemon already wrote sent_at to disk
+      // as part of sendDraft; DraftStore's FS watcher picks it up.
+      // Calling markSent on a WhatsApp draft would throw
+      // platformMismatch, so route by platform.
+      if draft.effectivePlatform == .imessage {
+        do {
+          try store.markSent(id: draft.id, sentAt: Date(), service: service)
+        } catch {
+          lastError = "sent ok but failed to update draft file: \(error.localizedDescription)"
+        }
       }
+      // (WhatsApp: nothing to do here. Row will refresh when the FS
+      // watcher fires on the daemon's sent_at write — typically <100 ms.)
     } else {
       lastError = result.error ?? "unknown error"
     }
