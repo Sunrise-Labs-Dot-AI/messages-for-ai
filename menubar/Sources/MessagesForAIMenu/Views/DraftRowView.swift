@@ -47,6 +47,13 @@ struct DraftRowView: View {
         }
       }
       Spacer()
+      // Show the platform badge only for non-iMessage drafts. iMessage
+      // is the unmarked default — labeling every iMessage row would be
+      // visual noise for the v0.2.x user who never adds WhatsApp. This
+      // mirrors Apple's pattern of only annotating SMS threads.
+      if draft.effectivePlatform != .imessage {
+        PlatformBadge(platform: draft.effectivePlatform)
+      }
       Text(relativeStagedAt)
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -193,7 +200,11 @@ struct DraftRowView: View {
       ForEach(Array(messages.enumerated()), id: \.offset) { idx, msg in
         let prev = idx > 0 ? messages[idx - 1] : nil
         let showSender = msg.from_me ? false : (prev?.sender_handle != msg.sender_handle)
-        ContextBubbleView(message: msg, showSender: showSender)
+        ContextBubbleView(
+          message: msg,
+          showSender: showSender,
+          platform: draft.effectivePlatform
+        )
       }
     }
   }
