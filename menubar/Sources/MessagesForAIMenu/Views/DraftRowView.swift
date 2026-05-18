@@ -10,6 +10,14 @@ struct DraftRowView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       header
+      // Show the induced-draft warning between the header and the body
+      // bubble — flagged by the WhatsApp daemon when a draft is staged
+      // within 60 s of an inbound message from a non-contact sender.
+      // The visual nudge pairs with the doubled hold-to-fire duration
+      // (1.0 s → 2.0 s, applied below in `actions`).
+      if draft.induced_by_unknown_contact == true {
+        InducedDraftBadge()
+      }
       bodyBubble
       if let lastError {
         Text(lastError)
@@ -22,6 +30,15 @@ struct DraftRowView: View {
     .padding(14)
     .background(Color(nsColor: .controlBackgroundColor))
     .clipShape(RoundedRectangle(cornerRadius: 10))
+  }
+
+  /// Hold-to-fire duration for THIS draft's Send button.
+  /// - 2.0 s for WhatsApp drafts flagged as induced by an unknown
+  ///   contact (prompt-injection-defense friction).
+  /// - 1.0 s default for everything else — short enough not to feel
+  ///   like a chore, long enough to be a clear commitment.
+  private var holdDuration: Double {
+    draft.induced_by_unknown_contact == true ? 2.0 : 1.0
   }
 
   // MARK: - Sections
@@ -82,9 +99,15 @@ struct DraftRowView: View {
   private var actions: some View {
     HStack(spacing: 8) {
       // Hold-to-fire Send. Prevents misclick sends from the popover.
-      // The 1.0s threshold is short enough not to feel like a chore
-      // but long enough to be a clear commitment.
-      HoldToFireButton(duration: 1.0, isSending: sending) {
+      // Duration is platform/draft-dependent (see `holdDuration` above):
+      // 1 s default, 2 s for induced-by-unknown-contact WhatsApp drafts.
+      // Tint matches the draft's platform — keeps the visual story
+      // consistent with the badge + outgoing bubble color.
+      HoldToFireButton(
+        duration: holdDuration,
+        isSending: sending,
+        tint: draft.effectivePlatform.accentColor
+      ) {
         Task { await send() }
       }
 

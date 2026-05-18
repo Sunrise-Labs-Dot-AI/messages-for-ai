@@ -20,6 +20,11 @@ import SwiftUI
 struct HoldToFireButton: View {
   let duration: Double
   let isSending: Bool
+  /// Background pill color. Defaults to the system `.accentColor` to
+  /// preserve v0.2.x behavior for iMessage drafts. WhatsApp drafts
+  /// pass `Platform.whatsapp.accentColor` (green) so the button color
+  /// matches the platform badge + outgoing bubble color in the same row.
+  var tint: Color = .accentColor
   let action: () -> Void
 
   @State private var holding = false
@@ -30,7 +35,7 @@ struct HoldToFireButton: View {
     ZStack {
       // Background pill
       RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .fill(Color.accentColor)
+        .fill(tint)
         .frame(width: 110, height: 26)
 
       // Progress fill — animated via SwiftUI implicit animation
