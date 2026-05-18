@@ -92,7 +92,7 @@ Env vars (configure for trusted automation contexts):
 - `IMESSAGE_DAILY_SEND_CAP` — maximum sends per UTC day. Default `50`.
   Set to `0` to disable.
 - `IMESSAGE_MCP_IDENTIFIER` — codesign identifier used by
-  `scripts/install.sh`. Default `com.local.messages-mcp`. Changing
+  `scripts/dev-install.sh`. Default `com.local.imessage-drafts-mcp.dev`. Changing
   this invalidates any existing FDA grant — you'll need to re-toggle
   the FDA entry after the first build with a new identifier.
 

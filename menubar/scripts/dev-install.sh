@@ -45,16 +45,22 @@ CODESIGN=/usr/bin/codesign
 AWK=/usr/bin/awk
 
 APP_NAME="Messages for AI"
-# Bundle ID changed from `com.local.messages-for-ai` after that one got
-# poisoned by an earlier build that lacked NSContactsUsageDescription —
+# Bundle ID history:
+#   `com.local.imessage-drafts` (v0.1.x dev, poisoned by an early build
+#     that lacked NSContactsUsageDescription)
+#   → `com.sunriselabs.imessage-drafts` (v0.1.x release)
+#   → `com.sunriselabs.messages-for-ai` (current; v0.2.0 rename)
 # macOS TCC's opaque "this bundle is suspicious" cache survives both
-# `tccutil reset` and a `killall tccd`, and Apple gives no way to clear
-# it. A fresh bundle ID dodges the whole apparatus and is treated as a
-# new app for TCC purposes. The `.local.` namespace is reserved for
-# Bonjour multicast DNS anyway — `com.sunriselabs.*` matches the GitHub
-# org and is the conventional reverse-DNS shape for unsigned dev tools.
+# `tccutil reset` and `killall tccd`. Each fresh bundle ID dodges the
+# whole apparatus and is treated as a new app for TCC purposes. The
+# `.local.` namespace is reserved for Bonjour multicast DNS anyway —
+# `com.sunriselabs.*` matches the GitHub org and is the conventional
+# reverse-DNS shape for signed dev/release tools.
 BUNDLE_ID="com.sunriselabs.messages-for-ai"
-LEGACY_BUNDLE_IDS=("com.local.messages-for-ai") # for tccutil cleanup hint
+# IDs that existed in v0.1.x installs and may have left orphan TCC
+# entries on existing user machines. Surface them in the tccutil cleanup
+# hint after install. Do NOT include the current BUNDLE_ID here.
+LEGACY_BUNDLE_IDS=("com.local.imessage-drafts" "com.sunriselabs.imessage-drafts")
 INSTALL_ROOT="${INSTALL_ROOT:-/Applications}"
 APP="${INSTALL_ROOT}/${APP_NAME}.app"
 LEGACY_APP="${HOME}/Applications/${APP_NAME}.app"

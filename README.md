@@ -15,15 +15,18 @@ frictionless automation. This project exists for the *other* lane — users
 who want AI assistance with a safety gate. Pick the one that matches your
 risk tolerance:
 
+Claims below describe Anthropic's plugin as published at the linked commit on 2026-05-18; verify against [their repo](https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/imessage) if checking later.
+
 | | Anthropic `imessage` plugin | Messages for AI (this project) |
 |---|---|---|
-| **Send model** | Direct — Claude sends immediately on tool call | Staged — every send routes through your menu bar for one-click approve / edit / reject |
-| **Audit log** | None | Every drafted message + outcome appended to `~/.messages-mcp/send-audit.log` |
-| **UI** | CLI-only | Menu bar review surface with thread-context bubbles, hold-to-fire send |
+| **Send model** | Direct — Claude sends immediately on tool call | Staged (default) — `send_draft` is gated by a `require_approval` toggle that ships ON; sends route through the menu bar's hold-to-fire Send button. Users can disable the toggle in the menu bar footer to allow direct MCP sends. |
+| **Approval surface** | macOS Automation TCC prompt on first send only | Menu bar review: hold-to-fire Send / Discard per draft (no in-place edit yet — discard and re-stage instead) |
+| **Audit log** | Not present at the linked revision | Every **successful** MCP send appended to `~/.messages-mcp/send-audit.log` with timestamp, recipient handle, and SHA-256 of body. Discards and blocked sends are not currently logged. |
+| **UI** | CLI-only | Menu bar surface with thread-context bubbles |
 | **Contact resolution** | Raw handles only | Resolves to Contacts names via local sidecar |
 | **Transports** | iMessage only | iMessage now; WhatsApp / Signal / Slack on the roadmap (per-transport MCPs sharing one menu bar) |
-| **Daily send cap** | None | Circuit-breaker default 50/UTC-day, env-configurable |
-| **Best for** | "Just send the message" automation | "Let me see what Claude wants to say before it goes out" |
+| **Daily send cap** | Not present at the linked revision | Circuit-breaker default 50/UTC-day, env-configurable via `IMESSAGE_DAILY_SEND_CAP` |
+| **Best for** | "Just send the message" automation | "Let me see what Claude wants to say before it goes out" — when the default approval gate is on |
 
 If you want fire-and-forget, use Anthropic's plugin. If you want every
 outgoing message to pass through your eye first, use this one.
@@ -72,7 +75,7 @@ already do."
 | `get_draft` | Read one staged draft. |
 | `discard_draft` | Delete a staged draft. |
 | `send_draft` | **Destructive.** Send a staged draft via Messages.app. Refuses duplicate sends. (Or send via the menu bar app — see below.) |
-| `get_imessage_current_time` | UTC + system-local timestamps, for building `since` filters. |
+| `get_current_time` | UTC + system-local timestamps, for building `since` filters. |
 | `health_check` | Diagnose permissions / contact lookup / chat.db access. Run when something silently isn't working. |
 
 Hard guardrails:
@@ -131,7 +134,7 @@ cert, contact lookup gracefully falls back to "raw phone numbers" mode
 
 ```sh
 git clone https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai.git
-cd imessage-drafts-mcp
+cd messages-for-ai
 bun install
 
 # Install the MCP binary to ~/bin/imessage-drafts-mcp
@@ -372,7 +375,7 @@ src/
     threads.ts             # list_threads, get_thread
     search.ts              # search_messages
     drafts.ts              # stage/list/get/discard/send drafts
-    time.ts                # get_imessage_current_time
+    time.ts                # get_current_time
     health.ts              # health_check
     _result.ts             # shared text-result envelopes
   chatdb/

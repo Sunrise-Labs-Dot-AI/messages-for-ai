@@ -4,7 +4,7 @@ import { jsonResult } from "./_result.ts";
 
 export function registerTimeTool(server: McpServer): void {
   server.registerTool(
-    "get_imessage_current_time",
+    "get_current_time",
     {
       title: "Current time (for constructing `since` filters)",
       description:
