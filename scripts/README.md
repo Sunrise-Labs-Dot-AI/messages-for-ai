@@ -5,33 +5,91 @@ Three scripts live here. They have **different audiences** and run in
 `install.sh` in the repo so that a contributor can't run the wrong one
 by reflex.
 
+## Architecture: the `.app`-wrap layout
+
+Both the menubar UI binary (`MessagesForAIMenu`) and the MCP binary
+(`imessage-drafts-mcp`) live inside one `.app` bundle:
+
+```
+/Applications/Messages for AI.app/
+└── Contents/
+    ├── Info.plist           (CFBundleIdentifier = com.sunriselabs.messages-for-ai)
+    └── MacOS/
+        ├── MessagesForAIMenu        (Swift menubar UI — Info.plist's CFBundleExecutable)
+        └── imessage-drafts-mcp      (compiled Bun MCP binary — sidecar)
+```
+
+A backward-compat symlink at `~/bin/imessage-drafts-mcp` →
+`/Applications/Messages for AI.app/Contents/MacOS/imessage-drafts-mcp`
+lets MCP client configs that hard-coded `~/bin/imessage-drafts-mcp`
+keep working.
+
+**Why both inner binaries share `Identifier=com.sunriselabs.messages-for-ai`:**
+macOS TCC keys Full Disk Access grants by the running process's
+codesign `Identifier=` string (compared against the granted bundle ID
+in TCC.db). When you drag a Mach-O that lives inside an `.app` into
+System Settings → FDA, macOS resolves up and stores the grant against
+the bundle's `CFBundleIdentifier`. For the inner MCP binary's process
+to be covered by that grant, its `Identifier=` must equal the bundle's
+identifier — not a separate per-binary string. This is also how
+Apple's own multi-Mach-O bundles work (Xcode, Photoshop, anything with
+sidecar binaries in `Contents/MacOS/`).
+
+⚠️ **Never run `codesign --deep` on the bundle after you've signed
+inner binaries with explicit `--identifier`.** `--deep` re-derives
+each inner Mach-O's identifier from its path basename and clobbers
+the explicit value. The bundle's seal will still verify; the .app
+will launch; the MCP will fail to read chat.db at runtime with
+`permission_denied` because TCC can't match the path-derived
+identifier against any FDA grant. `dev-install.sh` and
+`build-release.sh` both guard against this — `build-release.sh`
+has a defensive post-seal check that fails the build if either inner
+binary's identifier ≠ `com.sunriselabs.messages-for-ai`.
+
 ## `dev-install.sh` — contributor / local development
 
-Builds the MCP binary from source via `bun build --compile`, codesigns
-it with the contributor's `Developer ID Application: ... (LQ93LRM9QU)`
-cert (auto-detected; falls back to adhoc with a warning), and installs
-it to `~/bin/imessage-drafts-mcp`.
+Rebuilds the MCP binary from source via `bun build --compile`,
+codesigns it with the contributor's
+`Developer ID Application: ... (LQ93LRM9QU)` cert (auto-detected;
+falls back to adhoc with a warning), installs it INTO the existing
+`/Applications/Messages for AI.app/Contents/MacOS/`, then re-seals
+the bundle (without `--deep`).
 
 Run this when:
 - You've made a code change to `src/` and want to test it against your
   live Claude Desktop / Claude Code MCP client.
 - You're iterating on the MCP server itself.
 
+**Prerequisite:** the menubar `.app` must already exist at
+`/Applications/Messages for AI.app/`. If it doesn't, install it first:
+
+```sh
+cd menubar && bash scripts/dev-install.sh
+```
+
+Then from the repo root:
+
 ```sh
 bun run install:bin    # or: bash scripts/dev-install.sh
 ```
 
-Identifier embedded in the signed binary: **`com.local.messages-mcp.dev`**.
-Distinct from the release identifier so dev rebuilds can't clobber a
-release install's TCC grant. See the comment at the top of the script
-for the full reasoning.
+Identifier embedded in the signed inner binary:
+**`com.sunriselabs.messages-for-ai`** (same as the bundle). Same
+identifier in both dev and release builds — TCC's grant matches on
+`(identifier, team-id)` and is tolerant of cdhash changes, so a dev
+rebuild updates the cdhash but doesn't invalidate any existing FDA
+grant on the bundle.
 
 ## `build-release.sh` — maintainer
 
-Builds + signs + notarizes the MCP binary AND the menu bar app, packages
-everything (plus a copy of `install-release.sh` renamed to `install.sh`,
-plus a short user-facing README) into `dist/imessage-drafts-mcp-<version>.zip`,
-ready for upload to GitHub Releases.
+Builds + signs + notarizes ONE `.app` bundle containing BOTH binaries,
+packages it (plus a copy of `install-release.sh` renamed to
+`install.sh`, plus a short user-facing README) into
+`dist/imessage-drafts-mcp-<version>.zip`, ready for upload to GitHub
+Releases.
+
+Single notary submission for the bundle (the bundle's seal covers
+both inner binaries — no separate binary submission needed).
 
 Run this when cutting a tagged release. One-time setup required:
 
@@ -45,19 +103,21 @@ xcrun notarytool store-credentials imessage-drafts-mcp-notary \
 Then:
 
 ```sh
-bash scripts/build-release.sh v0.1.1
-gh release create v0.1.1 dist/imessage-drafts-mcp-v0.1.1.zip ...
+bash scripts/build-release.sh v0.2.0
+gh release create v0.2.0 dist/imessage-drafts-mcp-v0.2.0.zip ...
 ```
 
 Takes ~5–10 minutes (most of which is Apple's notarization queue).
 
-Identifier embedded in the release binary: **`com.sunriselabs.messages-mcp`**.
-The menu bar app's bundle ID is **`com.sunriselabs.messages-for-ai`**.
+Identifier embedded in BOTH inner binaries and the bundle:
+**`com.sunriselabs.messages-for-ai`**.
 
 ## `install-release.sh` — end user
 
 Does NOT compile anything. Copies the pre-built, already-signed-and-
-notarized artifacts from a release zip into the conventional locations.
+notarized `.app` from a release zip into `/Applications/`, creates the
+`~/bin/imessage-drafts-mcp` backward-compat symlink, removes legacy
+v0.1.x install artifacts (`~/bin/imessage-mcp`, `~/Applications/...`).
 
 This script ships *inside* the release zip (where `build-release.sh`
 renames it to plain `install.sh` because that's the universal naming
@@ -71,8 +131,10 @@ Before copying anything, this script verifies:
 1. The bundle's embedded `TeamIdentifier` matches `LQ93LRM9QU`. Refuses
    to install otherwise — defends against phishing-site forged releases
    signed under an attacker's Developer ID.
-2. `codesign --verify --strict` passes on both the binary and the .app.
-3. `spctl --assess` accepts the .app (i.e. Apple's notarization is
+2. The inner MCP binary's `TeamIdentifier` also matches (catches a
+   release zip with a stale or unsigned inner binary).
+3. `codesign --verify --strict` passes on the .app.
+4. `spctl --assess` accepts the .app (i.e. Apple's notarization is
    recognized).
 
 Override `EXPECTED_TEAM_ID=...` if you're intentionally installing a

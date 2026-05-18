@@ -33,19 +33,28 @@ SPCTL=/usr/sbin/spctl
 SCRIPT_DIR="$( cd -P "$( dirname "${BASH_SOURCE[0]}" )" && pwd -P )"
 cd "$SCRIPT_DIR"
 
-BIN_SRC="$SCRIPT_DIR/bin/imessage-drafts-mcp"
 APP_SRC="$SCRIPT_DIR/Messages for AI.app"
-BIN_DEST="$HOME/bin/imessage-drafts-mcp"
 APP_DEST="/Applications/Messages for AI.app"
+# Inner MCP binary path inside the bundle (post-install). The release
+# zip ships only the .app — the MCP binary lives inside it. We create
+# a symlink at ~/bin/imessage-drafts-mcp pointing here so existing MCP
+# client configs (those that hard-coded ~/bin/imessage-drafts-mcp from
+# the v0.2.0-pre split layout, or from the docs) keep resolving to the
+# right Mach-O.
+APP_MCP_BIN="$APP_DEST/Contents/MacOS/imessage-drafts-mcp"
+BIN_SYMLINK="$HOME/bin/imessage-drafts-mcp"
+LEGACY_BIN="$HOME/bin/imessage-mcp"   # v0.1.x bare binary; removed below
 
 # ─── Sanity check the archive ───────────────────────────────────────────────
 
-if [[ ! -x "$BIN_SRC" ]]; then
-  echo "✗ missing $BIN_SRC — is the release archive intact?" >&2
-  exit 1
-fi
 if [[ ! -d "$APP_SRC" ]]; then
   echo "✗ missing $APP_SRC — is the release archive intact?" >&2
+  exit 1
+fi
+if [[ ! -x "$APP_SRC/Contents/MacOS/imessage-drafts-mcp" ]]; then
+  echo "✗ missing inner MCP binary at $APP_SRC/Contents/MacOS/imessage-drafts-mcp" >&2
+  echo "  (release archive is malformed — the .app should contain BOTH the menubar" >&2
+  echo "  UI binary and the MCP binary inside Contents/MacOS/)" >&2
   exit 1
 fi
 
@@ -87,8 +96,12 @@ verify_team_id() {
   echo "  ✓ $kind: Team $detected, seal intact"
 }
 
-verify_team_id "$BIN_SRC" "imessage-drafts-mcp binary" || exit 1
 verify_team_id "$APP_SRC" "Messages for AI.app" || exit 1
+# Also verify the inner MCP binary is sealed by the same Team. The .app
+# verify above would catch a missing/corrupt inner Mach-O via the seal,
+# but checking explicitly here gives a clearer error if someone shipped
+# a release zip with a stale or unsigned inner binary.
+verify_team_id "$APP_SRC/Contents/MacOS/imessage-drafts-mcp" "inner MCP binary" || exit 1
 
 # Gatekeeper-assess the .app. This is the system's own "would I allow
 # this app to run?" check, which incorporates notarization status.
@@ -98,28 +111,9 @@ if ! "$SPCTL" --assess --type execute "$APP_SRC" 2>&1; then
   exit 1
 fi
 
-echo "=== Installing imessage-drafts-mcp ==="
+echo "=== Installing Messages for AI ==="
 
-# ─── imessage-drafts-mcp binary → ~/bin/ ───────────────────────────────────────────
-
-echo
-echo "› ~/bin/imessage-drafts-mcp"
-mkdir -p "$HOME/bin"
-# Atomic copy + rename so a running MCP child doesn't get its file
-# yanked mid-exec.
-cp "$BIN_SRC" "$BIN_DEST.new"
-xattr -cr "$BIN_DEST.new" || true
-mv "$BIN_DEST.new" "$BIN_DEST"
-chmod +x "$BIN_DEST"
-
-# Confirm the seal survived the copy.
-if ! "$CODESIGN" --verify --strict --verbose "$BIN_DEST" >/dev/null 2>&1; then
-  echo "✗ post-install codesign --verify failed on $BIN_DEST" >&2
-  exit 1
-fi
-echo "  ✓ signature preserved through copy"
-
-# ─── Menu bar app → /Applications/ ──────────────────────────────────────────
+# ─── Menu bar app (with embedded MCP binary) → /Applications/ ───────────────
 
 echo
 echo "› /Applications/Messages for AI.app"
@@ -153,8 +147,32 @@ if [[ -d "$LEGACY_APP" ]]; then
   rm -rf "$LEGACY_APP"
 fi
 
-# Refresh LaunchServices so `open` finds the new bundle (otherwise the
-# cached path can win and `open` returns error -600).
+# ─── Backward-compat symlink at ~/bin/imessage-drafts-mcp ───────────────────
+#
+# MCP client configs that point at ~/bin/imessage-drafts-mcp (the v0.2.0
+# documentation default, or a config carried over from a pre-.app-wrap
+# build) keep working — the symlink resolves to the .app-internal
+# binary at exec time. TCC sees the binary's actual path inside the
+# .app and applies the bundle's grant.
+#
+# We also nuke the v0.1.x bare binary at ~/bin/imessage-mcp (if it's
+# present) since it's a different binary that doesn't share the new
+# bundle's TCC identity — leaving it around just confuses
+# Claude Desktop configs that haven't been migrated yet.
+
+echo
+echo "› ~/bin/imessage-drafts-mcp → $APP_MCP_BIN  (backward-compat symlink)"
+mkdir -p "$HOME/bin"
+ln -sfn "$APP_MCP_BIN" "$BIN_SYMLINK"
+
+if [[ -e "$LEGACY_BIN" && ! -L "$LEGACY_BIN" ]]; then
+  echo "  › removing legacy v0.1.x binary at $LEGACY_BIN"
+  rm -f "$LEGACY_BIN"
+fi
+
+# ─── Refresh LaunchServices ────────────────────────────────────────────────
+# So `open` finds the new bundle (otherwise the cached path can win and
+# `open` returns error -600).
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [[ -x "$LSREGISTER" ]]; then
   "$LSREGISTER" -f "$APP_DEST" >/dev/null 2>&1 || true
@@ -163,8 +181,8 @@ fi
 # ─── Smoke test ─────────────────────────────────────────────────────────────
 
 echo
-echo "› smoke test (initialize call against the MCP)"
-SMOKE_OUTPUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"install-smoke","version":"0"}}}' | "$BIN_DEST" 2>&1 | head -1)
+echo "› smoke test (initialize call against the inner MCP binary)"
+SMOKE_OUTPUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"install-smoke","version":"0"}}}' | "$APP_MCP_BIN" 2>&1 | head -1)
 if echo "$SMOKE_OUTPUT" | grep -q '"serverInfo"'; then
   echo "  ✓ MCP responds to initialize"
 else
@@ -180,11 +198,17 @@ cat <<EOF
 
 Three things you need to do manually:
 
-1. GRANT FULL DISK ACCESS to the MCP binary so it can read chat.db
-   (your iMessage history):
+1. GRANT FULL DISK ACCESS to **Messages for AI.app** so the inner MCP
+   binary can read chat.db (your iMessage history):
 
      System Settings → Privacy & Security → Full Disk Access
-     Click "+" → navigate to ~/bin/imessage-drafts-mcp → select → toggle on
+     Click "+" → navigate to /Applications → select "Messages for AI"
+     (the .app, NOT the inner binary) → Open → confirm toggle is ON
+
+   IMPORTANT: drag the .app itself, not the inner Mach-O. macOS keys
+   FDA grants by the bundle's CFBundleIdentifier
+   (com.sunriselabs.messages-for-ai); the inner MCP binary shares that
+   identifier so one .app-level grant covers both binaries inside.
 
 2. CONFIGURE CLAUDE DESKTOP to use the MCP. Edit:
 
@@ -194,11 +218,15 @@ Three things you need to do manually:
 
      {
        "mcpServers": {
-         "imessage": {
-           "command": "$BIN_DEST"
+         "imessage-drafts": {
+           "command": "$BIN_SYMLINK"
          }
        }
      }
+
+   The path can be either the symlink ($BIN_SYMLINK) or the direct
+   .app-internal binary ($APP_MCP_BIN) — they resolve to the same
+   Mach-O.
 
    Then quit Claude Desktop entirely (Cmd+Q on the Claude menu, NOT
    just closing the window) and reopen it.
@@ -213,7 +241,9 @@ Three things you need to do manually:
    that the MCP reads to resolve recipient names.
 
 After these three steps, in a Claude Desktop chat ask:
-   "call health_check"
-to verify everything is wired up.
+   "Call the health_check tool from the imessage-drafts MCP."
+You should see chatdb.open_status: ok and fda_likely_missing: false.
+If you see permission_denied, double-check that **Messages for AI.app**
+(not the inner binary) is in the FDA list and toggled ON.
 ==================================================================
 EOF

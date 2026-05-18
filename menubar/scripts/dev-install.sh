@@ -162,6 +162,23 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
 fi
 
 ENTITLEMENTS="$(dirname "$0")/messages-for-ai.entitlements"
+
+# Sign the inner Mach-Os explicitly with the bundle's identifier, then
+# seal the bundle WITHOUT --deep. See scripts/README.md (Architecture
+# section) for the full reasoning — short version: `codesign --deep`
+# overrides any --identifier flag on inner Mach-Os and re-derives each
+# from its path basename, leaving the menubar binary with Identifier=
+# MessagesForAIMenu (path-derived, no reverse-DNS prefix), which TCC
+# cannot match against any grant. We need the menubar binary's process
+# identity to equal the bundle's CFBundleIdentifier so the FDA grant
+# on the .app covers it.
+#
+# This script signs ONLY the menubar binary + bundle. If the MCP
+# binary is already inside the bundle (from a prior repo-root
+# dev-install.sh run), the repo-root dev-install.sh re-signs it
+# afterwards. We deliberately avoid --deep so that, if the MCP binary
+# IS already there, we don't clobber its explicit identifier.
+
 if [[ -n "$SIGN_IDENTITY" ]]; then
   # Defense-in-depth: re-verify Team ID embedded in the chosen identity.
   # The awk filter above already enforces this for auto-detection; a
@@ -172,14 +189,8 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
     echo "  Refusing to sign with an unknown identity." >&2
     exit 1
   fi
-  echo "› signing with Developer ID: $SIGN_IDENTITY"
-  # --entitlements passes the per-feature permissions Hardened Runtime
-  # requires for Contacts framework access and Apple Events. Without
-  # the addressbook entitlement, CNContactStore.requestAccess throws
-  # "Access Denied" synchronously even for Developer-ID-signed apps.
-  "$CODESIGN" --force --deep --sign "$SIGN_IDENTITY" \
-    --identifier "${BUNDLE_ID}" --options=runtime \
-    --entitlements "$ENTITLEMENTS" "$APP"
+  SIGN_ARGS=(--force --sign "$SIGN_IDENTITY")
+  ADHOC=0
 else
   if [[ "${CONTACTS_REQUIRE_DEVID:-}" == "1" ]]; then
     echo "✗ no Developer ID Application cert from team $EXPECTED_TEAM_ID found, but CONTACTS_REQUIRE_DEVID=1" >&2
@@ -191,7 +202,49 @@ else
   echo "  ⚠  CNContactStore.requestAccess will fail under adhoc signing —"
   echo "     Contacts resolution will be unavailable until you install a"
   echo "     Developer ID Application cert. Sending iMessages still works."
-  "$CODESIGN" --force --deep --sign - --identifier "${BUNDLE_ID}" --options=runtime "$APP"
+  SIGN_ARGS=(--force --sign -)
+  ADHOC=1
+fi
+
+# Sign the menubar binary in place with the bundle's identifier.
+echo "› signing menubar binary with --identifier ${BUNDLE_ID}"
+"$CODESIGN" "${SIGN_ARGS[@]}" \
+  --identifier "${BUNDLE_ID}" --options=runtime \
+  "$APP/Contents/MacOS/$EXE_NAME"
+
+# If a sibling MCP binary already lives inside the bundle (from a
+# prior repo-root dev-install.sh run), re-sign it too — with the SAME
+# bundle identifier — so the bundle seal below validates a consistent
+# inner-identifier state. The repo-root dev-install.sh will re-sign
+# it again with fresh build output, but signing it here keeps the
+# intermediate state valid.
+MCP_SIBLING="$APP/Contents/MacOS/imessage-drafts-mcp"
+if [[ -x "$MCP_SIBLING" ]]; then
+  echo "› re-signing existing MCP sibling with --identifier ${BUNDLE_ID}"
+  "$CODESIGN" "${SIGN_ARGS[@]}" \
+    --identifier "${BUNDLE_ID}" --options=runtime \
+    "$MCP_SIBLING"
+fi
+
+# Seal the bundle. NO --deep — the explicit per-file signing above
+# put the right identifiers on each inner Mach-O; --deep would now
+# overwrite them.
+#
+# --entitlements passes the per-feature permissions Hardened Runtime
+# requires for Contacts framework access and Apple Events. Without
+# the addressbook entitlement, CNContactStore.requestAccess throws
+# "Access Denied" synchronously even for Developer-ID-signed apps.
+if [[ "$ADHOC" -eq 1 ]]; then
+  # Adhoc bundle seal — no entitlements file (adhoc-signed bundles
+  # can't claim entitlements that require Apple authorization).
+  echo "› sealing .app bundle adhoc"
+  "$CODESIGN" "${SIGN_ARGS[@]}" \
+    --identifier "${BUNDLE_ID}" --options=runtime "$APP"
+else
+  echo "› sealing .app bundle with Developer ID + entitlements"
+  "$CODESIGN" "${SIGN_ARGS[@]}" \
+    --identifier "${BUNDLE_ID}" --options=runtime \
+    --entitlements "$ENTITLEMENTS" "$APP"
 fi
 
 echo "› verifying signature seal"

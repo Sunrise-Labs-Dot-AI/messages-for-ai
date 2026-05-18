@@ -5,15 +5,30 @@
 #
 # Output: dist/imessage-drafts-mcp-<version>.zip — a self-contained archive
 # containing:
-#   - bin/imessage-drafts-mcp            (signed + notarized command-line binary)
-#   - Messages for AI.app/        (signed + notarized + stapled .app bundle)
-#   - install.sh                  (end-user install script that copies the
-#                                  above into ~/bin/ and /Applications/)
-#   - README.md                   (short user-facing readme; full one is in repo)
+#   - Messages for AI.app/   (signed + notarized + stapled .app bundle;
+#                             contains BOTH the menubar UI binary and the
+#                             MCP binary inside Contents/MacOS/, sharing
+#                             one bundle identifier)
+#   - install.sh             (end-user install script that copies the .app
+#                             to /Applications/ and creates a backward-
+#                             compat symlink at ~/bin/imessage-drafts-mcp)
+#   - README.md              (short user-facing readme; full one is in repo)
 #
 # End users download the zip, extract, and run `bash install.sh`. No
 # Xcode, no Developer Account, no rebuild required — Apple's
 # notarization handles trust verification at first launch.
+#
+# ── Why the .app-wrap architecture (vs a bare CLI binary at zip root) ──
+# macOS Sequoia tightened TCC: bare CLI binaries can't reliably hold a
+# Full Disk Access grant across rebuilds (cdhash changes invalidate
+# path-based grants, and tccutil reset can't address them by bundle ID
+# because they have none). The fix is to install the MCP binary INSIDE
+# the menubar .app bundle, signing every inner Mach-O with the bundle's
+# CFBundleIdentifier (`com.sunriselabs.messages-for-ai`). One FDA grant
+# on the .app covers both binaries. The inner binaries MUST share the
+# bundle's identifier — TCC compares the running process's codesign
+# Identifier= string to the granted identifier; if they differ, the
+# grant doesn't match. Discovered the hard way during v0.2.0 dev.
 #
 # Usage:
 #   bash scripts/build-release.sh v0.1.0
@@ -29,11 +44,10 @@
 #         --password <app-specific-password-from-appleid.apple.com>
 #
 # Resuming after an Apple notary backlog timeout:
-#   Submission UUIDs are written to $DIST/notarize-mcp.uuid and
-#   $DIST/notarize-app.uuid BEFORE we poll Apple. If `xcrun notarytool
-#   wait` times out, you can re-poll without re-uploading (which would
-#   burn another ~5-15 minutes) via:
-#     xcrun notarytool wait $(cat dist/notarize-mcp.uuid) \
+#   The .app's submission UUID is written to $DIST/notarize-app.uuid
+#   BEFORE we poll Apple. If `xcrun notarytool wait` times out, you can
+#   re-poll without re-uploading (which would burn another ~5-15 min) via:
+#     xcrun notarytool wait $(cat dist/notarize-app.uuid) \
 #       --keychain-profile imessage-drafts-mcp-notary
 #   The trap on INT/TERM/EXIT wipes dist/ on abort, so you must save
 #   the UUID elsewhere FIRST if you Ctrl-C during the wait. A future
@@ -108,7 +122,7 @@ fi
 echo "› notarytool profile: $NOTARY_PROFILE"
 
 rm -rf "$DIST"
-mkdir -p "$STAGE/$RELEASE_NAME/bin"
+mkdir -p "$STAGE/$RELEASE_NAME"
 
 # Abort guard: if anything between here and the final success echo
 # exits non-zero (or the user Ctrl-Cs), wipe dist/ so we never leave
@@ -120,87 +134,60 @@ mkdir -p "$STAGE/$RELEASE_NAME/bin"
 trap 'rc=$?; trap "" INT TERM; echo; echo "✗ build aborted (exit $rc); wiping $DIST/" >&2; rm -rf "$DIST"' INT TERM EXIT
 
 # ============================================================================
-# 1. imessage-drafts-mcp binary
+# Build the two binaries (MCP via Bun, menubar via Swift)
 # ============================================================================
-echo
-echo "=== imessage-drafts-mcp binary ==="
+#
+# Neither binary is signed/notarized separately. We assemble them into
+# the .app FIRST, sign each in place with the bundle's identifier, then
+# seal+notarize the bundle as one unit. A single notary submission
+# covers both inner binaries via the bundle's seal.
 
+echo
+echo "=== Building imessage-drafts-mcp (Bun) ==="
 echo "› bun build --compile"
 bun build src/index.ts --compile --outfile "bin/imessage-drafts-mcp"
 xattr -cr bin/imessage-drafts-mcp
 
-echo "› signing with Developer ID + Hardened Runtime"
-# Identifier `com.sunriselabs.messages-mcp` (distinct from the dev
-# identifier `com.local.messages-mcp.dev` used by scripts/dev-install.sh).
-# Different identifiers prevent a dev rebuild from clobbering the TCC
-# grant established when a release binary is installed.
-"$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
-  --identifier "com.sunriselabs.messages-mcp" \
-  --options=runtime \
-  bin/imessage-drafts-mcp
-
-echo "› notarizing imessage-drafts-mcp"
-# Apple's notary service accepts zips for binary submission. We zip,
-# submit, wait for approval, then extract the signed binary back out.
-# (Binaries can't be stapled — the notarization is verified at
-# runtime via a cloud lookup against Apple's CDN.)
-#
-# Two-step submit-then-wait so we can stash the submission UUID
-# BEFORE the wait blocks. If Apple's notary backlog times us out,
-# a maintainer can resume polling against the saved UUID instead
-# of paying another upload round-trip — see script header.
-NOTARIZE_DIR="$DIST/notarize-mcp"
-mkdir -p "$NOTARIZE_DIR"
-cp bin/imessage-drafts-mcp "$NOTARIZE_DIR/"
-ditto -c -k --keepParent "$NOTARIZE_DIR/imessage-drafts-mcp" "$NOTARIZE_DIR/imessage-drafts-mcp.zip"
-MCP_SUBMIT_JSON=$(xcrun notarytool submit "$NOTARIZE_DIR/imessage-drafts-mcp.zip" \
-  --keychain-profile "$NOTARY_PROFILE" \
-  --output-format json \
-  --no-wait)
-MCP_UUID=$(echo "$MCP_SUBMIT_JSON" | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))')
-if [[ -z "$MCP_UUID" ]]; then
-  echo "✗ failed to parse mcp notarytool submission UUID from:" >&2
-  echo "$MCP_SUBMIT_JSON" >&2
-  exit 1
-fi
-echo "$MCP_UUID" > "$DIST/notarize-mcp.uuid"
-echo "› mcp submission uuid: $MCP_UUID (resumable via: xcrun notarytool wait $MCP_UUID --keychain-profile $NOTARY_PROFILE)"
-xcrun notarytool wait "$MCP_UUID" --keychain-profile "$NOTARY_PROFILE"
-
-# The binary is unchanged by notarization — we just need to verify
-# Apple stamped it. The codesign --verify --deep --strict already
-# proves the signature is valid; the cloud check happens at runtime.
-"$CODESIGN" --verify --strict --verbose=2 bin/imessage-drafts-mcp
-
-cp bin/imessage-drafts-mcp "$STAGE/$RELEASE_NAME/bin/imessage-drafts-mcp"
-
-# ============================================================================
-# 2. Messages for AI.app menu bar bundle
-# ============================================================================
 echo
-echo "=== Messages for AI.app ==="
-
+echo "=== Building MessagesForAIMenu (Swift) ==="
 cd "$REPO_ROOT/menubar"
-
 echo "› swift build -c release"
 swift build -c release
+cd "$REPO_ROOT"
 
+# Common .app layout variables
 APP_NAME="Messages for AI"
 BUNDLE_ID="com.sunriselabs.messages-for-ai"
 EXE_NAME="MessagesForAIMenu"
-APP_PATH="$DIST/stage/$RELEASE_NAME/$APP_NAME.app"
+MCP_NAME="imessage-drafts-mcp"
+APP_PATH="$STAGE/$RELEASE_NAME/$APP_NAME.app"
 ENTITLEMENTS="$REPO_ROOT/menubar/scripts/messages-for-ai.entitlements"
 
-BIN=".build/release/$EXE_NAME"
-if [[ ! -x "$BIN" ]]; then
-  echo "expected $BIN to exist after swift build" >&2
-  exit 1
-fi
+MENUBAR_BIN="$REPO_ROOT/menubar/.build/release/$EXE_NAME"
+MCP_BIN="$REPO_ROOT/bin/$MCP_NAME"
+for f in "$MENUBAR_BIN" "$MCP_BIN" "$ENTITLEMENTS"; do
+  if [[ ! -e "$f" ]]; then
+    echo "✗ build artifact missing: $f" >&2
+    exit 1
+  fi
+done
 
-echo "› assembling $APP_NAME.app"
+# ============================================================================
+# Assemble Messages for AI.app
+# ============================================================================
+#
+# Both inner Mach-Os live in Contents/MacOS/. CFBundleExecutable is the
+# menubar binary (it's what `open Messages for AI.app` launches and what
+# LaunchServices indexes). The MCP binary is a sidecar — Claude
+# Desktop's stdio MCP framework launches it directly by path, never via
+# LaunchServices.
+echo
+echo "=== Assembling $APP_NAME.app ==="
+
 mkdir -p "$APP_PATH/Contents/MacOS"
 mkdir -p "$APP_PATH/Contents/Resources"
-cp "$BIN" "$APP_PATH/Contents/MacOS/$EXE_NAME"
+cp "$MENUBAR_BIN" "$APP_PATH/Contents/MacOS/$EXE_NAME"
+cp "$MCP_BIN"     "$APP_PATH/Contents/MacOS/$MCP_NAME"
 xattr -cr "$APP_PATH"
 
 cat > "$APP_PATH/Contents/Info.plist" <<EOF
@@ -236,17 +223,76 @@ cat > "$APP_PATH/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-echo "› signing app with Developer ID + Hardened Runtime + entitlements"
-"$CODESIGN" --force --deep --timestamp \
-  --sign "$SIGN_IDENTITY" \
+# ============================================================================
+# Sign each inner binary with the BUNDLE's identifier, then seal the
+# bundle. DO NOT use --deep on the bundle seal.
+# ============================================================================
+#
+# Why per-file signing instead of `codesign --deep` on the bundle:
+# --deep walks every inner Mach-O and re-derives its codesign
+# Identifier= from its path basename, OVERWRITING any explicit
+# --identifier we'd pass at the bundle level. The MCP binary would end
+# up with Identifier=imessage-drafts-mcp (path-derived, no reverse-DNS
+# prefix), which TCC can't match against any FDA grant. The bundle
+# seal would verify, the app would launch — and the MCP would fail to
+# read chat.db at runtime with permission_denied.
+#
+# Sign each binary individually first; THEN seal the bundle (without
+# --deep) so the explicit identifiers stick.
+
+echo
+echo "=== Signing inner binaries (both with --identifier $BUNDLE_ID) ==="
+
+echo "› menubar binary"
+"$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
+  --identifier "$BUNDLE_ID" \
+  --options=runtime \
+  "$APP_PATH/Contents/MacOS/$EXE_NAME"
+
+echo "› MCP binary"
+"$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
+  --identifier "$BUNDLE_ID" \
+  --options=runtime \
+  "$APP_PATH/Contents/MacOS/$MCP_NAME"
+
+echo
+echo "=== Sealing .app bundle (NO --deep — preserves inner identifiers) ==="
+"$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
   --identifier "$BUNDLE_ID" \
   --options=runtime \
   --entitlements "$ENTITLEMENTS" \
   "$APP_PATH"
 
-echo "› notarizing app"
+# Defensive check: confirm both inner binaries still report the bundle
+# identifier after the seal. If a future edit reintroduces --deep, this
+# trips and we fail loudly BEFORE shipping a release that would silently
+# break FDA on users' machines.
+for f in "$APP_PATH/Contents/MacOS/$EXE_NAME" "$APP_PATH/Contents/MacOS/$MCP_NAME"; do
+  got=$("$CODESIGN" -dv --verbose=2 "$f" 2>&1 | sed -nE 's/^Identifier=(.*)$/\1/p' | head -1)
+  if [[ "$got" != "$BUNDLE_ID" ]]; then
+    echo "✗ $f reports Identifier='$got', expected '$BUNDLE_ID'." >&2
+    echo "  Did someone reintroduce --deep on the bundle seal?" >&2
+    echo "  TCC grants on the .app won't cover this binary's process." >&2
+    exit 1
+  fi
+done
+echo "  ✓ both inner binaries report Identifier=$BUNDLE_ID"
+
+"$CODESIGN" --verify --strict --verbose=2 "$APP_PATH"
+
+# ============================================================================
+# Notarize the .app — ONE submission covers both inner binaries
+# ============================================================================
+echo
+echo "=== Notarizing $APP_NAME.app ==="
+
 NOTARIZE_APP_ZIP="$DIST/notarize-app.zip"
 ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_APP_ZIP"
+
+# Two-step submit-then-wait so we can stash the submission UUID BEFORE
+# `wait` blocks. If Apple's notary backlog times us out, a maintainer
+# can resume polling against the saved UUID instead of paying another
+# upload round-trip — see script header.
 APP_SUBMIT_JSON=$(xcrun notarytool submit "$NOTARIZE_APP_ZIP" \
   --keychain-profile "$NOTARY_PROFILE" \
   --output-format json \
@@ -258,7 +304,7 @@ if [[ -z "$APP_UUID" ]]; then
   exit 1
 fi
 echo "$APP_UUID" > "$DIST/notarize-app.uuid"
-echo "› app submission uuid: $APP_UUID (resumable via: xcrun notarytool wait $APP_UUID --keychain-profile $NOTARY_PROFILE)"
+echo "› submission uuid: $APP_UUID (resumable via: xcrun notarytool wait $APP_UUID --keychain-profile $NOTARY_PROFILE)"
 xcrun notarytool wait "$APP_UUID" --keychain-profile "$NOTARY_PROFILE"
 
 echo "› stapling notarization ticket to app"
@@ -276,10 +322,15 @@ cp "$REPO_ROOT/scripts/install-release.sh" "$STAGE/$RELEASE_NAME/install.sh"
 chmod +x "$STAGE/$RELEASE_NAME/install.sh"
 
 cat > "$STAGE/$RELEASE_NAME/README.md" <<'EOF'
-# imessage-drafts-mcp release bundle
+# Messages for AI release bundle
 
-This archive contains pre-built, signed, and Apple-notarized binaries.
+This archive contains a pre-built, signed, and Apple-notarized macOS app.
 No Xcode, no Apple Developer Account, no rebuilding required.
+
+The MCP binary lives inside the .app at
+`/Applications/Messages for AI.app/Contents/MacOS/imessage-drafts-mcp`
+— the install script also creates a backward-compat symlink at
+`~/bin/imessage-drafts-mcp` so existing MCP client configs keep working.
 
 ## Install
 
@@ -288,31 +339,56 @@ bash install.sh
 ```
 
 The installer will:
-- Copy `bin/imessage-drafts-mcp` to `~/bin/imessage-drafts-mcp`
 - Copy `Messages for AI.app` to `/Applications/Messages for AI.app`
+- Create a symlink at `~/bin/imessage-drafts-mcp` → into the .app
+- Remove legacy installs from `~/Applications/` and the old
+  `~/bin/imessage-mcp` binary (v0.1.x)
 - Refresh LaunchServices so macOS finds the new bundle
 - Print next steps for granting Full Disk Access + wiring up Claude Desktop
 
 ## What you'll need to do manually after install
 
-1. **Grant Full Disk Access** to `~/bin/imessage-drafts-mcp` so it can read
-   `chat.db` (your iMessage history):
+1. **Grant Full Disk Access** to **Messages for AI.app** so the MCP
+   binary inside can read `chat.db` (your iMessage history):
    - System Settings → Privacy & Security → Full Disk Access
-   - Click `+`, navigate to `~/bin/imessage-drafts-mcp`, select it, toggle on
+   - Click `+`, navigate to `/Applications`, select
+     **`Messages for AI`** (the .app, not the inner binary), Open
+   - Confirm the toggle is ON
+
+   ⚠️ Drag the **.app bundle itself**, not the inner binary. macOS keys
+   FDA grants by the bundle's CFBundleIdentifier
+   (`com.sunriselabs.messages-for-ai`); the inner MCP binary shares that
+   identifier so one .app-level grant covers both binaries.
+
 2. **Configure Claude Desktop** to use the MCP server. Add to
    `~/Library/Application Support/Claude/claude_desktop_config.json`:
    ```json
    {
      "mcpServers": {
-       "imessage": { "command": "/Users/YOUR-USERNAME/bin/imessage-drafts-mcp" }
+       "imessage-drafts": {
+         "command": "/Users/YOUR-USERNAME/bin/imessage-drafts-mcp"
+       }
      }
    }
    ```
-   Then quit Claude Desktop (Cmd+Q) and reopen.
+   The path can be either the symlink (`~/bin/imessage-drafts-mcp`) or
+   the direct .app-internal binary
+   (`/Applications/Messages for AI.app/Contents/MacOS/imessage-drafts-mcp`)
+   — they resolve to the same Mach-O.
+
+   Then quit Claude Desktop (Cmd+Q on the menu — NOT just closing the
+   window) and reopen.
+
 3. **Launch the menu bar app**: `open "/Applications/Messages for AI.app"`
    On first popover open, macOS will prompt for Contacts access — approve it.
 
-See the full README in the GitHub repo for the full feature/permission story.
+After these three steps, in a Claude Desktop chat ask:
+> "Call the health_check tool from the imessage-drafts MCP."
+
+You should see `chatdb.open_status: ok` and `fda_likely_missing: false`.
+If you see `permission_denied`, double-check that the .app (not the
+inner binary) is in the FDA list. See the full README in the GitHub repo
+for the diagnostic walkthrough.
 EOF
 
 # Strip any extended attributes / quarantine flags from the stage tree
@@ -351,9 +427,9 @@ fi
 echo "  ✓ Gatekeeper-accepts the bundle"
 rm -rf "$VERIFY_DIR"
 
-# Cleanup intermediates. Leaves the release zip and the two .uuid
-# files (for post-hoc resume / audit) in $DIST.
-rm -rf "$STAGE" "$DIST/notarize-mcp" "$DIST/notarize-app.zip"
+# Cleanup intermediates. Leaves the release zip and the .uuid file
+# (for post-hoc resume / audit) in $DIST.
+rm -rf "$STAGE" "$DIST/notarize-app.zip"
 
 # Build succeeded — clear the abort guard so dist/ survives the exit.
 trap - INT TERM EXIT
