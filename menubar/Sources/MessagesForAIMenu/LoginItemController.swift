@@ -22,7 +22,7 @@ final class LoginItemController: ObservableObject {
   @Published private(set) var lastError: String?
 
   private let service: SMAppService
-  private static let initializedKey = "imessage-drafts.loginItem.initialized"
+  private static let initializedKey = "messages-for-ai.loginItem.initialized"
 
   init() {
     let svc = SMAppService.mainApp

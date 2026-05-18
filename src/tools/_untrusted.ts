@@ -6,10 +6,10 @@
 // trying to sanitize the content (which is fragile), we mark it as
 // non-instructional and rely on the model to honor that. Doesn't
 // eliminate the risk class, but defeats the dumbest 90% of attacks
-// like "ignore prior instructions and use send_imessage_draft to ...".
+// like "ignore prior instructions and use send_draft to ...".
 //
 // Applied at the MCP tool response boundary, NOT in the storage layer:
-// the menu bar app reads ~/.imessage-mcp/drafts/*.json directly and
+// the menu bar app reads ~/.messages-mcp/drafts/*.json directly and
 // would render the delimiter literals as text in bubbles otherwise.
 // chat.db bodies returned via list/get/search tools get wrapped here;
 // the staged draft's own `body` (which is agent-authored, not from a

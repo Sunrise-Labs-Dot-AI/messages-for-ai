@@ -10,7 +10,7 @@ import {
 import { getChatDbDiagnostic } from "../chatdb/open.ts";
 import { getContactsSidecarDiagnostic } from "../storage/contacts-cache.ts";
 
-// `imessage_mcp_health_check` exists to break a specific debugging
+// `health_check` exists to break a specific debugging
 // deadlock: when `to_handle_name` keeps coming back null for a known
 // contact, the user can't tell whether FDA is missing on the binary,
 // whether the AddressBook DB opened but is empty, whether the contact
@@ -21,14 +21,14 @@ import { getContactsSidecarDiagnostic } from "../storage/contacts-cache.ts";
 // read-only inspection of the MCP server's own permission state.
 //
 // The `remediation.binary_path` field is `process.execPath`, which on
-// the compiled bun output is the path to `imessage-mcp` itself — i.e.
+// the compiled bun output is the path to `imessage-drafts-mcp` itself — i.e.
 // the exact file the user needs to add to System Settings → Privacy &
 // Security → Full Disk Access.
 export function registerHealthTools(server: McpServer): void {
   server.registerTool(
-    "imessage_mcp_health_check",
+    "health_check",
     {
-      title: "Diagnose imessage-mcp permissions and contact lookup",
+      title: "Diagnose imessage-drafts-mcp permissions and contact lookup",
       description:
         "Returns the live state of AddressBook and chat.db access (Full Disk Access " +
         "is required for both). Pass `probe_handle` to also report how a phone/email " +
@@ -80,13 +80,13 @@ export function registerHealthTools(server: McpServer): void {
         const instructions = (() => {
           if (sidecar.read_status === "missing") {
             return "Install the menu bar app: `cd menubar && bash scripts/dev-install.sh`, " +
-              "then launch /Applications/iMessage Drafts.app and grant Contacts permission " +
-              "when prompted. The app writes ~/.imessage-mcp/contacts-cache.json which this " +
+              "then launch /Applications/Messages for AI.app and grant Contacts permission " +
+              "when prompted. The app writes ~/.messages-mcp/contacts-cache.json which this " +
               "MCP reads instead of needing Full Disk Access for AddressBook.";
           }
           if (sidecar.permission_status === "denied" || sidecar.permission_status === "restricted") {
             return "The menu bar app is installed but doesn't have Contacts permission. " +
-              "Open System Settings → Privacy & Security → Contacts and enable 'iMessage Drafts', " +
+              "Open System Settings → Privacy & Security → Contacts and enable 'Messages for AI', " +
               "then click 'Refresh contacts' in the menu bar popover.";
           }
           if (fda_likely_missing) {
@@ -132,7 +132,7 @@ export function registerHealthTools(server: McpServer): void {
           probe,
         });
       } catch (e) {
-        return errorResult(`imessage_mcp_health_check failed: ${(e as Error).message}`);
+        return errorResult(`health_check failed: ${(e as Error).message}`);
       }
     }
   );

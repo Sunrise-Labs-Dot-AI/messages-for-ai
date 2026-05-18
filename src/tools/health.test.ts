@@ -15,7 +15,7 @@ import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-// Unit tests for the building blocks of `imessage_mcp_health_check`.
+// Unit tests for the building blocks of `health_check`.
 //
 // We deliberately don't spin up an McpServer harness and invoke the
 // registered tool — the project doesn't have a server-test fixture
@@ -89,8 +89,8 @@ describe("probe block: canonical + resolved_name", () => {
 describe("getContactsLoadDiagnostic", () => {
   // Redirect the sidecar to a nonexistent tmp path so this test stays
   // deterministic regardless of whether the developer has a real
-  // ~/.imessage-mcp/contacts-cache.json on their machine.
-  const tmpSidecarPath = join(tmpdir(), `imessage-mcp-load-diag-test-${process.pid}.json`);
+  // ~/.messages-mcp/contacts-cache.json on their machine.
+  const tmpSidecarPath = join(tmpdir(), `imessage-drafts-mcp-load-diag-test-${process.pid}.json`);
 
   afterEach(() => {
     _setSidecarPathForTesting(null);
@@ -125,7 +125,7 @@ describe("getContactsLoadDiagnostic", () => {
   // shipped without a test. Covers the menubar-granted-but-zero-handles
   // first-run state (fresh Mac, iCloud not synced).
   test("surfaces sidecar_granted_empty when the menubar is granted but the sidecar has zero handles", () => {
-    const granted_empty_root = mkdtempSync(join(tmpdir(), "imessage-mcp-granted-empty-test-"));
+    const granted_empty_root = mkdtempSync(join(tmpdir(), "imessage-drafts-mcp-granted-empty-test-"));
     const granted_empty_sidecar = join(granted_empty_root, "contacts-cache.json");
     try {
       writeFileSync(granted_empty_sidecar, JSON.stringify({

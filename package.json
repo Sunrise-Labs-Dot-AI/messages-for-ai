@@ -1,6 +1,6 @@
 {
-  "name": "imessage-mcp",
-  "version": "0.1.0",
+  "name": "imessage-drafts-mcp",
+  "version": "0.2.0",
   "description": "Local MCP server for macOS iMessages: read-only chat.db queries, draft staging with thread-context snapshots, AppleScript send. Designed for Claude Desktop / Claude Code / Codex CLI.",
   "keywords": [
     "mcp",
@@ -14,18 +14,18 @@
     "stdio"
   ],
   "license": "MIT",
-  "author": "imessage-mcp contributors",
+  "author": "imessage-drafts-mcp contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Sunrise-Labs-Dot-AI/imessage-mcp.git"
+    "url": "git+https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai.git"
   },
   "bugs": {
-    "url": "https://github.com/Sunrise-Labs-Dot-AI/imessage-mcp/issues"
+    "url": "https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai/issues"
   },
-  "homepage": "https://github.com/Sunrise-Labs-Dot-AI/imessage-mcp#readme",
+  "homepage": "https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai#readme",
   "type": "module",
   "scripts": {
-    "build": "bun build src/index.ts --compile --outfile bin/imessage-mcp",
+    "build": "bun build src/index.ts --compile --outfile bin/imessage-drafts-mcp",
     "install:bin": "bash scripts/dev-install.sh",
     "dev": "bun run src/index.ts",
     "test": "bun test",

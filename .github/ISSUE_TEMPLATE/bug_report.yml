@@ -14,7 +14,7 @@ body:
     attributes:
       label: What happened
       description: One sentence is fine. What did you expect, what did you get?
-      placeholder: e.g. "list_imessage_threads returned authorization denied even though FDA is granted"
+      placeholder: e.g. "list_threads returned authorization denied even though FDA is granted"
     validations:
       required: true
 
@@ -25,8 +25,8 @@ body:
       description: Numbered steps. Include the MCP client (Claude Desktop / Claude Code / Codex), the tool you called, and the arguments (redact bodies).
       placeholder: |
         1. Installed via `bun run install:bin` at commit `abc123`.
-        2. Granted FDA to ~/bin/imessage-mcp.
-        3. In Claude Desktop, asked it to call list_imessage_threads with limit=5, since=...
+        2. Granted FDA to ~/bin/imessage-drafts-mcp.
+        3. In Claude Desktop, asked it to call list_threads with limit=5, since=...
         4. Got error: ...
     validations:
       required: true

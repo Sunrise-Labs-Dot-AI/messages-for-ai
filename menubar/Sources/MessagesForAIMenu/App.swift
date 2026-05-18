@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 @main
-struct iMessageDraftsMenuApp: App {
+struct MessagesForAIMenuApp: App {
   @StateObject private var store = DraftStore()
   @StateObject private var loginItem = LoginItemController()
   @StateObject private var settings = SettingsStore()

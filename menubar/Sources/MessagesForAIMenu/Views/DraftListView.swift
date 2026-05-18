@@ -24,7 +24,7 @@ struct DraftListView: View {
 
   private var recentlySent: [Draft] {
     // 24-hour visible window for sent drafts. The on-disk draft JSON and
-    // the ~/.imessage-mcp/send-audit.log keep forever — this is just the
+    // the ~/.messages-mcp/send-audit.log keep forever — this is just the
     // popover's confirmation-breadcrumb view.
     let cutoff = Date().addingTimeInterval(-86_400)
     return store.drafts.filter { d in
@@ -51,7 +51,7 @@ struct DraftListView: View {
       // dependency under the sidecar architecture. The FDA banner
       // that lived here previously was misleading: it probed the
       // menu bar app's own FDA grant, but the only process that
-      // actually needs FDA is the imessage-mcp binary (for chat.db
+      // actually needs FDA is the imessage-drafts-mcp binary (for chat.db
       // thread-context reads). That signal is surfaced per-draft
       // via the context_diagnostic in the Details disclosure.
       ContactsPermissionBanner()
@@ -102,7 +102,7 @@ struct DraftListView: View {
     HStack {
       Image(systemName: "message.badge")
         .foregroundStyle(.tint)
-      Text("iMessage Drafts")
+      Text("Messages for AI")
         .font(.headline)
       Spacer()
       Text(pending.isEmpty ? "—" : "\(pending.count) pending")

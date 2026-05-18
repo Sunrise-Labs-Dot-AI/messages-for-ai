@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import * as settings from "./settings.ts";
 
-const tmp = mkdtempSync(join(tmpdir(), "imessage-mcp-settings-test-"));
+const tmp = mkdtempSync(join(tmpdir(), "imessage-drafts-mcp-settings-test-"));
 
 beforeAll(() => {
   settings._setSettingsDirForTesting(tmp);

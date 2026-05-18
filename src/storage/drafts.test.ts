@@ -11,9 +11,9 @@ import { _setContactsForTesting, _resetContactsCache, resolveHandle } from "../c
 // approach of overriding `process.env.HOME` doesn't work on macOS —
 // `os.homedir()` uses passwd lookup by effective UID and ignores the
 // JS-level override, so tests silently leaked into the real
-// `~/.imessage-mcp/drafts` AND wiped its contents in beforeEach.
-const tmpHome = mkdtempSync(join(tmpdir(), "imessage-mcp-test-"));
-const tmpDraftsDir = join(tmpHome, ".imessage-mcp", "drafts");
+// `~/.messages-mcp/drafts` AND wiped its contents in beforeEach.
+const tmpHome = mkdtempSync(join(tmpdir(), "imessage-drafts-mcp-test-"));
+const tmpDraftsDir = join(tmpHome, ".messages-mcp", "drafts");
 
 beforeAll(() => {
   drafts._setDraftsDirForTesting(tmpDraftsDir);
@@ -138,7 +138,7 @@ describe("markDraftSent", () => {
     expect(fromDisk?.send_service).toBe("iMessage");
   });
 
-  test("refuses if the parent ~/.imessage-mcp is a symlink", () => {
+  test("refuses if the parent ~/.messages-mcp is a symlink", () => {
     // Defense-in-depth: even if the drafts dir itself is a real dir, an
     // attacker who pre-symlinked the parent before our first run wins —
     // mkdirSync(recursive:true) would create `drafts/` inside the symlink
@@ -149,9 +149,9 @@ describe("markDraftSent", () => {
     // path whose parent IS a symlink, and assert any operation that runs
     // through ensureDir throws. Restore the original test seam afterward
     // so subsequent tests pass.
-    const malHome = mkdtempSync(join(tmpdir(), "imessage-mcp-malhome-"));
-    const decoyTarget = join(malHome, "real-imessage-mcp-dir");
-    const symlinkedParent = join(malHome, ".imessage-mcp");
+    const malHome = mkdtempSync(join(tmpdir(), "imessage-drafts-mcp-malhome-"));
+    const decoyTarget = join(malHome, "real-imessage-drafts-mcp-dir");
+    const symlinkedParent = join(malHome, ".messages-mcp");
     const draftsUnderSymlink = join(symlinkedParent, "drafts");
     // Create the decoy as a real directory.
     writeFileSync(join(malHome, "marker"), "marker");  // touch to materialize malHome

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# DEV build + install of the iMessage Drafts menu bar app.
+# DEV build + install of the Messages for AI menu bar app.
 #
 # This is the dev-loop installer. End users should get the release zip
 # from GitHub Releases and run its bundled `install.sh` (sourced from
@@ -16,7 +16,7 @@
 #   - Codesigns with a Developer ID cert matching EXPECTED_TEAM_ID if
 #     present, falls back to adhoc with a warning.
 #
-# After install, launch via:    open /Applications/iMessage\ Drafts.app
+# After install, launch via:    open "/Applications/Messages for AI.app"
 # Or set it as a Login Item:    System Settings → General → Login Items.
 #
 # Install destination: /Applications by default. This is where Finder's
@@ -44,21 +44,27 @@ SECURITY=/usr/bin/security
 CODESIGN=/usr/bin/codesign
 AWK=/usr/bin/awk
 
-APP_NAME="iMessage Drafts"
-# Bundle ID changed from `com.local.imessage-drafts` after that one got
-# poisoned by an earlier build that lacked NSContactsUsageDescription —
+APP_NAME="Messages for AI"
+# Bundle ID history:
+#   `com.local.imessage-drafts` (v0.1.x dev, poisoned by an early build
+#     that lacked NSContactsUsageDescription)
+#   → `com.sunriselabs.imessage-drafts` (v0.1.x release)
+#   → `com.sunriselabs.messages-for-ai` (current; v0.2.0 rename)
 # macOS TCC's opaque "this bundle is suspicious" cache survives both
-# `tccutil reset` and a `killall tccd`, and Apple gives no way to clear
-# it. A fresh bundle ID dodges the whole apparatus and is treated as a
-# new app for TCC purposes. The `.local.` namespace is reserved for
-# Bonjour multicast DNS anyway — `com.sunriselabs.*` matches the GitHub
-# org and is the conventional reverse-DNS shape for unsigned dev tools.
-BUNDLE_ID="com.sunriselabs.imessage-drafts"
-LEGACY_BUNDLE_IDS=("com.local.imessage-drafts") # for tccutil cleanup hint
+# `tccutil reset` and `killall tccd`. Each fresh bundle ID dodges the
+# whole apparatus and is treated as a new app for TCC purposes. The
+# `.local.` namespace is reserved for Bonjour multicast DNS anyway —
+# `com.sunriselabs.*` matches the GitHub org and is the conventional
+# reverse-DNS shape for signed dev/release tools.
+BUNDLE_ID="com.sunriselabs.messages-for-ai"
+# IDs that existed in v0.1.x installs and may have left orphan TCC
+# entries on existing user machines. Surface them in the tccutil cleanup
+# hint after install. Do NOT include the current BUNDLE_ID here.
+LEGACY_BUNDLE_IDS=("com.local.imessage-drafts" "com.sunriselabs.imessage-drafts")
 INSTALL_ROOT="${INSTALL_ROOT:-/Applications}"
 APP="${INSTALL_ROOT}/${APP_NAME}.app"
 LEGACY_APP="${HOME}/Applications/${APP_NAME}.app"
-EXE_NAME="iMessageDraftsMenu"
+EXE_NAME="MessagesForAIMenu"
 
 # Pre-flight: make sure we can write to the install root before doing the
 # slow swift build. /Applications is writable by the local admin user on
@@ -119,9 +125,9 @@ cat > "${APP}/Contents/Info.plist" <<EOF
   <key>LSUIElement</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>iMessage Drafts sends staged iMessage drafts via Messages.app.</string>
+  <string>Messages for AI sends staged iMessage drafts via Messages.app.</string>
   <key>NSContactsUsageDescription</key>
-  <string>iMessage Drafts reads your Contacts to resolve recipient names. The same data Messages.app shows, including iCloud-synced contacts. The exported list is written only to ~/.imessage-mcp/contacts-cache.json on this Mac and never leaves the machine.</string>
+  <string>Messages for AI reads your Contacts to resolve recipient names. The same data Messages.app shows, including iCloud-synced contacts. The exported list is written only to ~/.messages-mcp/contacts-cache.json on this Mac and never leaves the machine.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Local-only utility. No data leaves this Mac.</string>
 </dict>
@@ -155,7 +161,24 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
         '/Developer ID Application/ && $2 ~ "\\("team"\\)$" {print $2; exit}')
 fi
 
-ENTITLEMENTS="$(dirname "$0")/imessage-drafts.entitlements"
+ENTITLEMENTS="$(dirname "$0")/messages-for-ai.entitlements"
+
+# Sign the inner Mach-Os explicitly with the bundle's identifier, then
+# seal the bundle WITHOUT --deep. See scripts/README.md (Architecture
+# section) for the full reasoning — short version: `codesign --deep`
+# overrides any --identifier flag on inner Mach-Os and re-derives each
+# from its path basename, leaving the menubar binary with Identifier=
+# MessagesForAIMenu (path-derived, no reverse-DNS prefix), which TCC
+# cannot match against any grant. We need the menubar binary's process
+# identity to equal the bundle's CFBundleIdentifier so the FDA grant
+# on the .app covers it.
+#
+# This script signs ONLY the menubar binary + bundle. If the MCP
+# binary is already inside the bundle (from a prior repo-root
+# dev-install.sh run), the repo-root dev-install.sh re-signs it
+# afterwards. We deliberately avoid --deep so that, if the MCP binary
+# IS already there, we don't clobber its explicit identifier.
+
 if [[ -n "$SIGN_IDENTITY" ]]; then
   # Defense-in-depth: re-verify Team ID embedded in the chosen identity.
   # The awk filter above already enforces this for auto-detection; a
@@ -166,14 +189,8 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
     echo "  Refusing to sign with an unknown identity." >&2
     exit 1
   fi
-  echo "› signing with Developer ID: $SIGN_IDENTITY"
-  # --entitlements passes the per-feature permissions Hardened Runtime
-  # requires for Contacts framework access and Apple Events. Without
-  # the addressbook entitlement, CNContactStore.requestAccess throws
-  # "Access Denied" synchronously even for Developer-ID-signed apps.
-  "$CODESIGN" --force --deep --sign "$SIGN_IDENTITY" \
-    --identifier "${BUNDLE_ID}" --options=runtime \
-    --entitlements "$ENTITLEMENTS" "$APP"
+  SIGN_ARGS=(--force --sign "$SIGN_IDENTITY")
+  ADHOC=0
 else
   if [[ "${CONTACTS_REQUIRE_DEVID:-}" == "1" ]]; then
     echo "✗ no Developer ID Application cert from team $EXPECTED_TEAM_ID found, but CONTACTS_REQUIRE_DEVID=1" >&2
@@ -185,7 +202,49 @@ else
   echo "  ⚠  CNContactStore.requestAccess will fail under adhoc signing —"
   echo "     Contacts resolution will be unavailable until you install a"
   echo "     Developer ID Application cert. Sending iMessages still works."
-  "$CODESIGN" --force --deep --sign - --identifier "${BUNDLE_ID}" --options=runtime "$APP"
+  SIGN_ARGS=(--force --sign -)
+  ADHOC=1
+fi
+
+# Sign the menubar binary in place with the bundle's identifier.
+echo "› signing menubar binary with --identifier ${BUNDLE_ID}"
+"$CODESIGN" "${SIGN_ARGS[@]}" \
+  --identifier "${BUNDLE_ID}" --options=runtime \
+  "$APP/Contents/MacOS/$EXE_NAME"
+
+# If a sibling MCP binary already lives inside the bundle (from a
+# prior repo-root dev-install.sh run), re-sign it too — with the SAME
+# bundle identifier — so the bundle seal below validates a consistent
+# inner-identifier state. The repo-root dev-install.sh will re-sign
+# it again with fresh build output, but signing it here keeps the
+# intermediate state valid.
+MCP_SIBLING="$APP/Contents/MacOS/imessage-drafts-mcp"
+if [[ -x "$MCP_SIBLING" ]]; then
+  echo "› re-signing existing MCP sibling with --identifier ${BUNDLE_ID}"
+  "$CODESIGN" "${SIGN_ARGS[@]}" \
+    --identifier "${BUNDLE_ID}" --options=runtime \
+    "$MCP_SIBLING"
+fi
+
+# Seal the bundle. NO --deep — the explicit per-file signing above
+# put the right identifiers on each inner Mach-O; --deep would now
+# overwrite them.
+#
+# --entitlements passes the per-feature permissions Hardened Runtime
+# requires for Contacts framework access and Apple Events. Without
+# the addressbook entitlement, CNContactStore.requestAccess throws
+# "Access Denied" synchronously even for Developer-ID-signed apps.
+if [[ "$ADHOC" -eq 1 ]]; then
+  # Adhoc bundle seal — no entitlements file (adhoc-signed bundles
+  # can't claim entitlements that require Apple authorization).
+  echo "› sealing .app bundle adhoc"
+  "$CODESIGN" "${SIGN_ARGS[@]}" \
+    --identifier "${BUNDLE_ID}" --options=runtime "$APP"
+else
+  echo "› sealing .app bundle with Developer ID + entitlements"
+  "$CODESIGN" "${SIGN_ARGS[@]}" \
+    --identifier "${BUNDLE_ID}" --options=runtime \
+    --entitlements "$ENTITLEMENTS" "$APP"
 fi
 
 echo "› verifying signature seal"
@@ -216,7 +275,7 @@ fi
 echo "› adding to Gatekeeper trusted apps"
 spctl --add "$APP" 2>/dev/null || true
 
-# Remove the legacy ~/Applications/iMessage Drafts.app left over from
+# Remove the legacy ~/Applications/Messages for AI.app left over from
 # earlier installs that wrote there. Two reasons: (1) Spotlight indexes
 # both locations and would otherwise return the stale per-user copy
 # half the time; (2) the user's "I quit the app — where do I find it?"

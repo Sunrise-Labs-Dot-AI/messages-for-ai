@@ -6,17 +6,17 @@ import os.log
 
 // ContactsExporter is the bridge between the macOS Contacts framework
 // (CNContactStore, which sees iCloud-synced contacts + has a real
-// native consent prompt) and the imessage-mcp binary (which is a Bun
+// native consent prompt) and the imessage-drafts-mcp binary (which is a Bun
 // process and can't call CoreFoundation APIs directly).
 //
 // On launch we:
 //   1. Check NSContacts authorization status.
 //   2. If undetermined, fire requestAccess(for: .contacts) — this is
-//      what pops the "iMessage Drafts would like to access your
+//      what pops the "Messages for AI would like to access your
 //      Contacts" system dialog.
 //   3. On granted, enumerate every CNContact and build a canonical
 //      handle → display name map.
-//   4. Atomically write it to ~/.imessage-mcp/contacts-cache.json.
+//   4. Atomically write it to ~/.messages-mcp/contacts-cache.json.
 //   5. Subscribe to CNContactStoreDidChangeNotification + start a
 //      10-minute refresh timer so the sidecar tracks edits made in
 //      Contacts.app.
@@ -43,7 +43,7 @@ final class ContactsExporter: ObservableObject {
   // Subsystem string follows the Info.plist CFBundleIdentifier. Keep
   // them in lockstep so `log stream --predicate 'subsystem == "..."'`
   // matches the running app.
-  private let logger = Logger(subsystem: "com.sunriselabs.imessage-drafts", category: "contacts")
+  private let logger = Logger(subsystem: "com.sunriselabs.messages-for-ai", category: "contacts")
 
   // Concurrency guards for exportNow.
   //
@@ -98,7 +98,7 @@ final class ContactsExporter: ObservableObject {
   // status was reported as `.denied` due to TCC caching from a prior
   // build that lacked `NSContactsUsageDescription` (macOS auto-denies
   // when the usage string is missing, and the denial sticks across
-  // re-installs until `tccutil reset Contacts com.local.imessage-drafts`).
+  // re-installs until `tccutil reset Contacts com.local.messages-for-ai`).
   func bootstrap() async {
     let initial = CNContactStore.authorizationStatus(for: .contacts)
     authorizationStatus = initial
@@ -119,7 +119,7 @@ final class ContactsExporter: ObservableObject {
   // requestAccess only shows the system dialog when status is
   // `.notDetermined`. For `.denied`/`.restricted`, the call is a
   // no-op — the user has to flip the toggle in System Settings (or
-  // run `tccutil reset Contacts com.local.imessage-drafts` if the
+  // run `tccutil reset Contacts com.local.messages-for-ai` if the
   // denial was due to an earlier build missing `NSContactsUsageDescription`).
   func requestAccessAndExport() async {
     let current = CNContactStore.authorizationStatus(for: .contacts)
@@ -253,7 +253,7 @@ final class ContactsExporter: ObservableObject {
   private static let sidecarDirURL: URL = {
     FileManager.default
       .homeDirectoryForCurrentUser
-      .appendingPathComponent(".imessage-mcp", isDirectory: true)
+      .appendingPathComponent(".messages-mcp", isDirectory: true)
   }()
   private static let sidecarURL: URL = sidecarDirURL.appendingPathComponent("contacts-cache.json")
 

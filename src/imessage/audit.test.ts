@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import * as audit from "./audit.ts";
 
-const tmpRoot = mkdtempSync(join(tmpdir(), "imessage-mcp-audit-test-"));
+const tmpRoot = mkdtempSync(join(tmpdir(), "imessage-drafts-mcp-audit-test-"));
 const tmpLogPath = join(tmpRoot, "send-audit.log");
 
 beforeAll(() => {

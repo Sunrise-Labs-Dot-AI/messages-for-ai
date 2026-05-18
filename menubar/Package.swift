@@ -2,15 +2,15 @@
 import PackageDescription
 
 let package = Package(
-  name: "iMessageDraftsMenu",
+  name: "MessagesForAIMenu",
   platforms: [.macOS(.v13)],
   products: [
-    .executable(name: "iMessageDraftsMenu", targets: ["iMessageDraftsMenu"]),
+    .executable(name: "MessagesForAIMenu", targets: ["MessagesForAIMenu"]),
   ],
   targets: [
     .executableTarget(
-      name: "iMessageDraftsMenu",
-      path: "Sources/iMessageDraftsMenu"
+      name: "MessagesForAIMenu",
+      path: "Sources/MessagesForAIMenu"
     ),
   ]
 )

@@ -1,7 +1,7 @@
 import Foundation
 
-// Mirrors the on-disk JSON written by the imessage-mcp server's
-// stage_imessage_draft tool. Keep field names in sync with
+// Mirrors the on-disk JSON written by the imessage-drafts-mcp server's
+// stage_draft tool. Keep field names in sync with
 // `src/storage/drafts.ts` (TypeScript side).
 struct Draft: Codable, Identifiable, Equatable {
   let id: String

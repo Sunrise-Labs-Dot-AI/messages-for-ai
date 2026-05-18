@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-// Reads ~/.imessage-mcp/drafts and surfaces them as an @Published list.
+// Reads ~/.messages-mcp/drafts and surfaces them as an @Published list.
 // Watches the directory via DispatchSourceFileSystemObject so new drafts
 // staged by the MCP server appear in the menu bar within ~100ms.
 @MainActor
@@ -15,7 +15,7 @@ final class DraftStore: ObservableObject {
 
   init() {
     let home = FileManager.default.homeDirectoryForCurrentUser
-    dir = home.appendingPathComponent(".imessage-mcp/drafts")
+    dir = home.appendingPathComponent(".messages-mcp/drafts")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     refresh()
     startWatching()
