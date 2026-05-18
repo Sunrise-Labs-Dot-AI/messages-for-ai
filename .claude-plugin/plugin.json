@@ -1,0 +1,15 @@
+{
+  "name": "messages-for-ai",
+  "description": "AI proposes, you approve. Safety-gate alternative to Anthropic's imessage plugin: every iMessage Claude drafts is staged in your menubar for one-click approval, edit, or reject. Full audit log under ~/.messages-mcp/send-audit.log. Multi-transport roadmap (WhatsApp next). Requires Messages for AI.app installed from GitHub Releases.",
+  "version": "0.2.0",
+  "keywords": [
+    "imessage",
+    "messaging",
+    "drafts",
+    "menubar",
+    "safety-gate",
+    "audit-log",
+    "mcp",
+    "macos"
+  ]
+}
