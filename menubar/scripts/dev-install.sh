@@ -161,7 +161,12 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
         '/Developer ID Application/ && $2 ~ "\\("team"\\)$" {print $2; exit}')
 fi
 
-ENTITLEMENTS="$(dirname "$0")/messages-for-ai.entitlements"
+# Script cd's to `menubar/` at line 30 ("$(dirname "$0")/.."), so a
+# `$(dirname "$0")/...` path here resolves against the original
+# invocation cwd, not the post-cd one — leaving `menubar/scripts/...`
+# pointing at a nonexistent `menubar/menubar/scripts/...` path after
+# the cd. Pin via PWD (which IS post-cd) instead.
+ENTITLEMENTS="$PWD/scripts/messages-for-ai.entitlements"
 
 # Sign the inner Mach-Os explicitly with the bundle's identifier, then
 # seal the bundle WITHOUT --deep. See scripts/README.md (Architecture
