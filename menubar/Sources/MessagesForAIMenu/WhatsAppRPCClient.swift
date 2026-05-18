@@ -53,6 +53,17 @@ enum WhatsAppRPCClient {
     return try JSONDecoder().decode(SendResult.self, from: raw)
   }
 
+  /// Wipe the daemon's Baileys session + remove the LOGGED_OUT
+  /// sentinel so the daemon can re-pair on next start. Used by the
+  /// pairing sheet's "Reconnect" flow when the user has been remotely
+  /// logged out. Destructive — confirm with the user before calling.
+  static func unlinkAndReset() async throws {
+    // Daemon returns `{ok: true, note: "..."}`; we don't need the body.
+    _ = try await call(method: "unlinkAndReset", params: EmptyParams())
+  }
+
+  private struct EmptyParams: Encodable {}
+
   // MARK: - Wire types
 
   struct DraftIdParams: Encodable {

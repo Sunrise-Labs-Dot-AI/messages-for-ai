@@ -8,6 +8,23 @@ struct DraftListView: View {
   @EnvironmentObject var settings: SettingsStore
   @EnvironmentObject var contactsExporter: ContactsExporter
 
+  /// True when whatsapp-mcp appears to be installed locally. Cheap
+  /// check — just looks for the umbrella state directory. We don't
+  /// probe the daemon socket here; that's the pairing sheet's job and
+  /// it surfaces a clearer error if the daemon is installed-but-dead.
+  /// Mirrors the same feature flag DraftStore uses to enable the
+  /// WhatsApp watcher.
+  private var whatsappInstalled: Bool {
+    FileManager.default.fileExists(atPath:
+      FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".whatsapp-mcp").path
+    )
+  }
+
+  /// Drives the pairing sheet's presentation. Bound into the sheet so
+  /// it can self-dismiss on `state.update: connected`.
+  @State private var showPairingSheet = false
+
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   // Cap for the inner ScrollView. We subtract a rough estimate of the
   // surrounding chrome (header + divider + footer + padding ~ 180pt)
@@ -94,6 +111,9 @@ struct DraftListView: View {
       footer
     }
     .frame(width: 420)
+    .sheet(isPresented: $showPairingSheet) {
+      WhatsAppPairingView(isPresented: $showPairingSheet)
+    }
   }
 
   // MARK: - Sections
@@ -214,6 +234,25 @@ struct DraftListView: View {
         Button("Refresh") { store.refresh() }
           .buttonStyle(.plain)
           .foregroundStyle(.secondary)
+
+        // Only show the WhatsApp pair entry point when the user has
+        // whatsapp-mcp installed. Hiding it entirely on machines
+        // without the daemon is less visually noisy than showing a
+        // disabled button, and matches the rest of the feature flag
+        // (DraftStore won't be watching the WhatsApp dir anyway).
+        if whatsappInstalled {
+          Button {
+            showPairingSheet = true
+          } label: {
+            HStack(spacing: 4) {
+              Image(systemName: Platform.whatsapp.sfSymbol)
+              Text("Connect WhatsApp")
+            }
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(Platform.whatsapp.accentColor)
+          .help("Pair this Mac to your WhatsApp account via QR scan")
+        }
 
         // Plain mailto link. NSWorkspace.open delegates to the user's
         // default mail handler (Mail.app, Gmail-via-browser, etc.); no
