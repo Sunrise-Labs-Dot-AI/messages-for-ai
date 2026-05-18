@@ -30,7 +30,7 @@ import { homedir } from "node:os";
 
 const probe = process.argv[2];
 
-console.log("=== imessage-mcp contacts diagnostic ===\n");
+console.log("=== imessage-drafts-mcp contacts diagnostic ===\n");
 
 const ab = getAddressBookDiagnostic();
 const home = homedir();

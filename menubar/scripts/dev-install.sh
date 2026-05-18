@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# DEV build + install of the iMessage Drafts menu bar app.
+# DEV build + install of the Messages for AI menu bar app.
 #
 # This is the dev-loop installer. End users should get the release zip
 # from GitHub Releases and run its bundled `install.sh` (sourced from
@@ -44,8 +44,8 @@ SECURITY=/usr/bin/security
 CODESIGN=/usr/bin/codesign
 AWK=/usr/bin/awk
 
-APP_NAME="iMessage Drafts"
-# Bundle ID changed from `com.local.imessage-drafts` after that one got
+APP_NAME="Messages for AI"
+# Bundle ID changed from `com.local.messages-for-ai` after that one got
 # poisoned by an earlier build that lacked NSContactsUsageDescription —
 # macOS TCC's opaque "this bundle is suspicious" cache survives both
 # `tccutil reset` and a `killall tccd`, and Apple gives no way to clear
@@ -53,12 +53,12 @@ APP_NAME="iMessage Drafts"
 # new app for TCC purposes. The `.local.` namespace is reserved for
 # Bonjour multicast DNS anyway — `com.sunriselabs.*` matches the GitHub
 # org and is the conventional reverse-DNS shape for unsigned dev tools.
-BUNDLE_ID="com.sunriselabs.imessage-drafts"
-LEGACY_BUNDLE_IDS=("com.local.imessage-drafts") # for tccutil cleanup hint
+BUNDLE_ID="com.sunriselabs.messages-for-ai"
+LEGACY_BUNDLE_IDS=("com.local.messages-for-ai") # for tccutil cleanup hint
 INSTALL_ROOT="${INSTALL_ROOT:-/Applications}"
 APP="${INSTALL_ROOT}/${APP_NAME}.app"
 LEGACY_APP="${HOME}/Applications/${APP_NAME}.app"
-EXE_NAME="iMessageDraftsMenu"
+EXE_NAME="MessagesForAIMenu"
 
 # Pre-flight: make sure we can write to the install root before doing the
 # slow swift build. /Applications is writable by the local admin user on
@@ -119,9 +119,9 @@ cat > "${APP}/Contents/Info.plist" <<EOF
   <key>LSUIElement</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>iMessage Drafts sends staged iMessage drafts via Messages.app.</string>
+  <string>Messages for AI sends staged iMessage drafts via Messages.app.</string>
   <key>NSContactsUsageDescription</key>
-  <string>iMessage Drafts reads your Contacts to resolve recipient names. The same data Messages.app shows, including iCloud-synced contacts. The exported list is written only to ~/.imessage-mcp/contacts-cache.json on this Mac and never leaves the machine.</string>
+  <string>Messages for AI reads your Contacts to resolve recipient names. The same data Messages.app shows, including iCloud-synced contacts. The exported list is written only to ~/.messages-mcp/contacts-cache.json on this Mac and never leaves the machine.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Local-only utility. No data leaves this Mac.</string>
 </dict>
@@ -155,7 +155,7 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
         '/Developer ID Application/ && $2 ~ "\\("team"\\)$" {print $2; exit}')
 fi
 
-ENTITLEMENTS="$(dirname "$0")/imessage-drafts.entitlements"
+ENTITLEMENTS="$(dirname "$0")/messages-for-ai.entitlements"
 if [[ -n "$SIGN_IDENTITY" ]]; then
   # Defense-in-depth: re-verify Team ID embedded in the chosen identity.
   # The awk filter above already enforces this for auto-detection; a
@@ -216,7 +216,7 @@ fi
 echo "› adding to Gatekeeper trusted apps"
 spctl --add "$APP" 2>/dev/null || true
 
-# Remove the legacy ~/Applications/iMessage Drafts.app left over from
+# Remove the legacy ~/Applications/Messages for AI.app left over from
 # earlier installs that wrote there. Two reasons: (1) Spotlight indexes
 # both locations and would otherwise return the stale per-user copy
 # half the time; (2) the user's "I quit the app — where do I find it?"

@@ -1,6 +1,6 @@
 # Security Considerations
 
-This document is the honest threat model for `imessage-mcp`. Read it
+This document is the honest threat model for `imessage-drafts-mcp`. Read it
 before installing — the trust profile is non-trivial.
 
 ## Summary
@@ -33,7 +33,7 @@ myself" — not "I trust this binary because of some sandbox."
 - **Runaway send loops** where an agent gets into a bad state and
   re-sends or blast-sends repeatedly.
 - **Binary substitution** where an attacker with write access to
-  `~/bin/imessage-mcp` swaps the binary for a malicious one and
+  `~/bin/imessage-drafts-mcp` swaps the binary for a malicious one and
   inherits the FDA + Automation grants.
 - **Supply chain** — a malicious update to the source repo, or a
   compromised dependency.
@@ -61,7 +61,7 @@ myself" — not "I trust this binary because of some sandbox."
 | **`require_approval` setting** (default ON) | All MCP send paths — agents can only stage; the menu bar app is the sole send surface | User-controllable toggle in the menu bar footer. Off if the user explicitly disables. |
 | **Minimum staged-age (default 5s)** | Single-turn stage-and-send bypassing human review when `require_approval` is off | Configurable, can be disabled |
 | **Daily send cap (default 50/UTC day)** | Runaway loops, blast attacks | Cap is per-day, not per-recipient; configurable |
-| **Send audit log** at `~/.imessage-mcp/send-audit.log` | Forensic gap (post-hoc only) | Doesn't prevent; helps investigate. Body content is SHA-256-hashed, not stored. |
+| **Send audit log** at `~/.messages-mcp/send-audit.log` | Forensic gap (post-hoc only) | Doesn't prevent; helps investigate. Body content is SHA-256-hashed, not stored. |
 | **`destructiveHint: true` + `idempotentHint: false` annotations on send** | MCP clients can surface confirmation prompts | Depends on the client implementing the hint |
 | **Sent-state lock** (`sent_at` set on draft → refused) | Double-send via retry loops | Doesn't stop staging a fresh draft |
 | **SQL parameterized everywhere** | SQL injection | — |
@@ -77,10 +77,10 @@ myself" — not "I trust this binary because of some sandbox."
 User-controllable in the menu bar UI:
 
 - **Require draft approval to send** (default ON). Toggle in the
-  popover footer. When on, the MCP `send_imessage_draft` tool is
+  popover footer. When on, the MCP `send_draft` tool is
   disabled entirely — every send must come from a human pressing
   Hold-to-Send in the menu bar app. Persists to
-  `~/.imessage-mcp/settings.json` as `{ "require_approval": bool }`;
+  `~/.messages-mcp/settings.json` as `{ "require_approval": bool }`;
   the MCP server reads it on every send call so toggling takes
   effect immediately without restarting any client.
 
@@ -92,7 +92,7 @@ Env vars (configure for trusted automation contexts):
 - `IMESSAGE_DAILY_SEND_CAP` — maximum sends per UTC day. Default `50`.
   Set to `0` to disable.
 - `IMESSAGE_MCP_IDENTIFIER` — codesign identifier used by
-  `scripts/install.sh`. Default `com.local.imessage-mcp`. Changing
+  `scripts/install.sh`. Default `com.local.messages-mcp`. Changing
   this invalidates any existing FDA grant — you'll need to re-toggle
   the FDA entry after the first build with a new identifier.
 
@@ -108,11 +108,11 @@ Env vars (configure for trusted automation contexts):
    attack is a confused-deputy: read tool sees attacker text → agent
    uses some *other* tool to exfiltrate or act.
 5. **Use the menu bar app for the human-review pattern.** Configure
-   your MCP client to NOT auto-approve `send_imessage_draft`. Have
+   your MCP client to NOT auto-approve `send_draft`. Have
    agents stage-only; you click Send in the menu bar.
 6. **Audit your daily send-audit log occasionally.** If something
-   weird happened, it's in `~/.imessage-mcp/send-audit.log`.
-7. **Treat `~/bin/imessage-mcp` like an SSH key.** Permissions matter.
+   weird happened, it's in `~/.messages-mcp/send-audit.log`.
+7. **Treat `~/bin/imessage-drafts-mcp` like an SSH key.** Permissions matter.
    If a compromised app on your Mac could write to your home dir, it
    could replace this binary and inherit the FDA + Automation grants.
 

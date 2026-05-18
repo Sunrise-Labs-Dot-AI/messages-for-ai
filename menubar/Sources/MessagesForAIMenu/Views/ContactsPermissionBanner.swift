@@ -12,7 +12,7 @@ import Contacts
 // Behavior by status:
 //   - .notDetermined → "Allow Contacts access" button calls
 //     ContactsExporter.requestAccessAndExport() which fires the native
-//     "iMessage Drafts would like to access your Contacts" dialog.
+//     "Messages for AI would like to access your Contacts" dialog.
 //   - .denied / .restricted → "Open Contacts Settings" button deep-links
 //     to System Settings → Privacy & Security → Contacts where the
 //     user can flip the toggle.
@@ -74,11 +74,11 @@ struct ContactsPermissionBanner: View {
   private var bodyText: String {
     switch exporter.authorizationStatus {
     case .notDetermined:
-      return "iMessage Drafts uses Contacts to resolve recipient names. This is the same data Messages.app sees, including iCloud-synced contacts."
+      return "Messages for AI uses Contacts to resolve recipient names. This is the same data Messages.app sees, including iCloud-synced contacts."
     case .denied:
-      return "Open System Settings → Privacy & Security → Contacts and turn on iMessage Drafts. Then click Recheck."
+      return "Open System Settings → Privacy & Security → Contacts and turn on Messages for AI. Then click Recheck."
     case .restricted:
-      return "Your organization's MDM policy disallows Contacts access. The MCP will fall back to AddressBook SQLite, which requires Full Disk Access on the imessage-mcp binary and may miss iCloud-only contacts."
+      return "Your organization's MDM policy disallows Contacts access. The MCP will fall back to AddressBook SQLite, which requires Full Disk Access on the imessage-drafts-mcp binary and may miss iCloud-only contacts."
     default:
       return "An unexpected Contacts authorization status was reported."
     }

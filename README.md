@@ -1,13 +1,39 @@
-# imessage-mcp
+# Messages for AI
 
-A local MCP server that exposes read-only access to your macOS iMessages
-(`~/Library/Messages/chat.db`) and lets agents stage outgoing drafts as
-local JSON files. **Drafts never auto-send.**
+**AI proposes, you approve.** A safer iMessage MCP for users who don't
+want Claude sending messages on their behalf without a human in the loop.
+
+This package — `imessage-drafts-mcp` — is the iMessage transport in the
+Messages for AI product family. Sibling MCPs (WhatsApp, Signal, Slack) are
+on the roadmap; they will share the same menu bar review surface.
+
+## How this differs from the official Anthropic iMessage plugin
+
+[Anthropic ships an official iMessage plugin](https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/imessage)
+that lets Claude send iMessages directly. It's great if you want
+frictionless automation. This project exists for the *other* lane — users
+who want AI assistance with a safety gate. Pick the one that matches your
+risk tolerance:
+
+| | Anthropic `imessage` plugin | Messages for AI (this project) |
+|---|---|---|
+| **Send model** | Direct — Claude sends immediately on tool call | Staged — every send routes through your menu bar for one-click approve / edit / reject |
+| **Audit log** | None | Every drafted message + outcome appended to `~/.messages-mcp/send-audit.log` |
+| **UI** | CLI-only | Menu bar review surface with thread-context bubbles, hold-to-fire send |
+| **Contact resolution** | Raw handles only | Resolves to Contacts names via local sidecar |
+| **Transports** | iMessage only | iMessage now; WhatsApp / Signal / Slack on the roadmap (per-transport MCPs sharing one menu bar) |
+| **Daily send cap** | None | Circuit-breaker default 50/UTC-day, env-configurable |
+| **Best for** | "Just send the message" automation | "Let me see what Claude wants to say before it goes out" |
+
+If you want fire-and-forget, use Anthropic's plugin. If you want every
+outgoing message to pass through your eye first, use this one.
+
+## What this gives you
 
 - read iMessage threads, messages, and search.
-- stage drafts under `~/.imessage-mcp/drafts/`.
+- stage drafts under `~/.messages-mcp/drafts/`.
 - approval-gated send of staged drafts via AppleScript automation.
-- companion **menu bar app** (`/Applications/iMessage Drafts.app`) that
+- companion **menu bar app** (`/Applications/Messages for AI.app`) that
   shows pending drafts with hold-to-fire Send / Discard buttons. Turns
   "draft" into a real human-review surface rather than a JSON file on disk.
 - contact-name resolution via the menu bar app's Contacts permission —
@@ -38,16 +64,16 @@ already do."
 
 | Tool | Purpose |
 |---|---|
-| `list_imessage_threads` | Recent threads (newest first). Requires `since` or `contact_filter`. |
-| `get_imessage_thread` | Messages in a thread, paginated via `before`. |
-| `search_imessages` | LIKE-search across `text`. Requires `query` plus `since` or `contact_filter`. |
-| `stage_imessage_draft` | Write a draft to `~/.imessage-mcp/drafts/{uuid}.json`. Resolves recipient name. Does NOT send. |
-| `list_imessage_drafts` | List staged drafts, newest first. |
-| `get_imessage_draft` | Read one staged draft. |
-| `discard_imessage_draft` | Delete a staged draft. |
-| `send_imessage_draft` | **Destructive.** Send a staged draft via Messages.app. Refuses duplicate sends. (Or send via the menu bar app — see below.) |
+| `list_threads` | Recent threads (newest first). Requires `since` or `contact_filter`. |
+| `get_thread` | Messages in a thread, paginated via `before`. |
+| `search_messages` | LIKE-search across `text`. Requires `query` plus `since` or `contact_filter`. |
+| `stage_draft` | Write a draft to `~/.messages-mcp/drafts/{uuid}.json`. Resolves recipient name. Does NOT send. |
+| `list_drafts` | List staged drafts, newest first. |
+| `get_draft` | Read one staged draft. |
+| `discard_draft` | Delete a staged draft. |
+| `send_draft` | **Destructive.** Send a staged draft via Messages.app. Refuses duplicate sends. (Or send via the menu bar app — see below.) |
 | `get_imessage_current_time` | UTC + system-local timestamps, for building `since` filters. |
-| `imessage_mcp_health_check` | Diagnose permissions / contact lookup / chat.db access. Run when something silently isn't working. |
+| `health_check` | Diagnose permissions / contact lookup / chat.db access. Run when something silently isn't working. |
 
 Hard guardrails:
 
@@ -70,30 +96,30 @@ seconds plus three manual permission steps.
 ```sh
 # 1. Download the latest release zip.
 curl -L \
-  https://github.com/Sunrise-Labs-Dot-AI/imessage-mcp/releases/latest/download/imessage-mcp.zip \
-  -o /tmp/imessage-mcp.zip
+  https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai/releases/latest/download/imessage-drafts-mcp.zip \
+  -o /tmp/imessage-drafts-mcp.zip
 
 # 2. Unzip and run the installer.
-cd /tmp && unzip -q imessage-mcp.zip
-cd imessage-mcp-v* && bash install.sh
+cd /tmp && unzip -q imessage-drafts-mcp.zip
+cd imessage-drafts-mcp-v* && bash install.sh
 ```
 
-The installer copies the binary to `~/bin/imessage-mcp`, installs the
-menu bar app to `/Applications/iMessage Drafts.app`, refreshes
+The installer copies the binary to `~/bin/imessage-drafts-mcp`, installs the
+menu bar app to `/Applications/Messages for AI.app`, refreshes
 LaunchServices, smoke-tests the MCP via an `initialize` round-trip, and
 prints the manual next steps.
 
 After running it, you need to:
 
-1. **Grant Full Disk Access** to `~/bin/imessage-mcp` — see
+1. **Grant Full Disk Access** to `~/bin/imessage-drafts-mcp` — see
    [Permissions](#permissions) below.
 2. **Wire up the MCP client** — see [MCP client config](#mcp-client-config) below.
 3. **Launch the menu bar app**:
    ```sh
-   open "/Applications/iMessage Drafts.app"
+   open "/Applications/Messages for AI.app"
    ```
    First popover open will trigger the macOS Contacts consent dialog.
-   Approve it; the app populates `~/.imessage-mcp/contacts-cache.json`,
+   Approve it; the app populates `~/.messages-mcp/contacts-cache.json`,
    which the MCP reads to resolve recipient names.
 
 ## Option B — Build from source
@@ -104,11 +130,11 @@ cert, contact lookup gracefully falls back to "raw phone numbers" mode
 — the rest of the server works fine.
 
 ```sh
-git clone https://github.com/Sunrise-Labs-Dot-AI/imessage-mcp.git
-cd imessage-mcp
+git clone https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai.git
+cd imessage-drafts-mcp
 bun install
 
-# Install the MCP binary to ~/bin/imessage-mcp
+# Install the MCP binary to ~/bin/imessage-drafts-mcp
 bun run install:bin
 
 # Build and install the menu bar app to /Applications/
@@ -131,7 +157,7 @@ Modern macOS (Sequoia+) silently blocks `CNContactStore.requestAccess`
 for adhoc-signed apps. Without a Developer ID cert, the menu bar app
 can't read your Contacts via the framework path. (FDA grants for adhoc
 binaries also get invalidated on every rebuild, since TCC keys off the
-binary hash.) See `menubar/scripts/imessage-drafts.entitlements` for
+binary hash.) See `menubar/scripts/messages-for-ai.entitlements` for
 the Hardened Runtime entitlements required (`personal-information.
 addressbook` + `automation.apple-events`).
 
@@ -141,18 +167,18 @@ addressbook` + `automation.apple-events`).
 
 Three TCC grants involved, each gated differently:
 
-## 1. Full Disk Access (on `~/bin/imessage-mcp`)
+## 1. Full Disk Access (on `~/bin/imessage-drafts-mcp`)
 
 Required to read `~/Library/Messages/chat.db`. There's no programmatic
 prompt for FDA — you have to do it manually:
 
 1. Open **System Settings → Privacy & Security → Full Disk Access**.
 2. Click **+**.
-3. Press **⌘⇧G**, paste `~/bin/imessage-mcp`, press Enter.
+3. Press **⌘⇧G**, paste `~/bin/imessage-drafts-mcp`, press Enter.
 4. Confirm the toggle is **on**.
 
 **Troubleshooting: tools return `authorization denied`.** Run
-`imessage_mcp_health_check` from a Claude Desktop chat — it'll report
+`health_check` from a Claude Desktop chat — it'll report
 which subsystem is failing and the remediation. Common cause: the FDA
 grant was for an older binary hash and didn't survive a rebuild. Toggle
 the entry off and back on (or remove and re-add). With Developer ID
@@ -163,9 +189,9 @@ the cert identity, which is stable across rebuilds.
 ## 2. Contacts (on the menu bar app)
 
 Required to resolve recipient handles to names. Prompted natively on
-first popover open: *"iMessage Drafts Would Like to Access Your Contacts."*
-Click OK. The app then exports a `~/.imessage-mcp/contacts-cache.json`
-sidecar that the MCP reads on each `stage_imessage_draft` call.
+first popover open: *"Messages for AI Would Like to Access Your Contacts."*
+Click OK. The app then exports a `~/.messages-mcp/contacts-cache.json`
+sidecar that the MCP reads on each `stage_draft` call.
 
 The sidecar uses the same data source Messages.app uses, including
 iCloud-synced contacts that may be CloudKit-only and absent from the
@@ -175,7 +201,7 @@ on-disk AddressBook SQLite. The sidecar refreshes automatically via
 ## 3. Automation (on the MCP client / menu bar app, targeting Messages.app)
 
 Required to actually send a staged draft. Prompted on the first call to
-`send_imessage_draft`: *"<parent app> wants to control Messages.app."*
+`send_draft`: *"<parent app> wants to control Messages.app."*
 Click **OK**; the grant persists.
 
 To revoke later: System Settings → Privacy & Security → Automation →
@@ -187,8 +213,8 @@ your parent app → Messages → toggle off.
 
 > ⚠️ MCP client `command` fields vary in whether they expand `~`. Claude
 > Desktop and Codex CLI do; some terminals' MCP plugins don't. If a
-> client fails to launch the server, replace `~/bin/imessage-mcp` with
-> the absolute path (`echo $HOME/bin/imessage-mcp`).
+> client fails to launch the server, replace `~/bin/imessage-drafts-mcp` with
+> the absolute path (`echo $HOME/bin/imessage-drafts-mcp`).
 
 **Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -196,7 +222,7 @@ your parent app → Messages → toggle off.
 {
   "mcpServers": {
     "imessages": {
-      "command": "~/bin/imessage-mcp"
+      "command": "~/bin/imessage-drafts-mcp"
     }
   }
 }
@@ -211,7 +237,7 @@ child only spawns on app launch).
 ```json
 {
   "mcpServers": {
-    "imessages": { "command": "~/bin/imessage-mcp" }
+    "imessages": { "command": "~/bin/imessage-drafts-mcp" }
   }
 }
 ```
@@ -220,7 +246,7 @@ child only spawns on app launch).
 
 ```toml
 [mcp_servers.imessages]
-command = "~/bin/imessage-mcp"
+command = "~/bin/imessage-drafts-mcp"
 ```
 
 (Verify against current Codex docs — config shape may have shifted.)
@@ -228,17 +254,17 @@ command = "~/bin/imessage-mcp"
 # Quick smoke test (no client needed)
 
 ```sh
-cat <<'EOF' | ~/bin/imessage-mcp 2>/tmp/imessage-mcp.stderr | tail -1
+cat <<'EOF' | ~/bin/imessage-drafts-mcp 2>/tmp/imessage-drafts-mcp.stderr | tail -1
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_imessage_threads","arguments":{"limit":3,"since":"2026-05-06T00:00:00Z"}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_threads","arguments":{"limit":3,"since":"2026-05-06T00:00:00Z"}}}
 EOF
 ```
 
 If FDA is granted you'll see your three most-recent threads. Without
-FDA the call returns `{"ok":false,"error":"list_imessage_threads failed: authorization denied"}`.
+FDA the call returns `{"ok":false,"error":"list_threads failed: authorization denied"}`.
 
-Also useful: `imessage_mcp_health_check` (via a Claude Desktop chat or
+Also useful: `health_check` (via a Claude Desktop chat or
 the smoke-test pattern above) reports the full live state of permissions
 and contact lookup in one call.
 
@@ -246,8 +272,8 @@ and contact lookup in one call.
 
 # Sending drafts — the trust model
 
-`send_imessage_draft({ draft_id })` consumes a draft staged via
-`stage_imessage_draft` and sends it through Messages.app via AppleScript
+`send_draft({ draft_id })` consumes a draft staged via
+`stage_draft` and sends it through Messages.app via AppleScript
 automation. The design has four trust layers:
 
 1. **MCP destructive annotation.** The tool advertises `destructiveHint: true`
@@ -256,9 +282,9 @@ automation. The design has four trust layers:
 2. **Send-only-from-draft.** There's no ad-hoc send. Every send requires a
    `draft_id`, so the draft text is observable in the conversation transcript
    before the destructive tool fires — even if the agent calls
-   `stage_imessage_draft` and `send_imessage_draft` in the same turn.
+   `stage_draft` and `send_draft` in the same turn.
 3. **Sent-state lock.** Once a draft has `sent_at` set, re-calling
-   `send_imessage_draft` returns an explicit "refusing duplicate send"
+   `send_draft` returns an explicit "refusing duplicate send"
    error. An agent looping on retry cannot double-send.
 4. **macOS TCC Automation.** AppleScript control of Messages.app is gated
    by a separate TCC service from FDA: "Automation". See
@@ -274,14 +300,14 @@ read tools are useful on their own.
 # Menu bar app
 
 The MCP server stages drafts as JSON files. The companion app at
-`/Applications/iMessage Drafts.app` is a SwiftUI `MenuBarExtra` that
+`/Applications/Messages for AI.app` is a SwiftUI `MenuBarExtra` that
 surfaces pending drafts with hold-to-fire Send / Discard buttons — so
 you actually review what an agent wants to send before it goes out,
 rather than rubber-stamping a tool call that shows only a draft UUID.
 
 ### How it works
 
-- Watches `~/.imessage-mcp/drafts` via `DispatchSourceFileSystemObject`,
+- Watches `~/.messages-mcp/drafts` via `DispatchSourceFileSystemObject`,
   so drafts staged by the MCP server appear in the popover within ~100ms.
 - Sends through the same AppleScript path the MCP server uses
   (`osascript` + `tell application "Messages"`). The duplication is
@@ -290,14 +316,14 @@ rather than rubber-stamping a tool call that shows only a draft UUID.
   `send_service`. Recently-sent drafts (within the last 24 hours) appear
   in a faded "Recently sent" section as a confirmation breadcrumb.
 - **Contacts export**: on launch, the app calls `CNContactStore.
-  enumerateContacts` and writes `~/.imessage-mcp/contacts-cache.json`
+  enumerateContacts` and writes `~/.messages-mcp/contacts-cache.json`
   with canonicalized handle → display name pairs. The MCP reads this
-  sidecar on every `stage_imessage_draft` call to populate
+  sidecar on every `stage_draft` call to populate
   `to_handle_name`. The sidecar refreshes on `CNContactStoreDidChange`.
 - **Open at Login is on by default.** The app self-registers via
   `SMAppService` the first time it runs. Toggle off via the popover
   footer, or via System Settings → General → Login Items.
-- **Race trade-off**: both the MCP `send_imessage_draft` tool and the
+- **Race trade-off**: both the MCP `send_draft` tool and the
   menu bar app's Send button check `sent_at` before sending, but a true
   simultaneous click on both isn't atomic — you could double-send. For
   a single-user single-recipient flow this is acceptable; if you ever
@@ -343,11 +369,11 @@ src/
   index.ts                 # stdio MCP bootstrap
   schema.ts                # Zod shapes + shared validators
   tools/
-    threads.ts             # list_imessage_threads, get_imessage_thread
-    search.ts              # search_imessages
+    threads.ts             # list_threads, get_thread
+    search.ts              # search_messages
     drafts.ts              # stage/list/get/discard/send drafts
     time.ts                # get_imessage_current_time
-    health.ts              # imessage_mcp_health_check
+    health.ts              # health_check
     _result.ts             # shared text-result envelopes
   chatdb/
     open.ts                # bun:sqlite read-only handle, Apple-epoch helpers
@@ -357,11 +383,11 @@ src/
   imessage/
     send.ts                # osascript wrapper for Messages.app send
   storage/
-    drafts.ts              # ~/.imessage-mcp/drafts CRUD
-    contacts-cache.ts      # ~/.imessage-mcp/contacts-cache.json reader
+    drafts.ts              # ~/.messages-mcp/drafts CRUD
+    contacts-cache.ts      # ~/.messages-mcp/contacts-cache.json reader
 menubar/
   Package.swift
-  Sources/iMessageDraftsMenu/
+  Sources/MessagesForAIMenu/
     App.swift              # @main, MenuBarExtra scene, AppDelegate
     DraftStore.swift       # ObservableObject + FS watcher
     DraftSender.swift      # osascript wrapper
@@ -374,7 +400,7 @@ menubar/
       ContactsPermissionBanner.swift  # Shown when NSContacts not granted
   scripts/
     install.sh             # build → .app bundle → codesign (Developer ID or adhoc)
-    imessage-drafts.entitlements  # Hardened Runtime entitlements
+    messages-for-ai.entitlements  # Hardened Runtime entitlements
 scripts/
   install.sh               # rebuild MCP binary → xattr-clear → re-sign → atomic-mv
   install-release.sh       # end-user installer bundled INTO the release zip
@@ -396,10 +422,10 @@ packages them into a self-contained zip.
    → Accounts → Manage Certificates → + → Developer ID Application).
 2. Generate an app-specific password at https://appleid.apple.com →
    Sign-In and Security → App-Specific Passwords. Label it
-   `imessage-mcp-notarytool`.
+   `imessage-drafts-mcp-notarytool`.
 3. Store it in your Keychain:
    ```sh
-   xcrun notarytool store-credentials imessage-mcp-notary \
+   xcrun notarytool store-credentials imessage-drafts-mcp-notary \
      --apple-id <your-developer-account-email> \
      --team-id <your-team-id> \
      --password <app-specific-password>
@@ -414,11 +440,11 @@ git push origin v0.1.0
 
 # 2. Build the release zip. Takes ~5-10 min (notarization round-trip).
 bash scripts/build-release.sh v0.1.0
-# → produces dist/imessage-mcp-v0.1.0.zip
+# → produces dist/imessage-drafts-mcp-v0.1.0.zip
 
 # 3. Publish via gh CLI.
-gh release create v0.1.0 dist/imessage-mcp-v0.1.0.zip \
-  --title 'imessage-mcp v0.1.0' \
+gh release create v0.1.0 dist/imessage-drafts-mcp-v0.1.0.zip \
+  --title 'imessage-drafts-mcp v0.1.0' \
   --notes 'See CHANGELOG / commit history.'
 ```
 

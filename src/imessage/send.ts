@@ -8,14 +8,14 @@
 //      prompt before the call.
 //   2) The tool refuses to fire ad hoc — it requires a draft_id pointing at
 //      an already-staged draft. That forces every send through the
-//      `stage_imessage_draft` step, so the draft text is observable in the
+//      `stage_draft` step, so the draft text is observable in the
 //      conversation transcript before the send tool is invoked.
 //   3) Once `sent_at` is set on a draft, re-sending is rejected. The agent
 //      cannot loop send-the-same-message on retry.
 //
 // macOS adds a fourth: the first AppleScript send triggers a TCC
 // "Allow <parent app> to control Messages.app?" prompt. Whichever app
-// spawned imessage-mcp must be granted that permission.
+// spawned imessage-drafts-mcp must be granted that permission.
 //
 // ⛔ If this server is ever exposed over a network transport (HTTP / WS /
 // tunnel), this tool MUST be removed from the public surface — the trust

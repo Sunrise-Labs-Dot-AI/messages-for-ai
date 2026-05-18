@@ -1,7 +1,7 @@
 // Send audit log + daily-cap enforcement.
 //
 // Every successful AppleScript send appends one JSON-line record to
-// ~/.imessage-mcp/send-audit.log. The same file is read on each
+// ~/.messages-mcp/send-audit.log. The same file is read on each
 // send to enforce a hard daily cap (a circuit breaker against
 // runaway agents / prompt-injection blast attacks).
 //
@@ -28,7 +28,7 @@ import { createHash } from "node:crypto";
 const DEFAULT_CAP = 50;
 
 function auditDirPath(): string {
-  return join(homedir(), ".imessage-mcp");
+  return join(homedir(), ".messages-mcp");
 }
 
 function auditLogPath(): string {
@@ -49,7 +49,7 @@ function logPath(): string {
 function ensureDir(): void {
   const d = testOverridePath ? join(testOverridePath, "..") : auditDirPath();
   // Symlink defense: refuse if either the audit dir itself OR its parent
-  // (one level up from `~/.imessage-mcp`, i.e. `$HOME`) has been replaced
+  // (one level up from `~/.messages-mcp`, i.e. `$HOME`) has been replaced
   // with a symlink that would redirect our log writes. Parallel to the
   // drafts-side guard in storage/drafts.ts. We don't walk past the
   // immediate parent — `$HOME` itself being a symlink is the user's

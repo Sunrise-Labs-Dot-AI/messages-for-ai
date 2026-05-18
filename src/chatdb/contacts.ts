@@ -223,7 +223,7 @@ function runSqliteBulkLoad(): void {
   lastLoadReport = reports;
 
   // Stderr breadcrumb so the user can see what happened by tailing
-  // ~/Library/Logs/Claude/mcp-server-imessage-mcp.log. Stays out of
+  // ~/Library/Logs/Claude/mcp-server-imessage-drafts-mcp.log. Stays out of
   // stdout (which is reserved for JSON-RPC).
   if (reports.length > 0) {
     const summary = reports
@@ -292,7 +292,7 @@ function load(): void {
     );
   } else {
     process.stderr.write(
-      `[contacts] no sidecar at ~/.imessage-mcp/contacts-cache.json; ` +
+      `[contacts] no sidecar at ~/.messages-mcp/contacts-cache.json; ` +
       `falling back to SQLite (install the menu bar app and grant Contacts permission to skip the FDA dependency)\n`
     );
   }
@@ -393,7 +393,7 @@ export function _setContactsForTesting(
 }
 
 // Public accessor for the canonicalization rule, exposed so the
-// `imessage_mcp_health_check` diagnostic tool can show callers exactly
+// `health_check` diagnostic tool can show callers exactly
 // what their handle string canonicalizes to. The rule itself stays
 // private — this just publishes the result for inspection.
 export function canonHandlePublic(s: string): string {

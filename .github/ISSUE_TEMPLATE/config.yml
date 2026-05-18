@@ -4,7 +4,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/Sunrise-Labs-Dot-AI/imessage-mcp/security/advisories/new
+    url: https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai/security/advisories/new
     about: For anything that should not be discussed in public, please open a private security advisory.
   - name: Email feedback
     url: mailto:support@sunriselabs.ai

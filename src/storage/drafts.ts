@@ -11,13 +11,13 @@ import type { DraftContextMessage, ContextLookupDiagnostic } from "../chatdb/que
 // IMPORTANT: a previous attempt to test this module via `process.env.HOME`
 // swap did NOT work — on macOS, `os.homedir()` uses passwd lookup keyed on
 // the effective UID, and ignores the JS-level HOME override. That oversight
-// caused test artifacts to leak into the real ~/.imessage-mcp/drafts AND
+// caused test artifacts to leak into the real ~/.messages-mcp/drafts AND
 // the test's beforeEach rmSync wiped previously-staged production drafts.
 // Production paths never call the override; only the test fixture does.
 let testDirOverride: string | null = null;
 
 function draftsDirPath(): string {
-  return testDirOverride ?? join(homedir(), ".imessage-mcp", "drafts");
+  return testDirOverride ?? join(homedir(), ".messages-mcp", "drafts");
 }
 
 export function _setDraftsDirForTesting(dir: string | null): void {
@@ -28,7 +28,7 @@ export interface Draft {
   id: string;
   to_handle: string;
   // Resolved contact name from the CNContactStore-backed sidecar
-  // (`~/.imessage-mcp/contacts-cache.json`, written by the menu bar
+  // (`~/.messages-mcp/contacts-cache.json`, written by the menu bar
   // app), or null if no match / sidecar absent. Surfaced in MCP tool
   // responses so agents can confirm the recipient by name, and used
   // by the menu bar to render a human-recognizable row header.
@@ -56,7 +56,7 @@ export interface Draft {
 
 function ensureDir(): void {
   const d = draftsDirPath();
-  // Walk up one level: check that the *parent* (`~/.imessage-mcp`) isn't
+  // Walk up one level: check that the *parent* (`~/.messages-mcp`) isn't
   // a symlink before we let `mkdirSync(recursive:true)` traverse it.
   // Without this, an attacker who pre-symlinked the parent before our
   // first run wins — mkdirSync creates `drafts/` *inside* the symlink
@@ -181,7 +181,7 @@ export function markDraftSent(id: string, sentAt: string, service: "iMessage" | 
   // Idempotency guard — match the Swift menubar app's `guard !existing.isSent`
   // check (DraftStore.swift). Without this, a race between the Node MCP
   // server and the Swift app (e.g. user holds Send in menubar while an
-  // agent is mid-send_imessage_draft) lets the second writer clobber the
+  // agent is mid-send_draft) lets the second writer clobber the
   // first writer's `sent_at` + `send_service` + `source` on disk. This is
   // the on-disk-state half of cross-process defense; preventing two
   // AppleScript sends from firing (the wire-level half) needs a file lock

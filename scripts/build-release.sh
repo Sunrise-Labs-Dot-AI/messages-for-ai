@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Build, sign, and notarize a release of imessage-mcp + the menu bar
+# Build, sign, and notarize a release of imessage-drafts-mcp + the menu bar
 # app, ready for upload to GitHub Releases.
 #
-# Output: dist/imessage-mcp-<version>.zip — a self-contained archive
+# Output: dist/imessage-drafts-mcp-<version>.zip — a self-contained archive
 # containing:
-#   - bin/imessage-mcp            (signed + notarized command-line binary)
-#   - iMessage Drafts.app/        (signed + notarized + stapled .app bundle)
+#   - bin/imessage-drafts-mcp            (signed + notarized command-line binary)
+#   - Messages for AI.app/        (signed + notarized + stapled .app bundle)
 #   - install.sh                  (end-user install script that copies the
 #                                  above into ~/bin/ and /Applications/)
 #   - README.md                   (short user-facing readme; full one is in repo)
@@ -21,9 +21,9 @@
 # Required environment:
 #   - Developer ID Application cert in keychain (auto-detected)
 #   - Notarytool credentials stored in keychain as profile
-#     "imessage-mcp-notary" (override via NOTARY_PROFILE env var).
+#     "imessage-drafts-mcp-notary" (override via NOTARY_PROFILE env var).
 #     One-time setup:
-#       xcrun notarytool store-credentials imessage-mcp-notary \
+#       xcrun notarytool store-credentials imessage-drafts-mcp-notary \
 #         --apple-id <your-apple-id-email> \
 #         --team-id <your-team-id> \
 #         --password <app-specific-password-from-appleid.apple.com>
@@ -34,7 +34,7 @@
 #   wait` times out, you can re-poll without re-uploading (which would
 #   burn another ~5-15 minutes) via:
 #     xcrun notarytool wait $(cat dist/notarize-mcp.uuid) \
-#       --keychain-profile imessage-mcp-notary
+#       --keychain-profile imessage-drafts-mcp-notary
 #   The trap on INT/TERM/EXIT wipes dist/ on abort, so you must save
 #   the UUID elsewhere FIRST if you Ctrl-C during the wait. A future
 #   refactor (deferred WARNING #14) will add a proper --resume flag.
@@ -42,7 +42,7 @@
 set -euo pipefail
 
 VERSION="${1:?usage: build-release.sh <version>, e.g. v0.1.1}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-imessage-mcp-notary}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-imessage-drafts-mcp-notary}"
 
 # The only Apple Developer Team ID this build accepts. Auto-detected
 # certs from a different Team ID will be REJECTED rather than silently
@@ -61,7 +61,7 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 DIST="$REPO_ROOT/dist"
 STAGE="$DIST/stage"
-RELEASE_NAME="imessage-mcp-$VERSION"
+RELEASE_NAME="imessage-drafts-mcp-$VERSION"
 
 # Find the Developer ID cert. Filters by EXPECTED_TEAM_ID to refuse
 # attacker-planted certs in the same keychain. Fails loudly if no
@@ -120,26 +120,26 @@ mkdir -p "$STAGE/$RELEASE_NAME/bin"
 trap 'rc=$?; trap "" INT TERM; echo; echo "✗ build aborted (exit $rc); wiping $DIST/" >&2; rm -rf "$DIST"' INT TERM EXIT
 
 # ============================================================================
-# 1. imessage-mcp binary
+# 1. imessage-drafts-mcp binary
 # ============================================================================
 echo
-echo "=== imessage-mcp binary ==="
+echo "=== imessage-drafts-mcp binary ==="
 
 echo "› bun build --compile"
-bun build src/index.ts --compile --outfile "bin/imessage-mcp"
-xattr -cr bin/imessage-mcp
+bun build src/index.ts --compile --outfile "bin/imessage-drafts-mcp"
+xattr -cr bin/imessage-drafts-mcp
 
 echo "› signing with Developer ID + Hardened Runtime"
-# Identifier `com.sunriselabs.imessage-mcp` (distinct from the dev
-# identifier `com.local.imessage-mcp.dev` used by scripts/dev-install.sh).
+# Identifier `com.sunriselabs.messages-mcp` (distinct from the dev
+# identifier `com.local.messages-mcp.dev` used by scripts/dev-install.sh).
 # Different identifiers prevent a dev rebuild from clobbering the TCC
 # grant established when a release binary is installed.
 "$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
-  --identifier "com.sunriselabs.imessage-mcp" \
+  --identifier "com.sunriselabs.messages-mcp" \
   --options=runtime \
-  bin/imessage-mcp
+  bin/imessage-drafts-mcp
 
-echo "› notarizing imessage-mcp"
+echo "› notarizing imessage-drafts-mcp"
 # Apple's notary service accepts zips for binary submission. We zip,
 # submit, wait for approval, then extract the signed binary back out.
 # (Binaries can't be stapled — the notarization is verified at
@@ -151,9 +151,9 @@ echo "› notarizing imessage-mcp"
 # of paying another upload round-trip — see script header.
 NOTARIZE_DIR="$DIST/notarize-mcp"
 mkdir -p "$NOTARIZE_DIR"
-cp bin/imessage-mcp "$NOTARIZE_DIR/"
-ditto -c -k --keepParent "$NOTARIZE_DIR/imessage-mcp" "$NOTARIZE_DIR/imessage-mcp.zip"
-MCP_SUBMIT_JSON=$(xcrun notarytool submit "$NOTARIZE_DIR/imessage-mcp.zip" \
+cp bin/imessage-drafts-mcp "$NOTARIZE_DIR/"
+ditto -c -k --keepParent "$NOTARIZE_DIR/imessage-drafts-mcp" "$NOTARIZE_DIR/imessage-drafts-mcp.zip"
+MCP_SUBMIT_JSON=$(xcrun notarytool submit "$NOTARIZE_DIR/imessage-drafts-mcp.zip" \
   --keychain-profile "$NOTARY_PROFILE" \
   --output-format json \
   --no-wait)
@@ -170,26 +170,26 @@ xcrun notarytool wait "$MCP_UUID" --keychain-profile "$NOTARY_PROFILE"
 # The binary is unchanged by notarization — we just need to verify
 # Apple stamped it. The codesign --verify --deep --strict already
 # proves the signature is valid; the cloud check happens at runtime.
-"$CODESIGN" --verify --strict --verbose=2 bin/imessage-mcp
+"$CODESIGN" --verify --strict --verbose=2 bin/imessage-drafts-mcp
 
-cp bin/imessage-mcp "$STAGE/$RELEASE_NAME/bin/imessage-mcp"
+cp bin/imessage-drafts-mcp "$STAGE/$RELEASE_NAME/bin/imessage-drafts-mcp"
 
 # ============================================================================
-# 2. iMessage Drafts.app menu bar bundle
+# 2. Messages for AI.app menu bar bundle
 # ============================================================================
 echo
-echo "=== iMessage Drafts.app ==="
+echo "=== Messages for AI.app ==="
 
 cd "$REPO_ROOT/menubar"
 
 echo "› swift build -c release"
 swift build -c release
 
-APP_NAME="iMessage Drafts"
-BUNDLE_ID="com.sunriselabs.imessage-drafts"
-EXE_NAME="iMessageDraftsMenu"
+APP_NAME="Messages for AI"
+BUNDLE_ID="com.sunriselabs.messages-for-ai"
+EXE_NAME="MessagesForAIMenu"
 APP_PATH="$DIST/stage/$RELEASE_NAME/$APP_NAME.app"
-ENTITLEMENTS="$REPO_ROOT/menubar/scripts/imessage-drafts.entitlements"
+ENTITLEMENTS="$REPO_ROOT/menubar/scripts/messages-for-ai.entitlements"
 
 BIN=".build/release/$EXE_NAME"
 if [[ ! -x "$BIN" ]]; then
@@ -227,9 +227,9 @@ cat > "$APP_PATH/Contents/Info.plist" <<EOF
   <key>LSUIElement</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>iMessage Drafts sends staged iMessage drafts via Messages.app.</string>
+  <string>Messages for AI sends staged iMessage drafts via Messages.app.</string>
   <key>NSContactsUsageDescription</key>
-  <string>iMessage Drafts reads your Contacts to resolve recipient names. The same data Messages.app shows, including iCloud-synced contacts. The exported list is written only to ~/.imessage-mcp/contacts-cache.json on this Mac and never leaves the machine.</string>
+  <string>Messages for AI reads your Contacts to resolve recipient names. The same data Messages.app shows, including iCloud-synced contacts. The exported list is written only to ~/.messages-mcp/contacts-cache.json on this Mac and never leaves the machine.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Local-only utility. No data leaves this Mac.</string>
 </dict>
@@ -276,7 +276,7 @@ cp "$REPO_ROOT/scripts/install-release.sh" "$STAGE/$RELEASE_NAME/install.sh"
 chmod +x "$STAGE/$RELEASE_NAME/install.sh"
 
 cat > "$STAGE/$RELEASE_NAME/README.md" <<'EOF'
-# imessage-mcp release bundle
+# imessage-drafts-mcp release bundle
 
 This archive contains pre-built, signed, and Apple-notarized binaries.
 No Xcode, no Apple Developer Account, no rebuilding required.
@@ -288,28 +288,28 @@ bash install.sh
 ```
 
 The installer will:
-- Copy `bin/imessage-mcp` to `~/bin/imessage-mcp`
-- Copy `iMessage Drafts.app` to `/Applications/iMessage Drafts.app`
+- Copy `bin/imessage-drafts-mcp` to `~/bin/imessage-drafts-mcp`
+- Copy `Messages for AI.app` to `/Applications/Messages for AI.app`
 - Refresh LaunchServices so macOS finds the new bundle
 - Print next steps for granting Full Disk Access + wiring up Claude Desktop
 
 ## What you'll need to do manually after install
 
-1. **Grant Full Disk Access** to `~/bin/imessage-mcp` so it can read
+1. **Grant Full Disk Access** to `~/bin/imessage-drafts-mcp` so it can read
    `chat.db` (your iMessage history):
    - System Settings → Privacy & Security → Full Disk Access
-   - Click `+`, navigate to `~/bin/imessage-mcp`, select it, toggle on
+   - Click `+`, navigate to `~/bin/imessage-drafts-mcp`, select it, toggle on
 2. **Configure Claude Desktop** to use the MCP server. Add to
    `~/Library/Application Support/Claude/claude_desktop_config.json`:
    ```json
    {
      "mcpServers": {
-       "imessage": { "command": "/Users/YOUR-USERNAME/bin/imessage-mcp" }
+       "imessage": { "command": "/Users/YOUR-USERNAME/bin/imessage-drafts-mcp" }
      }
    }
    ```
    Then quit Claude Desktop (Cmd+Q) and reopen.
-3. **Launch the menu bar app**: `open "/Applications/iMessage Drafts.app"`
+3. **Launch the menu bar app**: `open "/Applications/Messages for AI.app"`
    On first popover open, macOS will prompt for Contacts access — approve it.
 
 See the full README in the GitHub repo for the full feature/permission story.
@@ -342,9 +342,9 @@ zip -r -q "$RELEASE_ZIP" "$RELEASE_NAME"
 echo "› verifying packaged bundle (extract to temp + spctl-assess)"
 VERIFY_DIR=$(mktemp -d)
 unzip -q "$RELEASE_ZIP" -d "$VERIFY_DIR"
-if ! spctl --assess --type execute --verbose=2 "$VERIFY_DIR/$RELEASE_NAME/iMessage Drafts.app" >/dev/null 2>&1; then
+if ! spctl --assess --type execute --verbose=2 "$VERIFY_DIR/$RELEASE_NAME/Messages for AI.app" >/dev/null 2>&1; then
   echo "✗ spctl --assess FAILED on the unzipped .app — refusing to ship." >&2
-  spctl --assess --type execute --verbose=2 "$VERIFY_DIR/$RELEASE_NAME/iMessage Drafts.app" >&2 || true
+  spctl --assess --type execute --verbose=2 "$VERIFY_DIR/$RELEASE_NAME/Messages for AI.app" >&2 || true
   rm -rf "$VERIFY_DIR"
   exit 1
 fi
@@ -366,5 +366,5 @@ echo "  1. Sanity test the bundle locally:"
 echo "       cd /tmp && unzip $RELEASE_ZIP && cd $RELEASE_NAME && bash install.sh"
 echo "  2. Publish via gh CLI:"
 echo "       gh release create $VERSION $RELEASE_ZIP \\"
-echo "         --title 'imessage-mcp $VERSION' \\"
+echo "         --title 'imessage-drafts-mcp $VERSION' \\"
 echo "         --notes 'See CHANGELOG / commit history.'"

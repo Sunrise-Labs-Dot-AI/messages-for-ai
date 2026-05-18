@@ -27,7 +27,7 @@ import { dirname, join } from "node:path";
 // naturally. If we ever need live-refresh behavior, do an mtime check
 // here at a 60-second interval rather than re-reading on every call.
 function defaultSidecarPath(): string {
-  return join(homedir(), ".imessage-mcp", "contacts-cache.json");
+  return join(homedir(), ".messages-mcp", "contacts-cache.json");
 }
 
 // On-disk schema. Bumping `version` is a breaking change requiring a
@@ -262,7 +262,7 @@ export function readContactsSidecar(): ContactsSidecar | null {
 }
 
 // Diagnostic-friendly inspection without committing to a load. Used by
-// the `imessage_mcp_health_check` tool to show "is the sidecar there?
+// the `health_check` tool to show "is the sidecar there?
 // when was it written? how stale is it?"
 export function getContactsSidecarDiagnostic(): ContactsSidecarDiagnostic {
   const path = contactsCachePath();

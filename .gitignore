@@ -1,5 +1,5 @@
 node_modules/
-bin/imessage-mcp
+bin/
 *.log
 .DS_Store
 bun.lock

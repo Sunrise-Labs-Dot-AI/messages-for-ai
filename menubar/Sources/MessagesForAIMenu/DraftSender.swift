@@ -1,12 +1,12 @@
 import Foundation
 
 // Sends an iMessage by spawning osascript with the same AppleScript the
-// MCP server's send_imessage_draft tool uses. The duplication is small
+// MCP server's send_draft tool uses. The duplication is small
 // (~30 lines of AppleScript) and avoids inventing an IPC channel between
 // the menu bar app and the (stdio-only) MCP server.
 //
 // TCC note: the first call from this app triggers a macOS prompt asking
-// the user to allow "iMessage Drafts.app" to control "Messages.app".
+// the user to allow "Messages for AI.app" to control "Messages.app".
 // That permission is independent from the MCP server's grant — same TCC
 // service ("Automation"), separate per-app entry.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Rebuild + install imessage-mcp into ~/bin/ for LOCAL DEVELOPMENT.
+# Rebuild + install imessage-drafts-mcp into ~/bin/ for LOCAL DEVELOPMENT.
 #
 # This is the dev-loop installer — it compiles from source on every run.
 # End users should use scripts/install-release.sh (the one bundled inside
@@ -8,15 +8,15 @@
 # binary without needing Bun or a Developer ID cert.
 #
 # What this script does:
-#   1. `bun build --compile` produces bin/imessage-mcp.
+#   1. `bun build --compile` produces bin/imessage-drafts-mcp.
 #   2. xattr -cr clears provenance + quarantine flags that would otherwise
 #      flag the binary as untrusted on next launch.
 #   3. codesign --force re-signs with a stable identifier
-#      `com.local.imessage-mcp.dev` (distinct from the release identifier
-#      `com.sunriselabs.imessage-mcp` — see below). If a Developer ID
+#      `com.local.messages-mcp.dev` (distinct from the release identifier
+#      `com.sunriselabs.messages-mcp` — see below). If a Developer ID
 #      Application cert from the EXPECTED_TEAM_ID is present in the
 #      keychain it's used; otherwise falls back to adhoc with a warning.
-#   4. Atomic-mv into ~/bin/imessage-mcp.
+#   4. Atomic-mv into ~/bin/imessage-drafts-mcp.
 #   5. codesign --verify confirms the signature is well-formed.
 #   6. JSON-RPC initialize smoke test confirms the binary boots.
 #
@@ -24,8 +24,8 @@
 # (Claude Desktop, Claude Code, Codex CLI) so they fork a fresh child.
 #
 # Identifier conventions:
-#   - Dev builds (this script):              com.local.imessage-mcp.dev
-#   - Release builds (build-release.sh):     com.sunriselabs.imessage-mcp
+#   - Dev builds (this script):              com.local.messages-mcp.dev
+#   - Release builds (build-release.sh):     com.sunriselabs.messages-mcp
 #
 # We deliberately use DIFFERENT identifiers because TCC keys the Full
 # Disk Access grant off the codesigning identity. Running this dev
@@ -50,7 +50,7 @@ EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-LQ93LRM9QU}"
 # Codesign identifier embedded in the signed binary. TCC keys the FDA
 # grant off this. Keep distinct from the release identifier so dev
 # rebuilds can't clobber a release install's TCC state.
-IDENTIFIER="${IMESSAGE_MCP_IDENTIFIER:-com.local.imessage-mcp.dev}"
+IDENTIFIER="${IMESSAGE_MCP_IDENTIFIER:-com.local.messages-mcp.dev}"
 
 # Absolute paths to the macOS-system binaries we shell out to. Pinning
 # these defends against PATH-shimmed `security` / `codesign` (e.g. a
@@ -59,8 +59,8 @@ SECURITY=/usr/bin/security
 CODESIGN=/usr/bin/codesign
 AWK=/usr/bin/awk
 
-BIN_SRC="bin/imessage-mcp"
-BIN_DEST="${HOME}/bin/imessage-mcp"
+BIN_SRC="bin/imessage-drafts-mcp"
+BIN_DEST="${HOME}/bin/imessage-drafts-mcp"
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 

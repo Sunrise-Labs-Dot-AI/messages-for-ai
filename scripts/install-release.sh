@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# End-user installer for the pre-built imessage-mcp release. This script
+# End-user installer for the pre-built imessage-drafts-mcp release. This script
 # ships INSIDE the release zip — it doesn't rebuild from source. It just
 # copies the already-signed-and-notarized artifacts into the conventional
 # locations and prints next steps.
@@ -33,10 +33,10 @@ SPCTL=/usr/sbin/spctl
 SCRIPT_DIR="$( cd -P "$( dirname "${BASH_SOURCE[0]}" )" && pwd -P )"
 cd "$SCRIPT_DIR"
 
-BIN_SRC="$SCRIPT_DIR/bin/imessage-mcp"
-APP_SRC="$SCRIPT_DIR/iMessage Drafts.app"
-BIN_DEST="$HOME/bin/imessage-mcp"
-APP_DEST="/Applications/iMessage Drafts.app"
+BIN_SRC="$SCRIPT_DIR/bin/imessage-drafts-mcp"
+APP_SRC="$SCRIPT_DIR/Messages for AI.app"
+BIN_DEST="$HOME/bin/imessage-drafts-mcp"
+APP_DEST="/Applications/Messages for AI.app"
 
 # ─── Sanity check the archive ───────────────────────────────────────────────
 
@@ -87,23 +87,23 @@ verify_team_id() {
   echo "  ✓ $kind: Team $detected, seal intact"
 }
 
-verify_team_id "$BIN_SRC" "imessage-mcp binary" || exit 1
-verify_team_id "$APP_SRC" "iMessage Drafts.app" || exit 1
+verify_team_id "$BIN_SRC" "imessage-drafts-mcp binary" || exit 1
+verify_team_id "$APP_SRC" "Messages for AI.app" || exit 1
 
 # Gatekeeper-assess the .app. This is the system's own "would I allow
 # this app to run?" check, which incorporates notarization status.
-echo "› Gatekeeper assess on iMessage Drafts.app"
+echo "› Gatekeeper assess on Messages for AI.app"
 if ! "$SPCTL" --assess --type execute "$APP_SRC" 2>&1; then
   echo "✗ Gatekeeper rejected $APP_SRC — refusing to install." >&2
   exit 1
 fi
 
-echo "=== Installing imessage-mcp ==="
+echo "=== Installing imessage-drafts-mcp ==="
 
-# ─── imessage-mcp binary → ~/bin/ ───────────────────────────────────────────
+# ─── imessage-drafts-mcp binary → ~/bin/ ───────────────────────────────────────────
 
 echo
-echo "› ~/bin/imessage-mcp"
+echo "› ~/bin/imessage-drafts-mcp"
 mkdir -p "$HOME/bin"
 # Atomic copy + rename so a running MCP child doesn't get its file
 # yanked mid-exec.
@@ -122,7 +122,7 @@ echo "  ✓ signature preserved through copy"
 # ─── Menu bar app → /Applications/ ──────────────────────────────────────────
 
 echo
-echo "› /Applications/iMessage Drafts.app"
+echo "› /Applications/Messages for AI.app"
 if [[ ! -w "/Applications" ]]; then
   echo "✗ /Applications is not writable by $USER." >&2
   echo "  Either re-run this script with sudo, or install the app to your" >&2
@@ -147,7 +147,7 @@ fi
 echo "  ✓ signature preserved through copy"
 
 # Remove the legacy ~/Applications/ copy from old installs that wrote there.
-LEGACY_APP="$HOME/Applications/iMessage Drafts.app"
+LEGACY_APP="$HOME/Applications/Messages for AI.app"
 if [[ -d "$LEGACY_APP" ]]; then
   echo "  › removing legacy install at $LEGACY_APP"
   rm -rf "$LEGACY_APP"
@@ -184,7 +184,7 @@ Three things you need to do manually:
    (your iMessage history):
 
      System Settings → Privacy & Security → Full Disk Access
-     Click "+" → navigate to ~/bin/imessage-mcp → select → toggle on
+     Click "+" → navigate to ~/bin/imessage-drafts-mcp → select → toggle on
 
 2. CONFIGURE CLAUDE DESKTOP to use the MCP. Edit:
 
@@ -208,12 +208,12 @@ Three things you need to do manually:
      open "$APP_DEST"
 
    On first popover open, macOS will ask:
-     "iMessage Drafts Would Like to Access Your Contacts"
-   Click OK. The app populates a sidecar (~/.imessage-mcp/contacts-cache.json)
+     "Messages for AI Would Like to Access Your Contacts"
+   Click OK. The app populates a sidecar (~/.messages-mcp/contacts-cache.json)
    that the MCP reads to resolve recipient names.
 
 After these three steps, in a Claude Desktop chat ask:
-   "call imessage_mcp_health_check"
+   "call health_check"
 to verify everything is wired up.
 ==================================================================
 EOF

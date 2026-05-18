@@ -36,7 +36,7 @@ export interface ChatDbDiagnostic {
 }
 
 // Probe-open chat.db without caching the handle or throwing. Used by the
-// `imessage_mcp_health_check` tool to distinguish "FDA missing" from
+// `health_check` tool to distinguish "FDA missing" from
 // "file missing" from "schema mismatch" without taking down the rest of
 // the server. We deliberately don't reuse `openChatDb()`'s cached
 // instance — diagnostics should reflect live state, not a stale cache.

@@ -1,8 +1,8 @@
 import Foundation
 import Combine
 
-// Reads + writes ~/.imessage-mcp/settings.json. The MCP server reads
-// the same file on every send_imessage_draft call (no caching), so
+// Reads + writes ~/.messages-mcp/settings.json. The MCP server reads
+// the same file on every send_draft call (no caching), so
 // toggling here takes effect immediately for the next send attempt
 // from any MCP client.
 //
@@ -10,7 +10,7 @@ import Combine
 // sync; unknown keys are ignored on both sides for forward-compat.
 @MainActor
 final class SettingsStore: ObservableObject {
-  // When true (default), the MCP send_imessage_draft tool refuses and
+  // When true (default), the MCP send_draft tool refuses and
   // the user must hold the Send button in the menu bar UI to dispatch
   // each draft. The strongest enforcement of the draft-review property.
   @Published var requireApproval: Bool {
@@ -23,7 +23,7 @@ final class SettingsStore: ObservableObject {
 
   init() {
     let dir = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".imessage-mcp")
+      .appendingPathComponent(".messages-mcp")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     self.file = dir.appendingPathComponent("settings.json")
 

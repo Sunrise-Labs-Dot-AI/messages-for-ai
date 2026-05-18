@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Entitlements for iMessage Drafts (hardened-runtime, non-sandboxed).
+  Entitlements for Messages for AI (hardened-runtime, non-sandboxed).
 
   Apple Events scope (v0.1.1, PR 5b code-review finding #10):
 
@@ -18,12 +18,12 @@
   the non-sandboxed hardened-runtime case we're in here. Properly
   enforcing the scope requires turning the menubar into a sandboxed
   app (com.apple.security.app-sandbox + temporary-exception entries
-  for ~/.imessage-mcp/ filesystem access) — that's a larger refactor
+  for ~/.messages-mcp/ filesystem access) — that's a larger refactor
   deferred to v0.1.2.
 
   When that refactor lands: add `<key>com.apple.security.app-sandbox</key>
   <true/>` and a `<key>com.apple.security.temporary-exception.files.
-  home-relative-path.read-write</key><array><string>.imessage-mcp/
+  home-relative-path.read-write</key><array><string>.messages-mcp/
   </string></array>` block so the sidecar + drafts writes still work.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

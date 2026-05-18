@@ -4,7 +4,7 @@
 // older builds — unknown keys are ignored, missing keys fall back to
 // safe defaults.
 //
-// File: ~/.imessage-mcp/settings.json (mode 0600).
+// File: ~/.messages-mcp/settings.json (mode 0600).
 //
 // Reads happen on every MCP send so toggling the flag in the menu bar
 // app takes effect immediately, no MCP-client restart needed. Writes
@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export interface Settings {
-  // When true (default), the MCP `send_imessage_draft` tool refuses to
+  // When true (default), the MCP `send_draft` tool refuses to
   // send and instructs the caller to use the menu bar app instead. This
   // is the strongest enforcement of the draft-review property:
   // every send must pass through human eyes.
@@ -27,7 +27,7 @@ const DEFAULTS: Settings = {
 };
 
 function settingsDirPath(): string {
-  return testDirOverride ?? join(homedir(), ".imessage-mcp");
+  return testDirOverride ?? join(homedir(), ".messages-mcp");
 }
 
 function settingsFilePath(): string {

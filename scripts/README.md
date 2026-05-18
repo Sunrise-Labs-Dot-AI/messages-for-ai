@@ -10,7 +10,7 @@ by reflex.
 Builds the MCP binary from source via `bun build --compile`, codesigns
 it with the contributor's `Developer ID Application: ... (LQ93LRM9QU)`
 cert (auto-detected; falls back to adhoc with a warning), and installs
-it to `~/bin/imessage-mcp`.
+it to `~/bin/imessage-drafts-mcp`.
 
 Run this when:
 - You've made a code change to `src/` and want to test it against your
@@ -21,7 +21,7 @@ Run this when:
 bun run install:bin    # or: bash scripts/dev-install.sh
 ```
 
-Identifier embedded in the signed binary: **`com.local.imessage-mcp.dev`**.
+Identifier embedded in the signed binary: **`com.local.messages-mcp.dev`**.
 Distinct from the release identifier so dev rebuilds can't clobber a
 release install's TCC grant. See the comment at the top of the script
 for the full reasoning.
@@ -30,13 +30,13 @@ for the full reasoning.
 
 Builds + signs + notarizes the MCP binary AND the menu bar app, packages
 everything (plus a copy of `install-release.sh` renamed to `install.sh`,
-plus a short user-facing README) into `dist/imessage-mcp-<version>.zip`,
+plus a short user-facing README) into `dist/imessage-drafts-mcp-<version>.zip`,
 ready for upload to GitHub Releases.
 
 Run this when cutting a tagged release. One-time setup required:
 
 ```sh
-xcrun notarytool store-credentials imessage-mcp-notary \
+xcrun notarytool store-credentials imessage-drafts-mcp-notary \
   --apple-id <your-apple-id> \
   --team-id LQ93LRM9QU \
   --password <app-specific-password-from-appleid.apple.com>
@@ -46,13 +46,13 @@ Then:
 
 ```sh
 bash scripts/build-release.sh v0.1.1
-gh release create v0.1.1 dist/imessage-mcp-v0.1.1.zip ...
+gh release create v0.1.1 dist/imessage-drafts-mcp-v0.1.1.zip ...
 ```
 
 Takes ~5–10 minutes (most of which is Apple's notarization queue).
 
-Identifier embedded in the release binary: **`com.sunriselabs.imessage-mcp`**.
-The menu bar app's bundle ID is **`com.sunriselabs.imessage-drafts`**.
+Identifier embedded in the release binary: **`com.sunriselabs.messages-mcp`**.
+The menu bar app's bundle ID is **`com.sunriselabs.messages-for-ai`**.
 
 ## `install-release.sh` — end user
 
@@ -80,7 +80,7 @@ fork's release.
 
 ## Menu bar app entitlements
 
-The signed menu bar app embeds `menubar/scripts/imessage-drafts.entitlements`.
+The signed menu bar app embeds `menubar/scripts/messages-for-ai.entitlements`.
 It declares **`com.apple.security.automation.apple-events: true`** (required
 for hardened-runtime non-sandboxed apps to send any Apple Event at all —
 removing it would block the AppleScript path the app uses to talk to
@@ -91,7 +91,7 @@ Messages.app) and **`com.apple.security.scripting-targets`** scoped to
 non-sandboxed apps — it documents intent but doesn't bound the Apple
 Events scope at runtime. Real enforcement requires turning the menubar
 into a sandboxed app with `com.apple.security.app-sandbox`, which needs
-temporary-exception entries for `~/.imessage-mcp/` filesystem access.
+temporary-exception entries for `~/.messages-mcp/` filesystem access.
 That's a deferred refactor (v0.1.2). The full reasoning lives in the
 XML comment at the top of the entitlement file. A reviewer auditing
 Apple-events exposure should read both this section AND that comment.

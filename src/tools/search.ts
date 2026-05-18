@@ -7,7 +7,7 @@ import type { ThreadMessage } from "../chatdb/queries.ts";
 
 export function registerSearchTool(server: McpServer): void {
   server.registerTool(
-    "search_imessages",
+    "search_messages",
     {
       title: "Search iMessage bodies",
       description:
@@ -31,7 +31,7 @@ export function registerSearchTool(server: McpServer): void {
         }));
         return jsonResult({ query: args.query, hits: wrapped });
       } catch (e) {
-        return errorResult(`search_imessages failed: ${(e as Error).message}`);
+        return errorResult(`search_messages failed: ${(e as Error).message}`);
       }
     }
   );
