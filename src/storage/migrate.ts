@@ -81,9 +81,15 @@ function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
  * search — refuses to traverse symlinked directories.
  */
 function findSymlink(root: string, relPath = ""): string | null {
-  let entries: ReturnType<typeof readdirSync> = [];
+  // `readdirSync(..., {withFileTypes: true})` returns Dirent<string>[] when
+  // called with a string path, but `ReturnType<typeof readdirSync>` resolves
+  // to the broader union including Dirent<Buffer> variants. Type the local
+  // explicitly so .name is a string, not string | Buffer.
+  let entries: import("fs").Dirent<string>[] = [];
   try {
-    entries = readdirSync(join(root, relPath), { withFileTypes: true });
+    entries = readdirSync(join(root, relPath), {
+      withFileTypes: true,
+    }) as import("fs").Dirent<string>[];
   } catch {
     // Unreadable directory — treat as clean for migration purposes;
     // a deeper failure during cpSync will surface in the outer try/catch.
