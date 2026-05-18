@@ -91,10 +91,15 @@ Env vars (configure for trusted automation contexts):
   applies when `require_approval` is off.
 - `IMESSAGE_DAILY_SEND_CAP` — maximum sends per UTC day. Default `50`.
   Set to `0` to disable.
-- `IMESSAGE_MCP_IDENTIFIER` — codesign identifier used by
-  `scripts/dev-install.sh`. Default `com.local.imessage-drafts-mcp.dev`. Changing
-  this invalidates any existing FDA grant — you'll need to re-toggle
-  the FDA entry after the first build with a new identifier.
+- `IMESSAGE_MCP_IDENTIFIER` — codesign identifier embedded in the inner
+  MCP binary by `scripts/dev-install.sh`. Default
+  `com.sunriselabs.messages-for-ai` (same as the parent .app bundle's
+  `CFBundleIdentifier`). For the `.app`-wrap architecture, the inner
+  binary's identifier MUST match the bundle's so that TCC's grant on
+  the .app covers the running MCP process. Changing this to a value
+  that differs from the bundle's identifier will break FDA — TCC
+  compares the running process's `Identifier=` against the granted
+  identifier as strings; mismatch = no grant match.
 
 ## What you should do as a user
 

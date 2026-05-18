@@ -16,7 +16,7 @@
 #   - Codesigns with a Developer ID cert matching EXPECTED_TEAM_ID if
 #     present, falls back to adhoc with a warning.
 #
-# After install, launch via:    open /Applications/iMessage\ Drafts.app
+# After install, launch via:    open "/Applications/Messages for AI.app"
 # Or set it as a Login Item:    System Settings → General → Login Items.
 #
 # Install destination: /Applications by default. This is where Finder's

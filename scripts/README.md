@@ -46,6 +46,30 @@ identifier against any FDA grant. `dev-install.sh` and
 has a defensive post-seal check that fails the build if either inner
 binary's identifier ≠ `com.sunriselabs.messages-for-ai`.
 
+## Install order (important — read this before running anything)
+
+The dev install is a two-step sequence. The order matters because
+`scripts/dev-install.sh` (the repo-root MCP installer) expects the
+`.app` bundle to already exist at `/Applications/Messages for AI.app`:
+
+```sh
+# Step 1: create the .app bundle with the menubar binary inside.
+cd menubar && bash scripts/dev-install.sh && cd ..
+
+# Step 2: build the MCP binary and install it INTO the existing .app.
+bash scripts/dev-install.sh    # (or: bun run install:bin)
+```
+
+If you run Step 2 first, the script exits with
+`✗ menubar .app not found at: /Applications/Messages for AI.app`.
+
+**Do not run the two scripts concurrently** (e.g. one in each terminal
+tab). They both modify `/Applications/Messages for AI.app/`'s codesign
+state; running them in parallel can interleave per-binary signing with
+bundle re-sealing and leave the bundle's seal pointing at a different
+version of the MCP binary than the on-disk file actually contains.
+Wait for Step 1 to finish before starting Step 2.
+
 ## `dev-install.sh` — contributor / local development
 
 Rebuilds the MCP binary from source via `bun build --compile`,

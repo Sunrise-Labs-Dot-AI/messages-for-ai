@@ -31,7 +31,7 @@
 # grant doesn't match. Discovered the hard way during v0.2.0 dev.
 #
 # Usage:
-#   bash scripts/build-release.sh v0.1.0
+#   bash scripts/build-release.sh <version>   # e.g. v0.2.0
 #
 # Required environment:
 #   - Developer ID Application cert in keychain (auto-detected)
@@ -264,19 +264,31 @@ echo "=== Sealing .app bundle (NO --deep — preserves inner identifiers) ==="
   "$APP_PATH"
 
 # Defensive check: confirm both inner binaries still report the bundle
-# identifier after the seal. If a future edit reintroduces --deep, this
-# trips and we fail loudly BEFORE shipping a release that would silently
-# break FDA on users' machines.
-for f in "$APP_PATH/Contents/MacOS/$EXE_NAME" "$APP_PATH/Contents/MacOS/$MCP_NAME"; do
-  got=$("$CODESIGN" -dv --verbose=2 "$f" 2>&1 | sed -nE 's/^Identifier=(.*)$/\1/p' | head -1)
-  if [[ "$got" != "$BUNDLE_ID" ]]; then
-    echo "✗ $f reports Identifier='$got', expected '$BUNDLE_ID'." >&2
-    echo "  Did someone reintroduce --deep on the bundle seal?" >&2
-    echo "  TCC grants on the .app won't cover this binary's process." >&2
-    exit 1
-  fi
-done
-echo "  ✓ both inner binaries report Identifier=$BUNDLE_ID"
+# identifier. If a future edit reintroduces --deep, this trips and we
+# fail loudly BEFORE shipping a release that would silently break FDA
+# on users' machines. We define this as a function and call it at three
+# checkpoints: (1) right after the bundle seal, (2) right before
+# stapling, and (3) after extracting the final zip — to catch any
+# pipeline step (notarization, stapler, ditto, zip) that could
+# inadvertently re-derive identifiers.
+verify_inner_identifiers() {
+  local where="$1"
+  local app_path="$2"
+  for f in "$app_path/Contents/MacOS/$EXE_NAME" "$app_path/Contents/MacOS/$MCP_NAME"; do
+    local got
+    got=$("$CODESIGN" -dv --verbose=2 "$f" 2>&1 | sed -nE 's/^Identifier=(.*)$/\1/p' | head -1)
+    if [[ "$got" != "$BUNDLE_ID" ]]; then
+      echo "✗ [$where] $f reports Identifier='$got', expected '$BUNDLE_ID'." >&2
+      echo "  Did someone reintroduce --deep on the bundle seal, or did" >&2
+      echo "  notarization/stapling silently re-derive identifiers?" >&2
+      echo "  TCC grants on the .app won't cover this binary's process." >&2
+      return 1
+    fi
+  done
+  echo "  ✓ [$where] both inner binaries report Identifier=$BUNDLE_ID"
+}
+
+verify_inner_identifiers "post-seal" "$APP_PATH" || exit 1
 
 "$CODESIGN" --verify --strict --verbose=2 "$APP_PATH"
 
@@ -310,6 +322,13 @@ xcrun notarytool wait "$APP_UUID" --keychain-profile "$NOTARY_PROFILE"
 echo "› stapling notarization ticket to app"
 xcrun stapler staple "$APP_PATH"
 xcrun stapler validate "$APP_PATH"
+
+# Re-run the inner-identifier check post-staple. xcrun stapler writes
+# the notarization ticket into Contents/CodeResources; in current
+# tooling it doesn't touch inner Mach-O signatures, but if a future
+# Xcode release changes that behavior we want to catch it here, not in
+# user bug reports after the release is in the wild.
+verify_inner_identifiers "post-staple" "$APP_PATH" || exit 1
 
 # ============================================================================
 # 3. Bundle the release artifact
@@ -418,6 +437,12 @@ zip -r -q "$RELEASE_ZIP" "$RELEASE_NAME"
 echo "› verifying packaged bundle (extract to temp + spctl-assess)"
 VERIFY_DIR=$(mktemp -d)
 unzip -q "$RELEASE_ZIP" -d "$VERIFY_DIR"
+# Third inner-identifier checkpoint — against the EXTRACTED bundle.
+# Catches any pipeline step between the in-stage bundle (`$APP_PATH`)
+# and the user-facing zip that could have re-derived identifiers
+# (ditto, zip, unzip — none currently does, but defense in depth).
+verify_inner_identifiers "post-zip-extract" "$VERIFY_DIR/$RELEASE_NAME/Messages for AI.app" || exit 1
+
 if ! spctl --assess --type execute --verbose=2 "$VERIFY_DIR/$RELEASE_NAME/Messages for AI.app" >/dev/null 2>&1; then
   echo "✗ spctl --assess FAILED on the unzipped .app — refusing to ship." >&2
   spctl --assess --type execute --verbose=2 "$VERIFY_DIR/$RELEASE_NAME/Messages for AI.app" >&2 || true

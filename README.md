@@ -137,11 +137,15 @@ git clone https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai.git
 cd messages-for-ai
 bun install
 
-# Install the MCP binary to ~/bin/imessage-drafts-mcp
-bun run install:bin
+# Step 1: Build and install the menu bar app to /Applications/.
+# This MUST run first — it creates the Messages for AI.app bundle
+# that the MCP binary installs INTO. The repo-root install:bin script
+# will exit with an error if the bundle doesn't already exist.
+cd menubar && bash scripts/dev-install.sh && cd ..
 
-# Build and install the menu bar app to /Applications/
-cd menubar && bash scripts/install.sh
+# Step 2: Build and install the MCP binary INTO the .app bundle,
+# create a backward-compat symlink at ~/bin/imessage-drafts-mcp.
+bun run install:bin
 ```
 
 Both install scripts auto-detect a Developer ID Application certificate
@@ -170,24 +174,46 @@ addressbook` + `automation.apple-events`).
 
 Three TCC grants involved, each gated differently:
 
-## 1. Full Disk Access (on `~/bin/imessage-drafts-mcp`)
+## 1. Full Disk Access (on `Messages for AI.app`)
 
 Required to read `~/Library/Messages/chat.db`. There's no programmatic
 prompt for FDA — you have to do it manually:
 
 1. Open **System Settings → Privacy & Security → Full Disk Access**.
 2. Click **+**.
-3. Press **⌘⇧G**, paste `~/bin/imessage-drafts-mcp`, press Enter.
-4. Confirm the toggle is **on**.
+3. Press **⌘⇧G**, paste `/Applications`, press Enter.
+4. Select **`Messages for AI`** (the .app bundle, NOT the inner binary
+   and NOT the `~/bin/imessage-drafts-mcp` symlink) and click Open.
+5. Confirm the toggle is **on**.
 
-**Troubleshooting: tools return `authorization denied`.** Run
-`health_check` from a Claude Desktop chat — it'll report
-which subsystem is failing and the remediation. Common cause: the FDA
-grant was for an older binary hash and didn't survive a rebuild. Toggle
-the entry off and back on (or remove and re-add). With Developer ID
-signing in place (default for both the pre-built release and source
-builds with a cert), this stops happening — TCC keys the grant off
-the cert identity, which is stable across rebuilds.
+⚠️ **Drag the .app bundle, not the inner Mach-O or the symlink.** macOS
+keys FDA grants by the bundle's `CFBundleIdentifier`
+(`com.sunriselabs.messages-for-ai`). The inner MCP binary shares that
+identifier so one .app-level grant covers it. Dragging the inner
+binary (or its symlink at `~/bin/imessage-drafts-mcp`) resolves up to
+the bundle either way — but explicitly targeting the .app is the
+unambiguous Apple convention and what the installer printout instructs.
+
+**Troubleshooting: tools return `authorization denied` / `permission_denied`.**
+Run `health_check` from a Claude Desktop chat — it'll report which
+subsystem is failing and the remediation. Common causes:
+
+- **Forgot to restart Claude Desktop after granting FDA** — the MCP
+  child is a long-lived subprocess that re-checks its TCC identity at
+  spawn time. `Cmd+Q` Claude Desktop (NOT just close the window) and
+  reopen so it forks a fresh child.
+- **You dragged the inner binary into FDA in a previous attempt** —
+  the resulting row in the FDA list may be stale. Remove it (`–`
+  button) and re-add by dragging the `.app` from `/Applications`.
+- **You upgraded from v0.1.x** — your old grant against
+  `~/bin/imessage-mcp` (identifier `com.sunriselabs.imessage-mcp`)
+  is no longer valid. v0.2.0 uses a different identifier
+  (`com.sunriselabs.messages-for-ai`). You must grant FDA fresh to
+  the new `.app` bundle.
+
+With Developer ID signing in place (default for both the pre-built
+release and source builds with a cert), the grant survives rebuilds —
+TCC keys off the `(identifier, team-id)` tuple, which is stable.
 
 ## 2. Contacts (on the menu bar app)
 
@@ -224,7 +250,7 @@ your parent app → Messages → toggle off.
 ```json
 {
   "mcpServers": {
-    "imessages": {
+    "imessage-drafts": {
       "command": "~/bin/imessage-drafts-mcp"
     }
   }
@@ -240,7 +266,7 @@ child only spawns on app launch).
 ```json
 {
   "mcpServers": {
-    "imessages": { "command": "~/bin/imessage-drafts-mcp" }
+    "imessage-drafts": { "command": "~/bin/imessage-drafts-mcp" }
   }
 }
 ```
@@ -248,7 +274,7 @@ child only spawns on app launch).
 **Codex CLI** — `~/.codex/config.toml`:
 
 ```toml
-[mcp_servers.imessages]
+[mcp_servers.imessage-drafts]
 command = "~/bin/imessage-drafts-mcp"
 ```
 
@@ -402,13 +428,14 @@ menubar/
       DraftRowView.swift   # Per-draft Send / Discard
       ContactsPermissionBanner.swift  # Shown when NSContacts not granted
   scripts/
-    install.sh             # build → .app bundle → codesign (Developer ID or adhoc)
+    dev-install.sh         # build menubar .app → codesign (Developer ID or adhoc)
     messages-for-ai.entitlements  # Hardened Runtime entitlements
 scripts/
-  install.sh               # rebuild MCP binary → xattr-clear → re-sign → atomic-mv
+  dev-install.sh           # rebuild MCP binary → install into .app → re-seal
   install-release.sh       # end-user installer bundled INTO the release zip
   build-release.sh         # maintainer: build + notarize + package release zip
   diagnose-contacts.ts     # standalone diagnostic for "contacts not resolving"
+  README.md                # audience matrix + .app-wrap architecture explainer
 ```
 
 ---
@@ -442,12 +469,12 @@ git tag v0.1.0
 git push origin v0.1.0
 
 # 2. Build the release zip. Takes ~5-10 min (notarization round-trip).
-bash scripts/build-release.sh v0.1.0
-# → produces dist/imessage-drafts-mcp-v0.1.0.zip
+bash scripts/build-release.sh v0.2.0
+# → produces dist/imessage-drafts-mcp-v0.2.0.zip
 
 # 3. Publish via gh CLI.
-gh release create v0.1.0 dist/imessage-drafts-mcp-v0.1.0.zip \
-  --title 'imessage-drafts-mcp v0.1.0' \
+gh release create v0.2.0 dist/imessage-drafts-mcp-v0.2.0.zip \
+  --title 'imessage-drafts-mcp v0.2.0' \
   --notes 'See CHANGELOG / commit history.'
 ```
 

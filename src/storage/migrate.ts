@@ -132,8 +132,25 @@ export function migrateLegacyDir(): void {
       return;
     }
 
-    // (d) Already migrated (sentinel present) — silent no-op.
-    if (newStat && existsSync(sentinel)) return;
+    // (d) Already migrated (sentinel present as a regular file) —
+    //     silent no-op. We use lstatOrNull rather than existsSync
+    //     because existsSync follows symlinks: an attacker who
+    //     pre-positions ~/.messages-mcp/.migration-complete as a
+    //     symlink to any existing file (e.g. /etc/hosts) would
+    //     otherwise cause migrateLegacyDir() to silently skip,
+    //     leaving the user without their legacy state copied. The
+    //     sentinel MUST be a regular file we wrote ourselves.
+    if (newStat) {
+      const sentinelStat = lstatOrNull(sentinel);
+      if (sentinelStat?.isFile()) return;
+      if (sentinelStat?.isSymbolicLink()) {
+        process.stderr.write(
+          `${TAG} sentinel ${sentinel} is a symlink — refusing to trust as a "migration complete" marker. ` +
+            `Remove the symlink and restart.\n`
+        );
+        return;
+      }
+    }
 
     // (e) If newDir exists but no sentinel, the previous run was
     //     interrupted OR a sibling process (Swift menu bar) pre-created

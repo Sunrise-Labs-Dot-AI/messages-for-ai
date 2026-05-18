@@ -124,21 +124,54 @@ if [[ ! -w "/Applications" ]]; then
   exit 1
 fi
 
-# Remove any existing copy at the same path so we don't leave stale
-# resource forks. We've already verified the source bundle's identity
-# above, so this rm is safe even though TOCTOU-wise an attacker
-# couldn't have raced us to substitute it.
-rm -rf "$APP_DEST"
-ditto "$APP_SRC" "$APP_DEST"
+# Stage the new bundle BEFORE touching the existing install. This way,
+# an interrupted install (OOM kill, power loss, codesign --verify
+# failure between ditto and verify) doesn't leave the user with no
+# Messages for AI.app at all. The previous install + its FDA grant
+# survive on /Applications/ until the atomic swap below.
+APP_DEST_NEW="${APP_DEST}.new.$$"
+APP_DEST_OLD="${APP_DEST}.old.$$"
 
-# Re-verify the seal on the installed copy. ditto preserves attributes
-# but the bytes are different files now, so this is a separate signature
-# check from the one we did on the source.
-if ! "$CODESIGN" --verify --strict --verbose "$APP_DEST" >/dev/null 2>&1; then
-  echo "✗ post-install codesign --verify failed on $APP_DEST" >&2
+# EXIT/INT/TERM trap: roll back to the prior install if anything below
+# fails before we explicitly clear the trap. The trap is idempotent and
+# safe to run when there's nothing to clean up (mv/rm with missing paths
+# noop silently when 2>/dev/null).
+trap 'rc=$?; trap "" INT TERM EXIT;
+      rm -rf "$APP_DEST_NEW" 2>/dev/null;
+      if [[ -d "$APP_DEST_OLD" ]]; then
+        rm -rf "$APP_DEST" 2>/dev/null;
+        mv "$APP_DEST_OLD" "$APP_DEST" 2>/dev/null && \
+          echo "  ↩ rolled back to prior install at $APP_DEST" >&2;
+      fi;
+      exit $rc' INT TERM EXIT
+
+# 1. Copy to the staging path. Doesn't touch the live install yet.
+ditto "$APP_SRC" "$APP_DEST_NEW"
+
+# 2. Re-verify the seal on the staged copy. ditto preserves attributes
+#    but the bytes are different files now, so this is a separate
+#    signature check from the one we did on the source.
+if ! "$CODESIGN" --verify --strict --verbose "$APP_DEST_NEW" >/dev/null 2>&1; then
+  echo "✗ post-copy codesign --verify failed on staged $APP_DEST_NEW" >&2
   exit 1
 fi
-echo "  ✓ signature preserved through copy"
+echo "  ✓ staged copy seal verified"
+
+# 3. Move the live install aside, then rename the staged copy into
+#    place. Two rename(2) calls on the same filesystem — neither is
+#    individually atomic but the window between them is microseconds.
+#    The trap above rolls back if the second rename fails.
+if [[ -d "$APP_DEST" ]]; then
+  mv "$APP_DEST" "$APP_DEST_OLD"
+fi
+mv "$APP_DEST_NEW" "$APP_DEST"
+
+# 4. Success — clear the rollback trap, then sweep the .old.
+trap - INT TERM EXIT
+if [[ -d "$APP_DEST_OLD" ]]; then
+  rm -rf "$APP_DEST_OLD"
+fi
+echo "  ✓ install atomically swapped into $APP_DEST"
 
 # Remove the legacy ~/Applications/ copy from old installs that wrote there.
 LEGACY_APP="$HOME/Applications/Messages for AI.app"
@@ -165,8 +198,15 @@ echo "› ~/bin/imessage-drafts-mcp → $APP_MCP_BIN  (backward-compat symlink)"
 mkdir -p "$HOME/bin"
 ln -sfn "$APP_MCP_BIN" "$BIN_SYMLINK"
 
-if [[ -e "$LEGACY_BIN" && ! -L "$LEGACY_BIN" ]]; then
-  echo "  › removing legacy v0.1.x binary at $LEGACY_BIN"
+# Remove the legacy v0.1.x entry at ~/bin/imessage-mcp unconditionally
+# if anything is there — regular file, symlink, or dangling symlink.
+# `rm -f` on a symlink unlinks the symlink itself (it does not follow
+# to the target), so this is safe even if a malicious symlink was
+# planted there. `-L` catches symlinks before `-e` (which follows
+# symlinks and returns false on dangling ones), so we cover all three
+# of: regular file, valid symlink, dangling symlink.
+if [[ -L "$LEGACY_BIN" || -e "$LEGACY_BIN" ]]; then
+  echo "  › removing legacy v0.1.x entry at $LEGACY_BIN"
   rm -f "$LEGACY_BIN"
 fi
 
@@ -186,7 +226,12 @@ SMOKE_OUTPUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"pr
 if echo "$SMOKE_OUTPUT" | grep -q '"serverInfo"'; then
   echo "  ✓ MCP responds to initialize"
 else
-  echo "  ⚠  smoke test failed: $SMOKE_OUTPUT" >&2
+  echo "✗ smoke test failed — the inner MCP binary did not respond" >&2
+  echo "  with a valid initialize. Bundle copy succeeded; the bundle" >&2
+  echo "  is at $APP_DEST, but it is not functional. NOT printing" >&2
+  echo "  the 'Install complete' banner because the install is broken." >&2
+  echo "  stdout: $SMOKE_OUTPUT" >&2
+  exit 1
 fi
 
 # ─── Next steps printout ────────────────────────────────────────────────────

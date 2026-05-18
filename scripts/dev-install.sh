@@ -155,11 +155,13 @@ mv "${APP_BIN}.new" "$APP_BIN"
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
   echo "› re-sealing .app bundle with Developer ID: $SIGN_IDENTITY"
-  "$CODESIGN" --force --sign "$SIGN_IDENTITY" --options=runtime \
+  "$CODESIGN" --force --sign "$SIGN_IDENTITY" \
+    --identifier "$IDENTIFIER" --options=runtime \
     --entitlements "$ENTITLEMENTS" "$APP"
 else
   echo "› re-sealing .app bundle adhoc"
-  "$CODESIGN" --force --sign - --options=runtime "$APP"
+  "$CODESIGN" --force --sign - \
+    --identifier "$IDENTIFIER" --options=runtime "$APP"
 fi
 
 # ─── Verify the bundle seal ─────────────────────────────────────────────────
@@ -170,7 +172,22 @@ if ! "$CODESIGN" --verify --strict --verbose "$APP" 2>&1; then
   exit 1
 fi
 
-echo "› binary identity (inside bundle):"
+# Defensive post-seal check: confirm the inner MCP binary's Identifier=
+# survived the bundle re-seal. If a future edit reintroduces --deep (or
+# someone drops the per-binary signing step above), this trips and we
+# fail loudly BEFORE the smoke test, before anyone restarts Claude
+# Desktop expecting the new build to work. Mirrors the equivalent
+# defensive check in scripts/build-release.sh.
+GOT_IDENT=$("$CODESIGN" -dv --verbose=2 "$APP_BIN" 2>&1 | sed -nE 's/^Identifier=(.*)$/\1/p' | head -1)
+if [[ "$GOT_IDENT" != "$IDENTIFIER" ]]; then
+  echo "✗ $APP_BIN reports Identifier='$GOT_IDENT', expected '$IDENTIFIER'." >&2
+  echo "  TCC's FDA grant on the .app won't cover this binary's process." >&2
+  echo "  Likely cause: --deep was reintroduced on the bundle re-seal step." >&2
+  exit 1
+fi
+echo "› binary identity verified: Identifier=$IDENTIFIER (matches bundle)"
+
+echo "› binary identity (inside bundle, full):"
 "$CODESIGN" -dv --verbose=2 "$APP_BIN" 2>&1 | grep -E "Identifier|Authority|TeamIdentifier" || true
 echo "› bundle identity:"
 "$CODESIGN" -dv --verbose=2 "$APP" 2>&1 | grep -E "Identifier|Authority|TeamIdentifier" || true
@@ -190,6 +207,9 @@ ln -sf "$APP_BIN" "$SYMLINK"
 
 echo "› smoke initialize (via .app-internal binary)"
 SMOKE_STDERR=$(mktemp)
+# Ensure the temp file is removed even if set -euo pipefail or a SIGINT
+# fires between here and the explicit `rm -f` below.
+trap 'rm -f "${SMOKE_STDERR:-}"' EXIT
 SMOKE_OUTPUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"install-smoke","version":"0"}}}' | "$APP_BIN" 2>"$SMOKE_STDERR" | head -1)
 if echo "$SMOKE_OUTPUT" | grep -q '"serverInfo"'; then
   echo "  ok"
