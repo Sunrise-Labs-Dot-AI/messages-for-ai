@@ -32,9 +32,9 @@ import AppKit
 /// The loggedOutRecovery branch presents a confirmation + invokes
 /// `unlinkAndReset` then drops back to `.subscribing` for a fresh pair.
 struct WhatsAppPairingView: View {
-  /// Bound to the parent's @State Bool that controls sheet presentation.
-  /// We set it to false from inside the sheet to dismiss on success.
-  @Binding var isPresented: Bool
+  /// Unified sheet state binding (DraftListView owns it). Setting to
+  /// nil dismisses this sheet.
+  @Binding var activeSheet: AppSheet?
 
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
 
@@ -80,22 +80,22 @@ struct WhatsAppPairingView: View {
       } else if isDaemonAlreadyRunning {
         phase = .subscribing
       } else {
-        // The .app bundles the daemon. Kick it up; we'll auto-advance
-        // to .subscribing as soon as the controller reports .running.
+        // The .app bundles the WhatsApp service. Start it; we'll
+        // auto-advance to .subscribing as soon as it reports ready.
         whatsappDaemon.start()
         phase = .startingDaemon
       }
     }
     .onChange(of: whatsappDaemon.status) { status in
-      // While we're waiting for the daemon to come up, watch the
+      // While we're waiting for the service to come up, watch the
       // controller's status. The .startingDaemon → .subscribing
       // transition fires once on the first .running observation.
       guard case .startingDaemon = phase else { return }
       switch status {
       case .running:
         phase = .subscribing
-      case .crashLooping(let count):
-        phase = .error("WhatsApp daemon failed to start (\(count) crashes in a row). Check ~/.messages-mcp/logs/whatsapp-daemon.log.")
+      case .crashLooping:
+        phase = .error("WhatsApp couldn't connect after several tries. Open Settings and toggle WhatsApp off, then back on, to try a fresh pair.")
       default:
         break
       }
@@ -142,7 +142,7 @@ struct WhatsAppPairingView: View {
         .font(.headline)
       Spacer()
       Button {
-        isPresented = false
+        activeSheet = nil
       } label: {
         Image(systemName: "xmark.circle.fill")
           .foregroundStyle(.tertiary)
@@ -178,7 +178,7 @@ struct WhatsAppPairingView: View {
   private var startingDaemonView: some View {
     VStack(spacing: 12) {
       ProgressView()
-      Text("Starting WhatsApp daemon…")
+      Text("Starting WhatsApp…")
         .font(.subheadline)
         .foregroundStyle(.secondary)
     }
@@ -216,7 +216,7 @@ struct WhatsAppPairingView: View {
   private var waitingForQR: some View {
     VStack(spacing: 12) {
       ProgressView()
-      Text("Connecting to WhatsApp daemon…")
+      Text("Generating pairing code…")
         .font(.subheadline)
         .foregroundStyle(.secondary)
     }
@@ -272,7 +272,7 @@ struct WhatsAppPairingView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .task {
       try? await Task.sleep(nanoseconds: 1_500_000_000)
-      isPresented = false
+      activeSheet = nil
     }
   }
 
@@ -354,7 +354,7 @@ struct WhatsAppPairingView: View {
         }
       case .closed:
         if phase != .connected {
-          phase = .error("Daemon closed the connection unexpectedly. Check that whatsapp-mcp is running (launchctl list | grep whatsapp-mcp).")
+          phase = .error("Couldn't reach WhatsApp. The connection dropped before pairing completed — try Retry, or quit and reopen Messages for AI if it keeps failing.")
         }
         return
       case .error(let message):

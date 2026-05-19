@@ -2,28 +2,36 @@ import SwiftUI
 import AppKit
 import Contacts
 
+/// Discriminated sheet state. A single `.sheet(item:)` modifier on
+/// DraftListView drives all three flows so SwiftUI's sheet state
+/// machine is unambiguous — multiple chained `.sheet(isPresented:)`
+/// modifiers on the same view trip a SwiftUI bug where `Bool = false`
+/// from a child binding doesn't dismiss the sheet (the X-button-doesn't-
+/// dismiss symptom).
+enum AppSheet: Identifiable, Hashable {
+  case onboarding
+  case settings
+  case whatsappPairing
+
+  var id: Self { self }
+}
+
 struct DraftListView: View {
   @EnvironmentObject var store: DraftStore
   @EnvironmentObject var loginItem: LoginItemController
   @EnvironmentObject var settings: SettingsStore
   @EnvironmentObject var contactsExporter: ContactsExporter
 
-  /// Drives the pairing sheet's presentation. Bound into the sheet so
-  /// it can self-dismiss on `state.update: connected`.
-  @State private var showPairingSheet = false
+  /// Single source of truth for which sheet is open. Set to nil to
+  /// dismiss; assign a new case to switch sheets (the onDismiss
+  /// closure honors a queued `pendingSheet` for case-to-case transitions
+  /// without the SwiftUI race that happens when you set one Bool false
+  /// and another true in the same tick).
+  @State private var activeSheet: AppSheet?
 
-  /// First-run onboarding sheet. Auto-presents when SettingsStore says
-  /// the first-run sentinel is absent. Initialized in `.task` since
-  /// `@EnvironmentObject` isn't available at property-init time.
-  @State private var showOnboardingSheet = false
-
-  /// Set by OnboardingView (or SettingsView) when the user opts into
-  /// WhatsApp. We chain directly into the pairing sheet after the
-  /// source sheet closes — SwiftUI stack-of-sheets is brittle.
-  @State private var wantsWhatsAppPairing = false
-
-  /// Settings sheet — accessed from the footer gear button.
-  @State private var showSettingsSheet = false
+  /// Queued for "close current sheet, then open this one." Read in
+  /// `onDismiss` and presented on the next runloop tick.
+  @State private var pendingSheet: AppSheet?
 
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   // Cap for the inner ScrollView. We subtract a rough estimate of the
@@ -111,43 +119,38 @@ struct DraftListView: View {
       footer
     }
     .frame(width: 420)
-    .sheet(isPresented: $showPairingSheet) {
-      WhatsAppPairingView(isPresented: $showPairingSheet)
-    }
-    .sheet(isPresented: $showOnboardingSheet) {
-      OnboardingView(
-        isPresented: $showOnboardingSheet,
-        wantsWhatsAppPairing: $wantsWhatsAppPairing
-      )
-    }
-    .sheet(isPresented: $showSettingsSheet) {
-      SettingsView(
-        isPresented: $showSettingsSheet,
-        wantsWhatsAppPairing: $wantsWhatsAppPairing
-      )
+    .sheet(item: $activeSheet, onDismiss: {
+      // Honor any queued case-to-case transition (Settings → Pairing,
+      // Onboarding → Pairing). Hopping through nil on the same tick
+      // is what makes the transition reliable in SwiftUI's sheet
+      // state machine.
+      if let next = pendingSheet {
+        pendingSheet = nil
+        DispatchQueue.main.async {
+          activeSheet = next
+        }
+      }
+    }) { sheet in
+      switch sheet {
+      case .onboarding:
+        OnboardingView(
+          activeSheet: $activeSheet,
+          pendingSheet: $pendingSheet
+        )
+      case .settings:
+        SettingsView(
+          activeSheet: $activeSheet,
+          pendingSheet: $pendingSheet
+        )
+      case .whatsappPairing:
+        WhatsAppPairingView(activeSheet: $activeSheet)
+      }
     }
     .onAppear {
       // Auto-present onboarding on first popover render. Subsequent
       // renders skip this (firstRunComplete flips to true on commit).
-      if !settings.firstRunComplete {
-        showOnboardingSheet = true
-      }
-    }
-    .onChange(of: showOnboardingSheet) { isOpen in
-      // After onboarding closes, chain into pairing if WhatsApp was
-      // checked. The daemon was kicked up by OnboardingView.commit()
-      // so the QR should appear within ~1s.
-      if !isOpen && wantsWhatsAppPairing {
-        wantsWhatsAppPairing = false
-        showPairingSheet = true
-      }
-    }
-    .onChange(of: showSettingsSheet) { isOpen in
-      // Same chain: Settings closes → if the user clicked "Connect
-      // WhatsApp" from inside Settings, present the pairing sheet now.
-      if !isOpen && wantsWhatsAppPairing {
-        wantsWhatsAppPairing = false
-        showPairingSheet = true
+      if !settings.firstRunComplete && activeSheet == nil {
+        activeSheet = .onboarding
       }
     }
   }
@@ -234,7 +237,7 @@ struct DraftListView: View {
           .foregroundStyle(.secondary)
 
         Button {
-          showSettingsSheet = true
+          activeSheet = .settings
         } label: {
           HStack(spacing: 4) {
             Image(systemName: "gearshape")

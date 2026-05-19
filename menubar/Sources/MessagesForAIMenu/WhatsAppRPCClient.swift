@@ -101,15 +101,11 @@ enum WhatsAppRPCClient {
     var description: String {
       switch self {
       case .daemonNotInstalled:
-        // v0.3.0+ ships the daemon inside the .app bundle, so a missing
-        // socket means the daemon hasn't been spawned yet (rather than
-        // a separate install being absent). The menubar's
-        // WhatsAppDaemonController is responsible for spawning it.
-        return "WhatsApp daemon hasn't started yet. Open the menubar popover and toggle WhatsApp on from Settings."
+        return "WhatsApp isn't running yet. Open Settings and toggle WhatsApp on."
       case .daemonNotRunning:
-        return "WhatsApp daemon socket exists but isn't accepting connections. The daemon may have just crashed — check ~/.messages-mcp/logs/whatsapp-daemon.log."
+        return "WhatsApp lost its connection. Try toggling WhatsApp off and back on in Settings."
       case .peerAuthRejected:
-        return "WhatsApp daemon rejected this binary. The connecting process's code-signing identity doesn't match the daemon's — most likely the menubar app and daemon were built or signed with different identities."
+        return "Messages for AI was rebuilt or re-signed since WhatsApp was last connected. Reinstall the app or contact support."
       case .timeout:
         return "WhatsApp daemon did not respond within \(Int(timeoutSeconds))s"
       case .socketError(let errno, let op):

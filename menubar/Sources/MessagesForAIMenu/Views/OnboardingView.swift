@@ -12,15 +12,11 @@ struct OnboardingView: View {
   @EnvironmentObject var settings: SettingsStore
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
 
-  /// Bound to the sheet presenter on DraftListView. We flip it to false
-  /// after writing settings; the parent's `onChange` then decides
-  /// whether to chain into the pairing sheet.
-  @Binding var isPresented: Bool
-
-  /// True if the user wants the pairing sheet to appear right after
-  /// onboarding closes. Parent reads this via `onChange(of:)` and
-  /// presents WhatsAppPairingView.
-  @Binding var wantsWhatsAppPairing: Bool
+  /// Unified sheet state (DraftListView owns it). Setting to nil
+  /// dismisses; setting pendingSheet then nil-ing this chains into a
+  /// new sheet.
+  @Binding var activeSheet: AppSheet?
+  @Binding var pendingSheet: AppSheet?
 
   // Local state while the user is making their picks. We don't write to
   // SettingsStore until "Get Started" — premature writes would surface
@@ -128,16 +124,49 @@ struct OnboardingView: View {
           .fixedSize(horizontal: false, vertical: true)
       }
       Spacer()
-      Toggle("", isOn: isOn)
-        .toggleStyle(.switch)
-        .controlSize(.regular)
-        .disabled(!enabled)
-        .labelsHidden()
+      // Custom Button-as-switch: a SwiftUI Toggle inside a sheet inside
+      // MenuBarExtra(.window) leaks its hit-test up to the popover's
+      // window-server registration, which treats the click as
+      // "outside" and dismisses the popover (and our sheet with it).
+      // A Button hit-tests cleanly within the sheet's window.
+      SwitchButton(isOn: isOn, enabled: enabled)
     }
     .opacity(enabled ? 1.0 : 0.55)
     .padding(10)
     .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
     .clipShape(RoundedRectangle(cornerRadius: 8))
+  }
+
+  // MARK: - SwitchButton
+
+  /// Button-rendered switch that mimics a SwiftUI Toggle visually but
+  /// hit-tests as a Button. Used in place of Toggle inside sheets
+  /// presented from MenuBarExtra(.window) — see comment at call site.
+  private struct SwitchButton: View {
+    @Binding var isOn: Bool
+    let enabled: Bool
+
+    var body: some View {
+      Button {
+        isOn.toggle()
+      } label: {
+        ZStack(alignment: isOn ? .trailing : .leading) {
+          RoundedRectangle(cornerRadius: 11)
+            .fill(isOn ? Color.accentColor : Color(nsColor: .quaternaryLabelColor))
+            .frame(width: 36, height: 22)
+          Circle()
+            .fill(.white)
+            .frame(width: 18, height: 18)
+            .padding(2)
+            .shadow(radius: 1, y: 0.5)
+        }
+      }
+      .buttonStyle(.plain)
+      .disabled(!enabled)
+      .animation(.easeInOut(duration: 0.15), value: isOn)
+      .accessibilityElement()
+      .accessibilityValue(isOn ? "on" : "off")
+    }
   }
 
   private func commit() {
@@ -146,12 +175,14 @@ struct OnboardingView: View {
     settings.firstRunComplete = true
 
     if whatsapp {
-      // Kick the daemon up so the pairing sheet finds a live socket.
-      // Idempotent — safe to call even if the daemon is already up.
+      // Spin up the WhatsApp service so the pairing sheet finds a
+      // live socket. Idempotent — safe even if it's already up.
       whatsappDaemon.start()
-      wantsWhatsAppPairing = true
+      // Queue the pairing sheet so the parent's onDismiss closure
+      // transitions to it after this one fully dismisses.
+      pendingSheet = .whatsappPairing
     }
 
-    isPresented = false
+    activeSheet = nil
   }
 }
