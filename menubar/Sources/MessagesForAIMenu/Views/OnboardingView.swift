@@ -56,14 +56,6 @@ struct OnboardingView: View {
           enabled: true,
           comingSoon: false
         )
-        transportRow(
-          platform: nil,
-          title: "Signal",
-          subtitle: "Coming in v0.4.",
-          isOn: .constant(false),
-          enabled: false,
-          comingSoon: true
-        )
       }
 
       Spacer(minLength: 8)
