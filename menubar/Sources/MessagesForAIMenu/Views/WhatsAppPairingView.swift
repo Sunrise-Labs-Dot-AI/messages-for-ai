@@ -36,6 +36,8 @@ struct WhatsAppPairingView: View {
   /// We set it to false from inside the sheet to dismiss on success.
   @Binding var isPresented: Bool
 
+  @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
+
   @State private var phase: Phase = .checkingSentinel
   /// Time at which the currently-displayed QR expires. Drives the
   /// countdown bar. The daemon pushes a fresh QR every ~20 s; we reset
@@ -51,6 +53,9 @@ struct WhatsAppPairingView: View {
   enum Phase: Equatable {
     case checkingSentinel
     case loggedOutRecovery
+    /// Daemon isn't running yet; we kicked .start() and are waiting for
+    /// the controller to flip to .running before subscribing.
+    case startingDaemon
     case subscribing
     case awaitingFirstQR
     case awaitingScan(qr: String)
@@ -72,8 +77,27 @@ struct WhatsAppPairingView: View {
     .onAppear {
       if WhatsAppQRSession.loggedOutSentinelExists {
         phase = .loggedOutRecovery
-      } else {
+      } else if isDaemonAlreadyRunning {
         phase = .subscribing
+      } else {
+        // The .app bundles the daemon. Kick it up; we'll auto-advance
+        // to .subscribing as soon as the controller reports .running.
+        whatsappDaemon.start()
+        phase = .startingDaemon
+      }
+    }
+    .onChange(of: whatsappDaemon.status) { status in
+      // While we're waiting for the daemon to come up, watch the
+      // controller's status. The .startingDaemon → .subscribing
+      // transition fires once on the first .running observation.
+      guard case .startingDaemon = phase else { return }
+      switch status {
+      case .running:
+        phase = .subscribing
+      case .crashLooping(let count):
+        phase = .error("WhatsApp daemon failed to start (\(count) crashes in a row). Check ~/.messages-mcp/logs/whatsapp-daemon.log.")
+      default:
+        break
       }
     }
     .task(id: shouldRunSubscription) {
@@ -136,6 +160,8 @@ struct WhatsAppPairingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     case .loggedOutRecovery:
       loggedOutView
+    case .startingDaemon:
+      startingDaemonView
     case .subscribing, .awaitingFirstQR:
       waitingForQR
     case .awaitingScan(let qr):
@@ -147,6 +173,24 @@ struct WhatsAppPairingView: View {
     case .error(let message):
       errorView(message)
     }
+  }
+
+  private var startingDaemonView: some View {
+    VStack(spacing: 12) {
+      ProgressView()
+      Text("Starting WhatsApp daemon…")
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+
+  /// True if the daemon's WhatsAppDaemonController already considers it
+  /// running. Avoids the brief "Starting…" flash when the user re-opens
+  /// the pairing sheet on an already-paired session.
+  private var isDaemonAlreadyRunning: Bool {
+    if case .running = whatsappDaemon.status { return true }
+    return false
   }
 
   @ViewBuilder
