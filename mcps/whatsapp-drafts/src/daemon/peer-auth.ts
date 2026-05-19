@@ -6,13 +6,31 @@
 // be the entire send security model and `socat - UNIX-CONNECT:$HOME/...`
 // from a malicious local process bypasses every guardrail.
 //
-// Production check:
-//   1. Get peer PID via SO_PEERCRED / LOCAL_PEERPID (FFI getsockopt)
-//   2. Resolve PID → binary path via proc_pidpath (FFI libproc)
-//   3. Run codesign --verify --strict --deep <path>
-//   4. Extract the binary's designated requirement
-//   5. Match against PEER_ALLOWED_REQUIREMENTS (exact-string match;
-//      wildcards intentionally NOT supported)
+// v0.3.0+ production check (runtime self-identity match):
+//   1. At daemon startup, extract THIS daemon's codesign Identifier= +
+//      TeamIdentifier= and cache them.
+//   2. On every peer connect:
+//      a. Get peer PID via SO_PEERCRED / LOCAL_PEERPID (FFI getsockopt)
+//      b. Resolve PID → binary path via proc_pidpath (FFI libproc)
+//      c. Run codesign --verify --strict --deep <path>
+//      d. Extract peer's Identifier + TeamIdentifier
+//      e. Authorize iff BOTH match the daemon's own
+//
+// Why self-identity instead of an allowlist:
+// the daemon and menubar both ship inside Messages for AI.app, signed
+// at build time with `--identifier com.sunriselabs.messages-for-ai`
+// (same as the bundle's CFBundleIdentifier so one FDA grant covers
+// every inner Mach-O). They inherit the team's signing certificate's
+// TeamIdentifier. So "anyone matching me" is exactly the right
+// allowlist — no maintenance burden, no risk of forgetting to update
+// a baked-in PEER_ALLOWED_REQUIREMENTS string at release time, no
+// rebuild-required when a future inner binary joins the bundle.
+//
+// Why Identifier+Team and not just Identifier:
+// an attacker can adhoc-sign a binary with any Identifier they like.
+// TeamIdentifier requires Apple's Developer ID signing chain, which
+// they can't forge. Requiring both raises the bar from "name match" to
+// "name match AND came from our Developer team".
 //
 // Dev mode (WHATSAPP_MCP_DEV=1): bypasses peer-auth, logs WARNING.
 //   - Production safeguard: if THIS daemon's own binary is code-signed
@@ -21,29 +39,38 @@
 
 import type { Socket } from "node:net";
 
-import { verifyAgainstAllowlist } from "./codesign.ts";
+import { extractIdentity, verifyBinary } from "./codesign.ts";
 import { getPeerPid, pidToPath, socketFd } from "./peer-pid.ts";
 
 const DEV_MODE = process.env.WHATSAPP_MCP_DEV === "1";
 
 /**
- * Designated requirements of binaries allowed to connect to daemon.sock.
+ * The daemon's own (Identifier, TeamIdentifier) tuple, derived at
+ * startup from `process.argv[0]`. Memoized on first read.
  *
- * Populated at release time with the actual `codesign -d --requirements -`
- * output from the signed `whatsapp-mcp` MCP binary and the signed menu
- * bar app bundle. Empty default → all peers denied in production until
- * configured. This is intentional fail-closed behavior.
- *
- * The release task will:
- *   1. Sign bin/whatsapp-mcp with Developer ID
- *   2. Run `codesign -d --requirements - bin/whatsapp-mcp` and copy the
- *      designated => ... text into PEER_ALLOWED_REQUIREMENTS
- *   3. Do the same for the menu bar app bundle
- *   4. Ship the daemon with those requirements baked in
+ * Both nulls in development (adhoc signature has no team), which is OK
+ * because dev mode short-circuits peer-auth anyway.
  */
-export const PEER_ALLOWED_REQUIREMENTS: ReadonlyArray<string> = [
-  // (empty until signing pipeline lands)
-];
+let selfIdentityCache: { identifier: string | null; teamIdentifier: string | null } | null = null;
+
+function selfIdentity(): { identifier: string | null; teamIdentifier: string | null } {
+  if (selfIdentityCache != null) return selfIdentityCache;
+  const ownPath = process.argv[0];
+  if (ownPath == null) {
+    selfIdentityCache = { identifier: null, teamIdentifier: null };
+    return selfIdentityCache;
+  }
+  selfIdentityCache = extractIdentity(ownPath);
+  return selfIdentityCache;
+}
+
+/**
+ * @internal — test seam. Resets the memoized self-identity so tests
+ * can drive {selfIdentity} from a fixture path.
+ */
+export function _resetSelfIdentityCacheForTesting(): void {
+  selfIdentityCache = null;
+}
 
 export interface PeerAuthResult {
   authorized: boolean;
@@ -80,7 +107,6 @@ function isDaemonSignedForProduction(): boolean {
   if (basename === "bun" || basename === "node" || basename === "deno") return false;
 
   try {
-    const { verifyBinary } = require("./codesign.ts") as typeof import("./codesign.ts");
     const v = verifyBinary(ownPath);
     // Ad-hoc / dev-only signatures don't have a designated requirement.
     return v.valid && v.requirement != null;
@@ -114,7 +140,8 @@ export function refuseDevModeInProduction(): { allow: boolean; reason?: string }
  * Prod mode:
  *   - get peer PID via getsockopt
  *   - resolve PID → binary path via proc_pidpath
- *   - codesign --verify + designated requirement against allowlist
+ *   - codesign --verify
+ *   - peer's (Identifier, TeamIdentifier) must equal the daemon's own
  *   - any failure → authorized=false with explicit reason
  */
 export async function authenticatePeer(sock: Socket): Promise<PeerAuthResult> {
@@ -139,12 +166,38 @@ export async function authenticatePeer(sock: Socket): Promise<PeerAuthResult> {
     return { authorized: false, reason: `proc_pidpath(${pid}) failed` };
   }
 
-  const r = verifyAgainstAllowlist(path, PEER_ALLOWED_REQUIREMENTS);
-  if (!r.ok) {
+  // Step 1: signature must be valid.
+  const v = verifyBinary(path);
+  if (!v.valid) {
     return {
       authorized: false,
-      reason: `peer ${pid} at ${path}: ${r.reason}`,
+      reason: `peer ${pid} at ${path}: codesign --verify failed: ${v.error ?? "no detail"}`,
     };
   }
-  return { authorized: true, identity: `pid:${pid} path:${path}` };
+
+  // Step 2: peer's identity must equal the daemon's.
+  const mine = selfIdentity();
+  if (mine.identifier == null || mine.teamIdentifier == null) {
+    return {
+      authorized: false,
+      reason: "daemon's own identity is missing (Identifier or TeamIdentifier). The daemon must be Developer-ID signed in production.",
+    };
+  }
+  const peer = extractIdentity(path);
+  if (peer.identifier !== mine.identifier) {
+    return {
+      authorized: false,
+      reason: `peer Identifier mismatch: got '${peer.identifier ?? "<none>"}', expected '${mine.identifier}'`,
+    };
+  }
+  if (peer.teamIdentifier !== mine.teamIdentifier) {
+    return {
+      authorized: false,
+      reason: `peer TeamIdentifier mismatch: got '${peer.teamIdentifier ?? "<none>"}', expected '${mine.teamIdentifier}'`,
+    };
+  }
+  return {
+    authorized: true,
+    identity: `pid:${pid} id:${mine.identifier} team:${mine.teamIdentifier}`,
+  };
 }

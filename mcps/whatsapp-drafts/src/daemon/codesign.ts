@@ -96,6 +96,13 @@ function parseRequirement(out: string): string | null {
  * The allowlist is exact-string-match on the requirement. Wildcards
  * are intentionally NOT supported (defense against bypass via lenient
  * matching).
+ *
+ * NOTE: as of v0.3.0 the daemon's peer-auth uses the runtime
+ * self-identity check below (matchesSelfIdentity) instead of a baked-in
+ * allowlist — the daemon and menubar ship inside the same .app bundle
+ * with shared Identifier+TeamIdentifier, so the allowlist becomes
+ * trivially derivable. This function is retained as scaffolding for
+ * future allowlist-based peer-auth needs.
  */
 export function verifyAgainstAllowlist(path: string, allowedRequirements: ReadonlyArray<string>): {
   ok: boolean;
@@ -112,4 +119,41 @@ export function verifyAgainstAllowlist(path: string, allowedRequirements: Readon
     return { ok: false, reason: `requirement not in allowlist: ${v.requirement}` };
   }
   return { ok: true, reason: "matched allowlist" };
+}
+
+export interface BinaryIdentity {
+  /** Codesign `Identifier=` line — TCC's grant-key string. */
+  identifier: string | null;
+  /** Codesign `TeamIdentifier=` line. Null for adhoc-signed binaries. */
+  teamIdentifier: string | null;
+}
+
+/**
+ * Extract (Identifier, TeamIdentifier) from a binary's signature via
+ * `codesign -dv --verbose=2`. Returns null fields when the binary
+ * isn't signed or the line is missing.
+ *
+ * The two fields are used together: the daemon authorizes a peer iff
+ * BOTH match its own. Identifier alone could theoretically be spoofed
+ * by an attacker signing an adhoc binary with the same identifier;
+ * pairing it with TeamIdentifier (which the attacker can't forge
+ * without Apple's signing chain) closes that hole.
+ */
+export function extractIdentity(path: string): BinaryIdentity {
+  // -dv --verbose=2 prints Identifier= and TeamIdentifier= to stderr.
+  const r = spawn(["-dv", "--verbose=2", path]);
+  if (r.exitCode !== 0) {
+    return { identifier: null, teamIdentifier: null };
+  }
+  const text = r.stdout + r.stderr;
+  const idMatch = text.match(/^Identifier=(.+)$/m);
+  const teamMatch = text.match(/^TeamIdentifier=(.+)$/m);
+  return {
+    identifier: idMatch ? idMatch[1]!.trim() : null,
+    // TeamIdentifier=not set ⇒ adhoc. Normalize to null.
+    teamIdentifier:
+      teamMatch && teamMatch[1]!.trim() !== "not set"
+        ? teamMatch[1]!.trim()
+        : null,
+  };
 }
