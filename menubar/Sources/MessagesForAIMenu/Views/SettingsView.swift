@@ -10,50 +10,20 @@ struct SettingsView: View {
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
 
   @Environment(\.openWindow) private var openWindow
-  @Environment(\.dismissWindow) private var dismissWindow
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      header
-      Divider()
-
-      ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
-          imessageSection
-          whatsappSection
-          loginItemRow
-        }
-        .padding(16)
+    // The native macOS title bar (set in App.swift as "Messages for AI
+    // Settings") is the window's chrome — no in-content header needed.
+    // The Window already provides traffic-light controls + drag.
+    ScrollView {
+      VStack(alignment: .leading, spacing: 14) {
+        imessageSection
+        whatsappSection
+        loginItemRow
       }
-
-      Divider()
-      footer
+      .padding(16)
     }
     .frame(width: 480, height: 520)
-  }
-
-  // MARK: - Header / Footer
-
-  private var header: some View {
-    HStack {
-      Image(systemName: "gearshape")
-        .foregroundStyle(.tint)
-      Text("Settings")
-        .font(.headline)
-      Spacer()
-    }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-  }
-
-  private var footer: some View {
-    HStack {
-      Spacer()
-      Button("Done") { dismissWindow(id: WindowID.settings) }
-        .keyboardShortcut(.defaultAction)
-    }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
   }
 
   // MARK: - iMessage

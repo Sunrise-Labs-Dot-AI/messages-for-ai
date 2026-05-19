@@ -23,10 +23,6 @@ struct OnboardingView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      header
-
-      Divider()
-
       Text("Pick the messaging services you want Claude to draft for. You can change these any time in Settings.")
         .font(.callout)
         .foregroundStyle(.secondary)
@@ -64,22 +60,6 @@ struct OnboardingView: View {
     }
     .padding(20)
     .frame(width: 460)
-  }
-
-  private var header: some View {
-    HStack(spacing: 10) {
-      Image(systemName: "message.badge")
-        .font(.system(size: 28))
-        .foregroundStyle(.tint)
-      VStack(alignment: .leading, spacing: 2) {
-        Text("Welcome to Messages for AI")
-          .font(.title3.weight(.semibold))
-        Text("AI proposes, you approve.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
-      Spacer()
-    }
   }
 
   private func transportRow(

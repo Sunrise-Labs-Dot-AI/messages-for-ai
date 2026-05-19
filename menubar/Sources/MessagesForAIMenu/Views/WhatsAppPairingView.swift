@@ -62,15 +62,15 @@ struct WhatsAppPairingView: View {
   }
 
   var body: some View {
+    // Native macOS title bar (set in App.swift) provides chrome +
+    // traffic-light close — no in-content header needed.
     VStack(spacing: 16) {
-      header
-      Divider()
       content
       Spacer()
       footer
     }
     .padding(20)
-    .frame(width: 360, height: 460)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
     .onAppear {
       if WhatsAppQRSession.loggedOutSentinelExists {
         phase = .loggedOutRecovery
@@ -130,30 +130,6 @@ struct WhatsAppPairingView: View {
   }
 
   // MARK: - Sections
-
-  private var header: some View {
-    HStack(spacing: 8) {
-      Image(systemName: Platform.whatsapp.sfSymbol)
-        .foregroundStyle(Platform.whatsapp.accentColor)
-      Text("Connect WhatsApp")
-        .font(.headline)
-      Spacer()
-      Button {
-        dismissWindow(id: WindowID.whatsappPairing)
-      } label: {
-        Image(systemName: "xmark.circle.fill")
-          .font(.title2)
-          .foregroundStyle(.tertiary)
-          // Expand the hit target well past the glyph — a bare SF
-          // Symbol at default size is a ~14pt target, which is below
-          // every macOS HIG and Apple Accessibility minimum.
-          .padding(8)
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Close")
-    }
-  }
 
   @ViewBuilder
   private var content: some View {
