@@ -145,7 +145,13 @@ struct WhatsAppPairingView: View {
         activeSheet = nil
       } label: {
         Image(systemName: "xmark.circle.fill")
+          .font(.title2)
           .foregroundStyle(.tertiary)
+          // Expand the hit target well past the glyph — a bare SF
+          // Symbol at default size is a ~14pt target, which is below
+          // every macOS HIG and Apple Accessibility minimum.
+          .padding(8)
+          .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Close")
