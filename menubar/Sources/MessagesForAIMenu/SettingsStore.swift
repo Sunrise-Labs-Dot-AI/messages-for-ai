@@ -23,22 +23,39 @@ final class SettingsStore: ObservableObject {
   @Published var whatsappEnabled: Bool {
     didSet { persist() }
   }
+  /// WhatsApp's own require_approval. Persisted to ~/.messages-mcp/
+  /// settings.json under transports.whatsapp.require_approval AND
+  /// mirrored into ~/.whatsapp-mcp/settings.json so the WhatsApp MCP +
+  /// daemon (which read from THAT file on every send) see the toggle
+  /// immediately. We only touch the one field on the daemon's file,
+  /// preserving rate limits / TTLs / other knobs that live there.
+  @Published var whatsappRequireApproval: Bool {
+    didSet {
+      persist()
+      mirrorIntoWhatsAppMcpSettings()
+    }
+  }
 
   @Published private(set) var lastError: String?
 
   private let file: URL
+  private let whatsappMcpFile: URL
 
   init() {
     let dir = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".messages-mcp")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     self.file = dir.appendingPathComponent("settings.json")
+    self.whatsappMcpFile = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(".whatsapp-mcp")
+      .appendingPathComponent("settings.json")
 
-    let loaded = Self.load(from: file)
+    let loaded = Self.load(from: file, whatsappMcp: whatsappMcpFile)
     self.requireApproval = loaded.requireApproval
     self.firstRunComplete = loaded.firstRunComplete
     self.imessageEnabled = loaded.imessageEnabled
     self.whatsappEnabled = loaded.whatsappEnabled
+    self.whatsappRequireApproval = loaded.whatsappRequireApproval
 
     if loaded.requiresMigrationWrite {
       // First run, or v1→v2 migration: write the canonical v2 schema
@@ -55,12 +72,18 @@ final class SettingsStore: ObservableObject {
     let firstRunComplete: Bool
     let imessageEnabled: Bool
     let whatsappEnabled: Bool
+    let whatsappRequireApproval: Bool
     /// True when the on-disk file is missing or was v1; tells init() to
     /// write the canonical v2 schema immediately.
     let requiresMigrationWrite: Bool
   }
 
-  private static func load(from file: URL) -> LoadedState {
+  private static func load(from file: URL, whatsappMcp: URL) -> LoadedState {
+    // WhatsApp's own settings.json is the source of truth for the
+    // daemon's behavior. If our menubar copy and the daemon's disagree,
+    // trust the daemon's — it's what the send path actually checks.
+    let whatsappMcpApproval = loadWhatsAppMcpApproval(from: whatsappMcp)
+
     guard FileManager.default.fileExists(atPath: file.path),
           let data = try? Data(contentsOf: file),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -71,6 +94,7 @@ final class SettingsStore: ObservableObject {
         firstRunComplete: false,
         imessageEnabled: true,
         whatsappEnabled: false,
+        whatsappRequireApproval: whatsappMcpApproval ?? true,
         requiresMigrationWrite: true
       )
     }
@@ -82,11 +106,17 @@ final class SettingsStore: ObservableObject {
       let transports = json["transports"] as? [String: Any] ?? [:]
       let imessage = transports["imessage"] as? [String: Any] ?? [:]
       let whatsapp = transports["whatsapp"] as? [String: Any] ?? [:]
+      // Prefer the daemon's view if present; otherwise fall back to
+      // the menubar's mirror; otherwise default-on.
+      let whatsappApproval = whatsappMcpApproval
+        ?? (whatsapp["require_approval"] as? Bool)
+        ?? true
       return LoadedState(
         requireApproval: imessage["require_approval"] as? Bool ?? true,
         firstRunComplete: json["first_run_complete"] as? Bool ?? false,
         imessageEnabled: imessage["enabled"] as? Bool ?? true,
         whatsappEnabled: whatsapp["enabled"] as? Bool ?? false,
+        whatsappRequireApproval: whatsappApproval,
         requiresMigrationWrite: false
       )
     }
@@ -100,8 +130,20 @@ final class SettingsStore: ObservableObject {
       firstRunComplete: true,
       imessageEnabled: true,
       whatsappEnabled: false,
+      whatsappRequireApproval: whatsappMcpApproval ?? true,
       requiresMigrationWrite: true
     )
+  }
+
+  /// Read just the `require_approval` field from ~/.whatsapp-mcp/
+  /// settings.json. Returns nil if the file doesn't exist or the
+  /// field is missing — caller decides the default.
+  private static func loadWhatsAppMcpApproval(from file: URL) -> Bool? {
+    guard FileManager.default.fileExists(atPath: file.path),
+          let data = try? Data(contentsOf: file),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+    return json["require_approval"] as? Bool
   }
 
   // MARK: - Write
@@ -144,9 +186,46 @@ final class SettingsStore: ObservableObject {
           "require_approval": requireApproval
         ],
         "whatsapp": [
-          "enabled": whatsappEnabled
+          "enabled": whatsappEnabled,
+          "require_approval": whatsappRequireApproval
         ]
       ]
     ]
+  }
+
+  /// Update ~/.whatsapp-mcp/settings.json so the WhatsApp MCP + daemon
+  /// see the same require_approval value the user just toggled. We
+  /// read-then-write (only touching `require_approval`) to preserve
+  /// every other field the daemon owns there — daily_cap,
+  /// min_staged_age_ms, draft_ttl_days, message_retention_days, the
+  /// rate-limit knobs, etc. Clobbering those would reset the user's
+  /// rate-limit posture every time they toggle a single switch.
+  private func mirrorIntoWhatsAppMcpSettings() {
+    let dir = whatsappMcpFile.deletingLastPathComponent()
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+    var doc: [String: Any]
+    if FileManager.default.fileExists(atPath: whatsappMcpFile.path),
+       let data = try? Data(contentsOf: whatsappMcpFile),
+       let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+      doc = existing
+    } else {
+      // Daemon hasn't run yet (or its file is corrupt). Write a doc
+      // with JUST require_approval; the daemon's Zod schema will fill
+      // every other field with its default on next read.
+      doc = [:]
+    }
+    doc["require_approval"] = whatsappRequireApproval
+
+    do {
+      let data = try JSONSerialization.data(
+        withJSONObject: doc,
+        options: [.prettyPrinted, .sortedKeys]
+      )
+      try data.write(to: whatsappMcpFile, options: .atomic)
+      try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: whatsappMcpFile.path)
+    } catch {
+      lastError = "couldn't update WhatsApp daemon settings: \(error.localizedDescription)"
+    }
   }
 }

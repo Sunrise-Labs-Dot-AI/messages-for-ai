@@ -267,9 +267,15 @@ struct DraftRowView: View {
         } catch {
           lastError = "sent ok but failed to update draft file: \(error.localizedDescription)"
         }
+      } else {
+        // WhatsApp: the daemon already persisted sent_at via atomic
+        // temp+rename, which should trigger the DraftStore directory
+        // watcher. Defensive refresh as a belt-and-suspenders so the
+        // row flips to "sent" immediately even if the watcher misses
+        // the event (rare, but the cost of an extra refresh — one
+        // small re-list of ~5 JSON files — is negligible).
+        store.refresh()
       }
-      // (WhatsApp: nothing to do here. Row will refresh when the FS
-      // watcher fires on the daemon's sent_at write — typically <100 ms.)
     } else {
       lastError = result.error ?? "unknown error"
     }

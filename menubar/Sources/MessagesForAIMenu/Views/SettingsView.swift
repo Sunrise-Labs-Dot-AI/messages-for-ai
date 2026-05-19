@@ -49,7 +49,13 @@ struct SettingsView: View {
           isOn: $settings.requireApproval,
           enabled: settings.imessageEnabled
         )
-        infoRow(label: "Drafts folder", value: "~/.messages-mcp/drafts/")
+        // Drafts-folder path was removed: it's only the iMessage path
+        // (WhatsApp uses ~/.whatsapp-mcp/drafts), making it misleading
+        // when shown only under the iMessage section. The dir is also
+        // a place users could corrupt the staging state by editing
+        // JSON files — surfacing it as text invites that. If a future
+        // "Open drafts in Finder" button is added, it should be a
+        // proper button gated behind a power-user toggle.
       }
     }
   }
@@ -74,18 +80,44 @@ struct SettingsView: View {
     ) {
       VStack(alignment: .leading, spacing: 10) {
         connectionRow
-        Button {
-          openWindow(id: WindowID.whatsappPairing)
-        } label: {
-          HStack(spacing: 6) {
-            Image(systemName: Platform.whatsapp.sfSymbol)
-            Text(isWhatsAppPaired ? "Reconnect WhatsApp…" : "Connect WhatsApp…")
+        labeledSwitchRow(
+          title: "Require approval to send",
+          subtitle: settings.whatsappRequireApproval
+            ? "Claude stages drafts. Hold-to-fire in this app sends."
+            : "Claude can send via MCP directly (rate-limited).",
+          isOn: $settings.whatsappRequireApproval,
+          enabled: settings.whatsappEnabled
+        )
+        // Only show a pairing action when one is actually needed:
+        //  - "Connect WhatsApp…" if the user has never paired
+        //  - "Reconnect WhatsApp…" if the daemon reports logged_out
+        // When WhatsApp is healthy (paired + Baileys connected/connecting/
+        // reconnecting) the button is clutter, so hide it. Power-user
+        // re-pair-without-being-logged-out path is deferred to a kebab
+        // menu in a future polish round.
+        if shouldShowPairingButton {
+          Button {
+            openWindow(id: WindowID.whatsappPairing)
+          } label: {
+            HStack(spacing: 6) {
+              Image(systemName: Platform.whatsapp.sfSymbol)
+              Text(isWhatsAppPaired ? "Reconnect WhatsApp…" : "Connect WhatsApp…")
+            }
           }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
       }
     }
+  }
+
+  /// True when the pairing action is meaningful — either first-time
+  /// pair (no session) or recovery from a remote unlink (daemon reports
+  /// logged_out). Healthy paired sessions hide the button.
+  private var shouldShowPairingButton: Bool {
+    if !isWhatsAppPaired { return true }
+    if whatsappDaemon.baileysState == "logged_out" { return true }
+    return false
   }
 
   /// Single-line status row — replaces the previous "Daemon running
@@ -108,6 +140,17 @@ struct SettingsView: View {
   }
 
   private var connectionColor: Color {
+    // When the daemon's up AND we've polled its Baileys state, prefer
+    // the finer-grained color. Otherwise fall back to coarse process-
+    // level signals.
+    if case .running = whatsappDaemon.status, let bs = whatsappDaemon.baileysState {
+      switch bs {
+      case "connected":               return .green
+      case "connecting", "reconnecting": return .orange
+      case "logged_out":              return .red
+      default:                        return .gray
+      }
+    }
     switch whatsappDaemon.status {
     case .running: return .green
     case .starting, .backingOff: return .orange
@@ -117,10 +160,23 @@ struct SettingsView: View {
   }
 
   private var connectionLabel: String {
+    // When we have a live Baileys state, that's the source of truth.
+    // The daemon process being up doesn't mean WhatsApp is reachable:
+    // it can be reconnecting after a network blip or waiting in
+    // logged_out after a remote unlink.
+    if case .running = whatsappDaemon.status, let bs = whatsappDaemon.baileysState {
+      switch bs {
+      case "connecting":    return isWhatsAppPaired ? "Connecting…" : "Waiting to pair…"
+      case "connected":     return "Connected"
+      case "reconnecting":  return "Reconnecting…"
+      case "logged_out":    return "Logged out — Reconnect WhatsApp"
+      default:              return bs
+      }
+    }
     switch whatsappDaemon.status {
     case .idle:               return "Not connected"
-    case .starting:           return "Connecting…"
-    case .running:            return isWhatsAppPaired ? "Connected" : "Ready to pair"
+    case .starting:           return "Starting…"
+    case .running:            return "Connecting…"  // no Baileys state yet — first poll hasn't landed
     case .backingOff(let s, _): return "Reconnecting in \(Int(s))s"
     case .crashLooping:       return "Couldn't connect"
     case .stopped:            return "Turned off"

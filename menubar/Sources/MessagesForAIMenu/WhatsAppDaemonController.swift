@@ -34,6 +34,13 @@ final class WhatsAppDaemonController: ObservableObject {
 
   @Published private(set) var status: Status = .idle
   @Published private(set) var lastError: String?
+  /// Last-known Baileys connection state from the daemon's
+  /// `getConnectionStatus` RPC. nil until the first poll lands or while
+  /// the daemon process isn't running. The Settings status label
+  /// prefers this over the coarser `status` field above when present.
+  /// Values mirror connection.ts's ConnectionState: "connecting" |
+  /// "connected" | "reconnecting" | "logged_out".
+  @Published private(set) var baileysState: String?
 
   /// Tunables — exposed for tests / future settings UI but never written.
   private let maxConsecutiveCrashes = 5
@@ -41,6 +48,7 @@ final class WhatsAppDaemonController: ObservableObject {
   private let backoffSchedule: [TimeInterval] = [1, 2, 4, 8, 16, 32, 60]
   private let logRotateBytes: Int = 10 * 1024 * 1024
   private let logRotateKeep = 3
+  private let baileysStatePollSeconds: TimeInterval = 5
 
   private var process: Process?
   private var stdoutPipe: Pipe?
@@ -49,6 +57,7 @@ final class WhatsAppDaemonController: ObservableObject {
   private var consecutiveCrashes = 0
   private var lastStartAt: Date?
   private var pendingRespawn: Task<Void, Never>?
+  private var baileysStatePoller: Task<Void, Never>?
 
   // MARK: - Public API
 
@@ -74,6 +83,7 @@ final class WhatsAppDaemonController: ObservableObject {
   func stop() async {
     pendingRespawn?.cancel()
     pendingRespawn = nil
+    stopBaileysStatePoller()
 
     guard let proc = process, proc.isRunning else {
       status = .stopped
@@ -110,6 +120,89 @@ final class WhatsAppDaemonController: ObservableObject {
     _ = sem.wait(timeout: .now() + 6)
   }
 
+  /// Kill any whatsapp-drafts-daemon process holding the PID lock at
+  /// ~/.whatsapp-mcp/daemon.pid. No-op if the file is missing or the
+  /// PID is dead. SIGTERM first, then a short wait, then SIGKILL if it
+  /// hasn't exited. Also deletes the .pid + .sock so the new daemon
+  /// starts clean. Used exclusively by `launch()` before spawning so
+  /// orphaned daemons from previous menubar processes don't trap the
+  /// new controller in a respawn loop.
+  private func reapStaleDaemonIfNeeded() {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let pidFile = home.appendingPathComponent(".whatsapp-mcp/daemon.pid")
+    let sockFile = home.appendingPathComponent(".whatsapp-mcp/daemon.sock")
+    guard let pidStr = try? String(contentsOf: pidFile, encoding: .utf8) else { return }
+    let trimmed = pidStr.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let stalePid = pid_t(trimmed), stalePid > 0 else { return }
+    // Only reap if it's actually alive — otherwise the daemon's own
+    // acquirePidLock will treat the file as stale and overwrite it.
+    if kill(stalePid, 0) != 0 { return }
+
+    appendLogLine("[controller] reaping stale daemon at PID \(stalePid) before launch")
+    kill(stalePid, SIGTERM)
+    // Give it a beat to release the socket cleanly. 2s is well over
+    // observed SIGTERM-to-exit times (Baileys's ws teardown is <500ms)
+    // but bounded so the new launch doesn't hang on this.
+    let deadline = Date().addingTimeInterval(2)
+    while kill(stalePid, 0) == 0 && Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.1)
+    }
+    if kill(stalePid, 0) == 0 {
+      appendLogLine("[controller] stale daemon \(stalePid) ignored SIGTERM, sending SIGKILL")
+      kill(stalePid, SIGKILL)
+      Thread.sleep(forTimeInterval: 0.2)
+    }
+    // Defense in depth: even after the process is gone, the .sock and
+    // .pid files may linger if the daemon was force-killed before its
+    // cleanup ran. The new daemon's startup handles stale-sock cleanup,
+    // but stale .pid here would re-trigger the same crash-loop, so
+    // remove it explicitly.
+    try? FileManager.default.removeItem(at: pidFile)
+    try? FileManager.default.removeItem(at: sockFile)
+  }
+
+  // MARK: - Baileys state polling
+  //
+  // Every `baileysStatePollSeconds` while the daemon process is up, ask
+  // the daemon for its current Baileys connection state. The Settings
+  // status row reads `baileysState` to render finer-grained UI than
+  // "is the process alive" — Connected vs Connecting vs Reconnecting vs
+  // logged-out. RPC failures during polling are silently swallowed; if
+  // the daemon goes down, the terminationHandler will null the state.
+
+  private func startBaileysStatePoller() {
+    baileysStatePoller?.cancel()
+    let interval = baileysStatePollSeconds
+    baileysStatePoller = Task { @MainActor [weak self] in
+      // Fire one poll immediately so the UI doesn't show "Connecting…"
+      // for the full interval after the daemon comes up.
+      await self?.refreshBaileysState()
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+        if Task.isCancelled { return }
+        await self?.refreshBaileysState()
+      }
+    }
+  }
+
+  private func stopBaileysStatePoller() {
+    baileysStatePoller?.cancel()
+    baileysStatePoller = nil
+    baileysState = nil
+  }
+
+  private func refreshBaileysState() async {
+    guard case .running = status else { return }
+    do {
+      let s = try await WhatsAppRPCClient.getConnectionStatus()
+      baileysState = s.state
+    } catch {
+      // Swallow — most common case during normal use is the brief
+      // window after the daemon re-spawns where the socket isn't quite
+      // ready. The next tick recovers.
+    }
+  }
+
   // MARK: - Internal: launch + monitor
 
   private func launch() {
@@ -121,6 +214,17 @@ final class WhatsAppDaemonController: ObservableObject {
       lastError = "could not locate whatsapp-drafts-daemon binary"
       return
     }
+
+    // Reap any stale daemon left over from a previous menubar process.
+    // macOS doesn't auto-kill a child process when the parent dies, so
+    // a `pkill -f MessagesForAIMenu` (dev cycle) or a force-quit leaves
+    // the daemon orphaned. When we spawn a new one it hits the
+    // ~/.whatsapp-mcp/daemon.pid lock and exits — the controller then
+    // crash-loop respawns into the same wall. The orphan also keeps a
+    // stale binary in memory (old code / old credentials). Easiest fix:
+    // SIGTERM whatever's holding the lock, give it a beat, and only
+    // then launch our own daemon (which we can actually track).
+    reapStaleDaemonIfNeeded()
 
     let proc = Process()
     proc.executableURL = binURL
@@ -193,6 +297,7 @@ final class WhatsAppDaemonController: ObservableObject {
         guard case .starting = self.status else { return }
         if FileManager.default.fileExists(atPath: socketPath) {
           self.status = .running(pid: p.processIdentifier)
+          self.startBaileysStatePoller()
           return
         }
       }
@@ -210,6 +315,7 @@ final class WhatsAppDaemonController: ObservableObject {
     stdoutPipe = nil
     stderrPipe = nil
     process = nil
+    stopBaileysStatePoller()
 
     // If we were explicitly stopped, don't respawn.
     if case .stopped = status { return }

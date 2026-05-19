@@ -62,6 +62,25 @@ enum WhatsAppRPCClient {
     _ = try await call(method: "unlinkAndReset", params: EmptyParams())
   }
 
+  /// Daemon's live Baileys connection state. The Settings status row
+  /// polls this so the label reflects what's actually happening with
+  /// WhatsApp (connecting / connected / reconnecting / logged_out)
+  /// rather than just "is the daemon process alive".
+  static func getConnectionStatus() async throws -> ConnectionStatus {
+    let raw = try await call(method: "getConnectionStatus", params: EmptyParams())
+    return try JSONDecoder().decode(ConnectionStatus.self, from: raw)
+  }
+
+  struct ConnectionStatus: Decodable {
+    /// "connecting" | "connected" | "reconnecting" | "logged_out"
+    let state: String
+    let me: Me?
+    struct Me: Decodable {
+      let jid: String?
+      let phone: String?
+    }
+  }
+
   private struct EmptyParams: Encodable {}
 
   // MARK: - Wire types

@@ -153,8 +153,16 @@ struct DraftListView: View {
           Image(systemName: "checkmark.circle.fill")
             .foregroundStyle(.green)
           VStack(alignment: .leading, spacing: 2) {
-            Text(draft.to_handle)
+            // Prefer the resolved name (set by the daemon at stage time
+            // from the contacts table / phone-format fallback) — the raw
+            // JID is uninformative ("12158055729@s.whatsapp.net" vs
+            // "James Stine Heath"). Falls back to the JID when no name
+            // could be resolved (which mostly happens for @lid privacy
+            // senders the contacts table doesn't have mapped yet).
+            Text(draft.to_handle_name ?? draft.to_handle)
               .font(.caption.weight(.medium))
+              .lineLimit(1)
+              .truncationMode(.middle)
             Text(draft.body)
               .font(.caption)
               .lineLimit(1)
