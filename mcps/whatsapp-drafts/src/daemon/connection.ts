@@ -145,6 +145,11 @@ export class WhatsAppConnection extends EventEmitter {
 
     sock.ev.on("messaging-history.set", ({ chats, contacts, messages }) => {
       for (const c of chats) {
+        // Baileys 7.x widened Chat.id from `string` to `string | null |
+        // undefined` — intermediate history-sync states can ship null
+        // ids. Skip those rather than poisoning the threads table with
+        // an empty primary key.
+        if (c.id == null) continue;
         upsertThread({
           thread_jid: c.id,
           display_name: c.name ?? null,
@@ -169,6 +174,8 @@ export class WhatsAppConnection extends EventEmitter {
 
     sock.ev.on("chats.upsert", (chats) => {
       for (const c of chats) {
+        // See messaging-history.set: Baileys 7.x can pass null id.
+        if (c.id == null) continue;
         upsertThread({
           thread_jid: c.id,
           display_name: c.name ?? null,
