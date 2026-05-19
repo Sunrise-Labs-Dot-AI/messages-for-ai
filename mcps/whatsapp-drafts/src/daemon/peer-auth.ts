@@ -55,8 +55,12 @@ let selfIdentityCache: { identifier: string | null; teamIdentifier: string | nul
 
 function selfIdentity(): { identifier: string | null; teamIdentifier: string | null } {
   if (selfIdentityCache != null) return selfIdentityCache;
-  const ownPath = process.argv[0];
-  if (ownPath == null) {
+  // process.execPath, not process.argv[0]: under `bun build --compile`,
+  // argv[0] is the runtime name (literal "bun"), not the executable path.
+  // execPath is the absolute path of the running binary, which codesign
+  // can actually inspect.
+  const ownPath = process.execPath;
+  if (ownPath == null || ownPath === "") {
     selfIdentityCache = { identifier: null, teamIdentifier: null };
     return selfIdentityCache;
   }
@@ -99,10 +103,14 @@ function isDaemonSignedForProduction(): boolean {
   if (process.env.WHATSAPP_MCP_ASSUME_PRODUCTION === "1") return true;
   if (process.env.WHATSAPP_MCP_ASSUME_PRODUCTION === "0") return false;
 
-  const ownPath = process.argv[0];
-  if (ownPath == null) return false;
+  // process.execPath is the absolute path to the running binary; under
+  // `bun build --compile` process.argv[0] is just "bun" (the runtime name)
+  // and would fail the codesign lookup.
+  const ownPath = process.execPath;
+  if (ownPath == null || ownPath === "") return false;
 
-  // Skip interpreter-mode invocations.
+  // Skip interpreter-mode invocations (running under `bun src/daemon/index.ts`
+  // rather than as a compiled binary).
   const basename = ownPath.split("/").pop() ?? "";
   if (basename === "bun" || basename === "node" || basename === "deno") return false;
 
