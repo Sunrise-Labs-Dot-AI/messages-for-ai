@@ -229,6 +229,19 @@ cp "$MENUBAR_BIN"         "$APP_PATH/Contents/MacOS/$EXE_NAME"
 cp "$IMESSAGE_MCP_BIN"    "$APP_PATH/Contents/MacOS/imessage-drafts-mcp"
 cp "$WHATSAPP_MCP_BIN"    "$APP_PATH/Contents/MacOS/whatsapp-drafts-mcp"
 cp "$WHATSAPP_DAEMON_BIN" "$APP_PATH/Contents/MacOS/whatsapp-drafts-daemon"
+
+# App icon — see menubar/scripts/generate-app-icon.swift for the source-of-
+# truth generator. v0.3.0 ships the "Prompt Sky" variant. The .icns must be
+# present here or notarization will succeed but the Finder/Dock icon will
+# silently fall back to the generic AppKit one (Apple doesn't fail builds
+# over missing CFBundleIconFile).
+ICON_SRC="$REPO_ROOT/menubar/Assets/MessagesForAI.icns"
+if [[ ! -f "$ICON_SRC" ]]; then
+  echo "✗ release build requires $ICON_SRC — run \`swift menubar/scripts/generate-app-icon.swift\` first" >&2
+  exit 1
+fi
+cp "$ICON_SRC" "$APP_PATH/Contents/Resources/MessagesForAI.icns"
+
 xattr -cr "$APP_PATH"
 
 cat > "$APP_PATH/Contents/Info.plist" <<EOF
@@ -244,6 +257,8 @@ cat > "$APP_PATH/Contents/Info.plist" <<EOF
   <string>$APP_NAME</string>
   <key>CFBundleDisplayName</key>
   <string>$APP_NAME</string>
+  <key>CFBundleIconFile</key>
+  <string>MessagesForAI</string>
   <key>CFBundleShortVersionString</key>
   <string>${VERSION#v}</string>
   <key>CFBundleVersion</key>
