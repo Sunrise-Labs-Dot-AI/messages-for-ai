@@ -172,18 +172,34 @@ final class WhatsAppDaemonController: ObservableObject {
     self.lastStartAt = Date()
     status = .starting
 
-    // Promote to .running after a short delay if we haven't already
-    // terminated. The pipe reader doesn't tell us "daemon is healthy"
-    // explicitly — but if it survives 250ms it's at least past argv
-    // parsing / module load.
+    // Wait for the daemon to bind its Unix socket before promoting
+    // to .running. The 250ms heuristic this replaces was too eager —
+    // Bun's compiled-binary cold start through Baileys + sqlite +
+    // Keychain typically takes 1–3s before socket bind. UI consumers
+    // (the pairing window, RPC client) treat .running as "you can
+    // connect now"; firing it before the socket exists makes them
+    // race the daemon and fail with a spurious "not running" error.
     Task { @MainActor [weak self] in
-      try? await Task.sleep(nanoseconds: 250_000_000)
-      guard let self = self,
-            let p = self.process,
-            p.isRunning,
-            case .starting = self.status
-      else { return }
-      self.status = .running(pid: p.processIdentifier)
+      let socketPath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".whatsapp-mcp")
+        .appendingPathComponent("daemon.sock")
+        .path
+      let deadline = Date().addingTimeInterval(10)
+      while Date() < deadline {
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        guard let self = self else { return }
+        // Bail out if the process died or our state changed under us.
+        guard let p = self.process, p.isRunning else { return }
+        guard case .starting = self.status else { return }
+        if FileManager.default.fileExists(atPath: socketPath) {
+          self.status = .running(pid: p.processIdentifier)
+          return
+        }
+      }
+      // Socket never appeared — fall through; terminationHandler
+      // will eventually fire with a crash, or the daemon is stuck
+      // and the user can hit the Restart action. Leave status at
+      // .starting so the UI shows "Connecting…" not "Connected".
     }
   }
 

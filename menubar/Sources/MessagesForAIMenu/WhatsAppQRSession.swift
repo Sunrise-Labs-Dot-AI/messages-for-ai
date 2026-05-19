@@ -74,12 +74,21 @@ final class WhatsAppQRSession {
   }
 
   private func run(continuation: AsyncStream<Event>.Continuation) {
-    // Fast preflight — daemon-not-installed message is more useful than
-    // ECONNREFUSED at the consumer.
-    if !FileManager.default.fileExists(atPath: socketPath) {
-      continuation.yield(.error("WhatsApp daemon socket not found at \(socketPath). Is whatsapp-mcp installed?"))
-      continuation.finish()
-      return
+    // Poll for the daemon's Unix socket to appear. The menubar may
+    // have JUST spawned the daemon (Settings toggle on, or Get Started
+    // with WhatsApp checked), and Bun's compiled-binary cold-start
+    // through Baileys / Keychain / sqlite typically takes 1–3s before
+    // the socket bind completes. Without this poll the QRSession
+    // races the daemon and emits a "WhatsApp isn't running" error
+    // before the daemon's even had a chance.
+    let deadline = Date().addingTimeInterval(8)
+    while !FileManager.default.fileExists(atPath: socketPath) {
+      if Date() > deadline {
+        continuation.yield(.error("WhatsApp didn't finish starting up. Open Settings and toggle WhatsApp off, then back on."))
+        continuation.finish()
+        return
+      }
+      Thread.sleep(forTimeInterval: 0.15)
     }
 
     do {
