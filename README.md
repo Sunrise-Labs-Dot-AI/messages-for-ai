@@ -1,11 +1,17 @@
 # Messages for AI
 
-**AI proposes, you approve.** A safer iMessage MCP for users who don't
+**AI proposes, you approve.** A safer messaging MCP for users who don't
 want Claude sending messages on their behalf without a human in the loop.
 
-This package — `imessage-drafts-mcp` — is the iMessage transport in the
-Messages for AI product family. Sibling MCPs (WhatsApp, Signal, Slack) are
-on the roadmap; they will share the same menu bar review surface.
+`Messages for AI.app` is a single drag-to-/Applications install. The
+.app bundles the menu bar UI plus every supported MCP transport — the
+iMessage stdio MCP, the WhatsApp stdio MCP, and the WhatsApp background
+daemon — all signed under one bundle identity so a single Full Disk
+Access grant covers everything. On first launch, an onboarding wizard
+asks which transports you want enabled.
+
+**v0.3.0 ships two transports: iMessage and WhatsApp.** Signal and
+Slack remain on the roadmap.
 
 ## How this differs from the official Anthropic iMessage plugin
 
@@ -24,7 +30,7 @@ Claims below describe Anthropic's plugin as published at the linked commit on 20
 | **Audit log** | Not present at the linked revision | Every **successful** MCP send appended to `~/.messages-mcp/send-audit.log` with timestamp, recipient handle, and SHA-256 of body. Discards and blocked sends are not currently logged. |
 | **UI** | CLI-only | Menu bar surface with thread-context bubbles |
 | **Contact resolution** | Raw handles only | Resolves to Contacts names via local sidecar |
-| **Transports** | iMessage only | iMessage now; WhatsApp / Signal / Slack on the roadmap (per-transport MCPs sharing one menu bar) |
+| **Transports** | iMessage only | iMessage + WhatsApp (v0.3.0); Signal / Slack on the roadmap (per-transport MCPs sharing one menu bar) |
 | **Daily send cap** | Not present at the linked revision | Circuit-breaker default 50/UTC-day, env-configurable via `IMESSAGE_DAILY_SEND_CAP` |
 | **Best for** | "Just send the message" automation | "Let me see what Claude wants to say before it goes out" — when the default approval gate is on |
 
@@ -33,16 +39,29 @@ outgoing message to pass through your eye first, use this one.
 
 ## What this gives you
 
-- read iMessage threads, messages, and search.
-- stage drafts under `~/.messages-mcp/drafts/`.
-- approval-gated send of staged drafts via AppleScript automation.
-- companion **menu bar app** (`/Applications/Messages for AI.app`) that
-  shows pending drafts with hold-to-fire Send / Discard buttons. Turns
-  "draft" into a real human-review surface rather than a JSON file on disk.
-- contact-name resolution via the menu bar app's Contacts permission —
-  agents see and surface real names ("Allegra Heath"), not raw phone numbers.
+- **iMessage transport**: read threads, messages, search; stage drafts
+  under `~/.messages-mcp/drafts/`; approval-gated send via AppleScript
+  automation of Messages.app.
+- **WhatsApp transport** (opt-in): read recent threads from a local
+  cache; stage drafts under `~/.whatsapp-mcp/drafts/`; approval-gated
+  send via a background Baileys daemon paired to your phone over QR
+  scan. The daemon is bundled inside the .app — there's no separate
+  install. See [SECURITY.md](SECURITY.md) for the WhatsApp ToS caveat
+  and per-transport threat model before enabling.
+- **Menu bar surface** that shows pending drafts from every enabled
+  transport in one popover, with hold-to-fire Send / Discard buttons
+  and per-transport platform badges (green for WhatsApp, system accent
+  for iMessage). Turns "draft" into a real human-review surface rather
+  than a JSON file on disk.
+- **First-run onboarding wizard** that asks which transports you want
+  enabled and chains directly into WhatsApp QR pairing when you opt in.
+- **Settings sheet** for per-transport configuration and pair/unpair.
+- Contact-name resolution via the menu bar app's Contacts permission —
+  agents see and surface real names ("Allegra Heath"), not raw phone
+  numbers.
 - Designed for **local MCP clients** (Claude Desktop, Claude Code, Codex
-  CLI). No network listener. No cloud component.
+  CLI). The WhatsApp daemon opens a WebSocket to WhatsApp Web; no other
+  network surfaces.
 
 ## Security
 
@@ -65,6 +84,8 @@ already do."
 
 ## Tools
 
+The iMessage MCP server (`imessage-drafts-mcp`) exposes:
+
 | Tool | Purpose |
 |---|---|
 | `list_threads` | Recent threads (newest first). Requires `since` or `contact_filter`. |
@@ -77,6 +98,11 @@ already do."
 | `send_draft` | **Destructive.** Send a staged draft via Messages.app. Refuses duplicate sends. (Or send via the menu bar app — see below.) |
 | `get_current_time` | UTC + system-local timestamps, for building `since` filters. |
 | `health_check` | Diagnose permissions / contact lookup / chat.db access. Run when something silently isn't working. |
+
+The WhatsApp MCP server (`whatsapp-drafts-mcp`) exposes a parallel set
+of tools — see [mcps/whatsapp-drafts/README.md](mcps/whatsapp-drafts/README.md)
+for the full surface and its differences from iMessage (rate limits,
+session-pairing flow, daemon model).
 
 Hard guardrails:
 
@@ -92,38 +118,44 @@ Two paths. Pick A unless you're contributing code.
 
 ## Option A — Pre-built release (recommended)
 
-The release zip contains signed, Apple-notarized binaries. No Xcode, no
-Apple Developer account, no rebuild required. The whole install is ~30
-seconds plus three manual permission steps.
+The release zip contains a signed, Apple-notarized .app. No Xcode, no
+Apple Developer account, no rebuild required, and no separate WhatsApp
+install. Drag and drop, then three manual permission steps.
 
 ```sh
 # 1. Download the latest release zip.
 curl -L \
-  https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai/releases/latest/download/imessage-drafts-mcp.zip \
-  -o /tmp/imessage-drafts-mcp.zip
+  https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai/releases/latest/download/messages-for-ai.zip \
+  -o /tmp/messages-for-ai.zip
 
 # 2. Unzip and run the installer.
-cd /tmp && unzip -q imessage-drafts-mcp.zip
-cd imessage-drafts-mcp-v* && bash install.sh
+cd /tmp && unzip -q messages-for-ai.zip
+cd messages-for-ai-v* && bash install.sh
 ```
 
-The installer copies the binary to `~/bin/imessage-drafts-mcp`, installs the
-menu bar app to `/Applications/Messages for AI.app`, refreshes
-LaunchServices, smoke-tests the MCP via an `initialize` round-trip, and
-prints the manual next steps.
+The installer copies `Messages for AI.app` to `/Applications/`,
+refreshes LaunchServices, smoke-tests the bundled MCP binaries via
+`initialize` round-trips, creates a backward-compat symlink at
+`~/bin/imessage-drafts-mcp` (legacy v0.1.x path), and prints the manual
+next steps.
 
 After running it, you need to:
 
-1. **Grant Full Disk Access** to `~/bin/imessage-drafts-mcp` — see
-   [Permissions](#permissions) below.
+1. **Grant Full Disk Access** to `Messages for AI.app` — see
+   [Permissions](#permissions) below. One grant covers every binary
+   inside the .app (iMessage MCP, WhatsApp MCP, WhatsApp daemon, the
+   menubar UI).
 2. **Wire up the MCP client** — see [MCP client config](#mcp-client-config) below.
 3. **Launch the menu bar app**:
    ```sh
    open "/Applications/Messages for AI.app"
    ```
-   First popover open will trigger the macOS Contacts consent dialog.
-   Approve it; the app populates `~/.messages-mcp/contacts-cache.json`,
-   which the MCP reads to resolve recipient names.
+   First popover open will trigger the onboarding wizard. Pick which
+   transports you want enabled (iMessage on by default; WhatsApp opt-
+   in). If you check WhatsApp, the menubar spawns the daemon and
+   chains directly into the QR pairing sheet — scan with WhatsApp on
+   your phone via Settings → Linked Devices → Link a Device. First
+   popover open will also trigger the macOS Contacts consent dialog.
 
 ## Option B — Build from source
 
@@ -135,17 +167,17 @@ cert, contact lookup gracefully falls back to "raw phone numbers" mode
 ```sh
 git clone https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai.git
 cd messages-for-ai
-bun install
 
 # Step 1: Build and install the menu bar app to /Applications/.
 # This MUST run first — it creates the Messages for AI.app bundle
-# that the MCP binary installs INTO. The repo-root install:bin script
-# will exit with an error if the bundle doesn't already exist.
+# that the MCP binaries install INTO.
 cd menubar && bash scripts/dev-install.sh && cd ..
 
-# Step 2: Build and install the MCP binary INTO the .app bundle,
-# create a backward-compat symlink at ~/bin/imessage-drafts-mcp.
-bun run install:bin
+# Step 2: Build and install ALL MCP binaries (iMessage MCP, WhatsApp
+# MCP, WhatsApp daemon) into the .app's Contents/MacOS/, signed with
+# the bundle identifier. Creates a backward-compat symlink at
+# ~/bin/imessage-drafts-mcp for legacy MCP client configs.
+bash scripts/dev-install.sh
 ```
 
 Both install scripts auto-detect a Developer ID Application certificate
