@@ -1,0 +1,307 @@
+import Foundation
+import Combine
+import Darwin
+
+/// Spawns + monitors the `whatsapp-drafts-daemon` binary that ships inside
+/// the Messages for AI .app bundle. The daemon listens on a Unix socket
+/// at `~/.whatsapp-mcp/daemon.sock` (see WhatsAppRPCClient); without it
+/// running, every approve/send call from the menubar would hit
+/// `RPCError.daemonNotRunning`. The menubar owns the daemon's lifecycle
+/// so the end-user never has to touch a CLI.
+///
+/// Lifecycle responsibilities:
+/// - On app launch (when the user has enabled WhatsApp), start the daemon.
+/// - Inherit the .app's code-signing identity — peer-auth on the daemon
+///   side is satisfied by a runtime self-identity check (see commit 11).
+/// - Pipe stdout+stderr to `~/.messages-mcp/logs/whatsapp-daemon.log`
+///   with size-capped rotation (10 MB → roll to `.1`, keep up to `.3`).
+/// - On unclean exit, exponential-backoff respawn (1s, 2s, 4s, 8s, 16s,
+///   capped at 60s). After 5 consecutive crashes inside a short window,
+///   stop respawning and surface a `.crashLooping` status; the user can
+///   trigger a fresh `start()` from the UI.
+/// - On `NSApplicationWillTerminate`, `SIGTERM`; wait up to 5s for a
+///   clean exit; then `SIGKILL`.
+@MainActor
+final class WhatsAppDaemonController: ObservableObject {
+  enum Status: Equatable {
+    case idle              // never started this session, or stopped cleanly
+    case starting          // Process launched; haven't yet seen it stay up
+    case running(pid: Int32)
+    case backingOff(nextAttemptIn: TimeInterval, consecutiveCrashes: Int)
+    case crashLooping(consecutiveCrashes: Int)
+    case stopped           // explicitly stopped by user (toggle off)
+  }
+
+  @Published private(set) var status: Status = .idle
+  @Published private(set) var lastError: String?
+
+  /// Tunables — exposed for tests / future settings UI but never written.
+  private let maxConsecutiveCrashes = 5
+  private let stableRunSeconds: TimeInterval = 30   // resets crash counter
+  private let backoffSchedule: [TimeInterval] = [1, 2, 4, 8, 16, 32, 60]
+  private let logRotateBytes: Int = 10 * 1024 * 1024
+  private let logRotateKeep = 3
+
+  private var process: Process?
+  private var stdoutPipe: Pipe?
+  private var stderrPipe: Pipe?
+  private var logHandle: FileHandle?
+  private var consecutiveCrashes = 0
+  private var lastStartAt: Date?
+  private var pendingRespawn: Task<Void, Never>?
+
+  // MARK: - Public API
+
+  /// Spawn the daemon. Idempotent: a no-op if already running. Cancels
+  /// any pending backoff respawn (lets the user click "Start" from the
+  /// crash-loop banner without waiting out the backoff).
+  func start() {
+    pendingRespawn?.cancel()
+    pendingRespawn = nil
+
+    switch status {
+    case .running, .starting:
+      return
+    case .idle, .stopped, .backingOff, .crashLooping:
+      consecutiveCrashes = 0
+      lastError = nil
+      launch()
+    }
+  }
+
+  /// Stop the daemon. SIGTERM, wait up to 5s, SIGKILL. After this returns,
+  /// status is `.stopped`; the controller will NOT auto-respawn.
+  func stop() async {
+    pendingRespawn?.cancel()
+    pendingRespawn = nil
+
+    guard let proc = process, proc.isRunning else {
+      status = .stopped
+      return
+    }
+
+    let pid = proc.processIdentifier
+    kill(pid, SIGTERM)
+
+    // Poll up to 5s.
+    let deadline = Date().addingTimeInterval(5)
+    while proc.isRunning && Date() < deadline {
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+    if proc.isRunning {
+      kill(pid, SIGKILL)
+      // Best-effort wait so terminationHandler fires before we return.
+      try? await Task.sleep(nanoseconds: 200_000_000)
+    }
+    status = .stopped
+  }
+
+  /// Convenience for the user-quit path in App.swift.
+  ///
+  /// `NSApplicationWillTerminate` fires on the main thread and is
+  /// synchronous (the app exits as soon as the delegate returns), so we
+  /// can't `await` here. Instead: spawn-and-wait via a semaphore.
+  func stopBlocking() {
+    let sem = DispatchSemaphore(value: 0)
+    Task { @MainActor in
+      await stop()
+      sem.signal()
+    }
+    _ = sem.wait(timeout: .now() + 6)
+  }
+
+  // MARK: - Internal: launch + monitor
+
+  private func launch() {
+    // Resolve daemon binary path inside the .app bundle. On `swift run`
+    // (no .app wrapper), Bundle.main points at the binary itself; fall
+    // back to a sibling path so dev workflows can still spawn.
+    guard let binURL = resolveDaemonBinary() else {
+      status = .idle
+      lastError = "could not locate whatsapp-drafts-daemon binary"
+      return
+    }
+
+    let proc = Process()
+    proc.executableURL = binURL
+    // No arguments — daemon reads everything from env + ~/.whatsapp-mcp/.
+    proc.arguments = []
+
+    let outPipe = Pipe()
+    let errPipe = Pipe()
+    proc.standardOutput = outPipe
+    proc.standardError = errPipe
+
+    let logFile = ensureLogFileOpen()
+    self.logHandle = logFile
+
+    // Route both streams into the rotating log file. Read-side ends of
+    // the pipes are non-blocking; the handler closure runs on a
+    // background queue (hence @Sendable + the MainActor hop).
+    let writeLog: @Sendable (FileHandle) -> Void = { [weak self] handle in
+      let data = handle.availableData
+      guard !data.isEmpty else { return }
+      Task { @MainActor in
+        self?.appendToLog(data)
+      }
+    }
+    outPipe.fileHandleForReading.readabilityHandler = writeLog
+    errPipe.fileHandleForReading.readabilityHandler = writeLog
+    self.stdoutPipe = outPipe
+    self.stderrPipe = errPipe
+
+    proc.terminationHandler = { [weak self] terminated in
+      // Hops to the MainActor — terminationHandler fires on Process's
+      // own queue, but our state is @MainActor-isolated.
+      let status = terminated.terminationStatus
+      let reason = terminated.terminationReason
+      Task { @MainActor in
+        self?.handleTermination(exitStatus: status, reason: reason)
+      }
+    }
+
+    do {
+      try proc.run()
+    } catch {
+      lastError = "failed to launch daemon: \(error.localizedDescription)"
+      status = .idle
+      return
+    }
+
+    self.process = proc
+    self.lastStartAt = Date()
+    status = .starting
+
+    // Promote to .running after a short delay if we haven't already
+    // terminated. The pipe reader doesn't tell us "daemon is healthy"
+    // explicitly — but if it survives 250ms it's at least past argv
+    // parsing / module load.
+    Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 250_000_000)
+      guard let self = self,
+            let p = self.process,
+            p.isRunning,
+            case .starting = self.status
+      else { return }
+      self.status = .running(pid: p.processIdentifier)
+    }
+  }
+
+  private func handleTermination(exitStatus: Int32, reason: Process.TerminationReason) {
+    // Close pipes so the readability handlers stop firing.
+    stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+    stderrPipe?.fileHandleForReading.readabilityHandler = nil
+    stdoutPipe = nil
+    stderrPipe = nil
+    process = nil
+
+    // If we were explicitly stopped, don't respawn.
+    if case .stopped = status { return }
+
+    let ranFor = lastStartAt.map { Date().timeIntervalSince($0) } ?? 0
+    if ranFor >= stableRunSeconds {
+      // The daemon was alive long enough that this exit isn't a
+      // crash-loop signal — reset the counter before backing off again.
+      consecutiveCrashes = 0
+    }
+    consecutiveCrashes += 1
+
+    appendLogLine("[daemon] exited status=\(exitStatus) reason=\(reason.rawValue) ranFor=\(Int(ranFor))s consecutiveCrashes=\(consecutiveCrashes)")
+
+    if consecutiveCrashes >= maxConsecutiveCrashes {
+      status = .crashLooping(consecutiveCrashes: consecutiveCrashes)
+      lastError = "WhatsApp daemon crashed \(consecutiveCrashes) times in a row. Tap Start to retry."
+      return
+    }
+
+    let idx = min(consecutiveCrashes - 1, backoffSchedule.count - 1)
+    let delay = backoffSchedule[idx]
+    status = .backingOff(nextAttemptIn: delay, consecutiveCrashes: consecutiveCrashes)
+
+    pendingRespawn = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+      guard let self = self, !Task.isCancelled else { return }
+      // Don't respawn if the user toggled WhatsApp off during backoff.
+      switch self.status {
+      case .stopped, .running, .starting: return
+      default: break
+      }
+      self.launch()
+    }
+  }
+
+  // MARK: - Internal: binary resolution
+
+  private func resolveDaemonBinary() -> URL? {
+    let binaryName = "whatsapp-drafts-daemon"
+    let bundle = Bundle.main.bundleURL
+
+    // Production: /Applications/Messages for AI.app/Contents/MacOS/whatsapp-drafts-daemon
+    let inBundle = bundle
+      .appendingPathComponent("Contents/MacOS")
+      .appendingPathComponent(binaryName)
+    if FileManager.default.isExecutableFile(atPath: inBundle.path) {
+      return inBundle
+    }
+
+    // `swift run` from menubar/: Bundle.main is the unwrapped binary
+    // itself. Look for a sibling.
+    let sibling = bundle.deletingLastPathComponent().appendingPathComponent(binaryName)
+    if FileManager.default.isExecutableFile(atPath: sibling.path) {
+      return sibling
+    }
+
+    return nil
+  }
+
+  // MARK: - Internal: log rotation
+
+  private func logFileURL() -> URL {
+    let dir = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(".messages-mcp")
+      .appendingPathComponent("logs")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir.appendingPathComponent("whatsapp-daemon.log")
+  }
+
+  private func ensureLogFileOpen() -> FileHandle? {
+    let url = logFileURL()
+    rotateIfNeeded(at: url)
+    if !FileManager.default.fileExists(atPath: url.path) {
+      FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
+    }
+    return try? FileHandle(forWritingTo: url)
+  }
+
+  private func rotateIfNeeded(at url: URL) {
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+          let size = attrs[.size] as? Int,
+          size >= logRotateBytes
+    else { return }
+    let fm = FileManager.default
+    // Drop oldest, shift names, primary → .1.
+    let oldest = url.appendingPathExtension("\(logRotateKeep)")
+    try? fm.removeItem(at: oldest)
+    for i in stride(from: logRotateKeep - 1, through: 1, by: -1) {
+      let src = url.appendingPathExtension("\(i)")
+      let dst = url.appendingPathExtension("\(i + 1)")
+      if fm.fileExists(atPath: src.path) {
+        try? fm.moveItem(at: src, to: dst)
+      }
+    }
+    try? fm.moveItem(at: url, to: url.appendingPathExtension("1"))
+  }
+
+  private func appendToLog(_ data: Data) {
+    guard let handle = logHandle else { return }
+    _ = try? handle.seekToEnd()
+    handle.write(data)
+  }
+
+  private func appendLogLine(_ line: String) {
+    let timestamped = "[\(ISO8601DateFormatter().string(from: Date()))] \(line)\n"
+    if let data = timestamped.data(using: .utf8) {
+      appendToLog(data)
+    }
+  }
+}
