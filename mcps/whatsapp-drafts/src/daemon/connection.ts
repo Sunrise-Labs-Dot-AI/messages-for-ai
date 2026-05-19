@@ -14,7 +14,7 @@
 //                flow.
 // restartRequired → reconnect immediately, no backoff.
 
-import { existsSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 
 import {
@@ -71,12 +71,18 @@ export class WhatsAppConnection extends EventEmitter {
   }
 
   async start(): Promise<void> {
-    // Abort fast if a previous run hit loggedOut and the sentinel still exists.
-    if (existsSync(PATHS.loggedOutSentinel)) {
-      process.stderr.write("LOGGED_OUT sentinel present — refusing to start until cleared via menu bar Reconnect\n");
-      process.exit(0);
-    }
+    this.stopped = false;
     await this.connect();
+  }
+
+  /**
+   * Set state to `logged_out` without starting Baileys. Called from
+   * `index.ts` main() when the LOGGED_OUT sentinel is present so the
+   * menubar UI reflects the recovery state while the RPC server stays
+   * up to handle `unlinkAndReset`.
+   */
+  markLoggedOut(): void {
+    this.setState("logged_out");
   }
 
   private setState(s: ConnectionState): void {

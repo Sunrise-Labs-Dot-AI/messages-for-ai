@@ -241,10 +241,17 @@ async function handle(
         return ok(id, { ok: true });
       }
       case "unlinkAndReset": {
-        // TODO(security): when peer-auth lands, gate this to menu-bar bundle only.
         deleteSession();
         try { unlinkSync(PATHS.loggedOutSentinel); } catch { /* ignore */ }
-        return ok(id, { ok: true, note: "Session deleted. Restart daemon to re-pair." });
+        // Reply BEFORE kicking off the async reconnect — Baileys's
+        // connect path takes a couple seconds (auth state + version
+        // fetch) and the menubar shouldn't be blocked on it.
+        setImmediate(() => {
+          connection.start().catch((e) => {
+            process.stderr.write(`unlinkAndReset → connection.start() failed: ${(e as Error).message}\n`);
+          });
+        });
+        return ok(id, { ok: true, note: "Session wiped; daemon reconnecting." });
       }
       // ──────────────────────────────────────────────────────────────────
       // Phase 2 — Draft + Send

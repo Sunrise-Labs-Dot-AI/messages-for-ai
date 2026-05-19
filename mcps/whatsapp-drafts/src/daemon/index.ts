@@ -34,14 +34,6 @@ async function main() {
   // Single-instance guard via PID lock.
   acquirePidLock();
 
-  // Bail immediately if a previous run hit loggedOut and the user hasn't
-  // cleared the sentinel via the menu bar Reconnect flow.
-  if (existsSync(PATHS.loggedOutSentinel)) {
-    process.stderr.write("LOGGED_OUT sentinel present — clear it via the menu bar Reconnect flow before restarting.\n");
-    releasePidLock();
-    process.exit(0);
-  }
-
   const connection = new WhatsAppConnection();
   const rpc = await startRpcServer(connection);
 
@@ -54,6 +46,18 @@ async function main() {
   };
   process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
   process.on("SIGINT", () => { void shutdown("SIGINT"); });
+
+  // If the previous run was remotely unlinked, stay alive WITHOUT
+  // connecting Baileys — the RPC server above is still listening so the
+  // menubar's Reconnect flow can call unlinkAndReset to clear the
+  // sentinel and trigger a fresh pairing. Exiting here (the v0.2.0
+  // behavior) made unlinkAndReset unreachable: socket gone, menubar got
+  // RPCError.readError.
+  if (existsSync(PATHS.loggedOutSentinel)) {
+    process.stderr.write("LOGGED_OUT sentinel present — awaiting menu bar Reconnect (unlinkAndReset) to re-pair.\n");
+    connection.markLoggedOut();
+    return;
+  }
 
   await connection.start();
 }
