@@ -1,0 +1,215 @@
+// Draft staging. Each draft is a single JSON file at
+// ~/.whatsapp-mcp/drafts/{uuid}.json with mode 0600. Mirrors the
+// imessage-mcp draft schema and adds:
+//   - platform: "whatsapp"
+//   - schema_version: 1   (Phase 2 decoder rejects unknown versions)
+//   - approval_state: "pending" | "approved"
+//   - induced_by_unknown_contact: boolean (Phase 3 hint for the menu bar)
+//
+// Approval flow:
+//   - stage_whatsapp_draft → writes file with approval_state="pending"
+//   - menu bar app's hold-to-fire → flips to "approved" and calls daemon
+//     sendDraft via the Unix socket
+//   - When settings.require_approval = false (dev convenience),
+//     MCP-side send_whatsapp_draft tool sets approval_state="approved"
+//     on the tool side BEFORE invoking sendDraft
+
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+
+import { PATHS } from "../paths.ts";
+
+export const DRAFT_SCHEMA_VERSION = 1;
+
+export interface DraftContext {
+  /** Snapshot of the last N messages in the thread when the draft was staged. */
+  context_messages: Array<{
+    message_id: string;
+    sender_jid: string;
+    from_me: boolean;
+    ts: number;
+    body: string | null;
+  }>;
+  /** Diagnostic when context lookup failed. Mirrors imessage-mcp's pattern. */
+  context_diagnostic: null | "no_thread_match" | "thread_empty" | "error";
+}
+
+export interface Draft extends DraftContext {
+  id: string;
+  schema_version: number;
+  platform: "whatsapp";
+  approval_state: "pending" | "approved";
+  to_handle: string;       // WhatsApp JID
+  body: string;            // agent-authored text
+  staged_at: string;       // ISO-8601
+  sent_at: string | null;
+  source: string;          // e.g. "claude-desktop" — informational only
+  induced_by_unknown_contact: boolean;
+}
+
+export class DraftSchemaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DraftSchemaError";
+  }
+}
+
+function ensureDir(): void {
+  if (!existsSync(PATHS.draftsDir)) {
+    mkdirSync(PATHS.draftsDir, { recursive: true, mode: 0o700 });
+  }
+}
+
+function draftPath(id: string): string {
+  // Path-traversal guard — IDs are UUIDs so they never contain "/" or "..".
+  if (id.includes("/") || id.includes("..") || id.length === 0) {
+    throw new DraftSchemaError(`invalid draft id: ${id}`);
+  }
+  return join(PATHS.draftsDir, `${id}.json`);
+}
+
+export interface StageInput {
+  to_handle: string;
+  body: string;
+  source?: string;
+  context_messages?: DraftContext["context_messages"];
+  context_diagnostic?: DraftContext["context_diagnostic"];
+  induced_by_unknown_contact?: boolean;
+}
+
+/** Stage a new draft. Returns the full draft object as written. */
+export function stageDraft(input: StageInput): Draft {
+  ensureDir();
+  const id = crypto.randomUUID();
+  const draft: Draft = {
+    id,
+    schema_version: DRAFT_SCHEMA_VERSION,
+    platform: "whatsapp",
+    approval_state: "pending",
+    to_handle: input.to_handle,
+    body: input.body,
+    staged_at: new Date().toISOString(),
+    sent_at: null,
+    source: input.source ?? "unknown",
+    context_messages: input.context_messages ?? [],
+    context_diagnostic: input.context_diagnostic ?? null,
+    induced_by_unknown_contact: input.induced_by_unknown_contact ?? false,
+  };
+  writeFileSync(draftPath(id), JSON.stringify(draft, null, 2), { mode: 0o600 });
+  return draft;
+}
+
+/** Read a draft by id. Throws DraftSchemaError if version mismatch. */
+export function getDraft(id: string): Draft | null {
+  const path = draftPath(id);
+  if (!existsSync(path)) return null;
+  const raw = readFileSync(path, "utf8");
+  let parsed: Partial<Draft> & { schema_version?: unknown };
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new DraftSchemaError(`${path}: malformed JSON — ${(e as Error).message}`);
+  }
+  // Strict version check — Phase 2 decoder rejects (not silently
+  // upgrades or downgrades) unknown versions. This is the rollback
+  // safety described in the plan.
+  if (parsed.schema_version !== DRAFT_SCHEMA_VERSION) {
+    throw new DraftSchemaError(
+      `${path}: unknown schema_version ${String(parsed.schema_version)} — expected ${DRAFT_SCHEMA_VERSION}`,
+    );
+  }
+  return parsed as Draft;
+}
+
+/** List drafts, newest-first by staged_at. Skips files that fail schema check. */
+export function listDrafts(): { drafts: Draft[]; skipped: number } {
+  ensureDir();
+  const files = readdirSync(PATHS.draftsDir).filter((f) => f.endsWith(".json"));
+  const drafts: Draft[] = [];
+  let skipped = 0;
+  for (const f of files) {
+    const id = f.slice(0, -".json".length);
+    try {
+      const d = getDraft(id);
+      if (d != null) drafts.push(d);
+    } catch {
+      skipped++;
+    }
+  }
+  drafts.sort((a, b) => b.staged_at.localeCompare(a.staged_at));
+  return { drafts, skipped };
+}
+
+/** Update a draft in-place. Used for approval-state flips and sent_at marking. */
+export function updateDraft(id: string, patch: Partial<Pick<Draft, "approval_state" | "sent_at">>): Draft {
+  const cur = getDraft(id);
+  if (cur == null) throw new DraftSchemaError(`draft not found: ${id}`);
+  const next: Draft = { ...cur, ...patch };
+  writeFileSync(draftPath(id), JSON.stringify(next, null, 2), { mode: 0o600 });
+  return next;
+}
+
+/** Delete a draft. Returns true if the file existed. */
+export function discardDraft(id: string): boolean {
+  const path = draftPath(id);
+  if (!existsSync(path)) return false;
+  unlinkSync(path);
+  return true;
+}
+
+/**
+ * Sweep:
+ *   - drafts older than ttl_days that were never sent → deleted
+ *   - drafts with sent_at older than 24h → deleted
+ */
+export function sweepDrafts(ttlDays: number, now: number = Date.now()): { deleted: number; kept: number } {
+  ensureDir();
+  const ttlCutoff = now - ttlDays * 24 * 60 * 60 * 1000;
+  const sentCutoff = now - 24 * 60 * 60 * 1000;
+  let deleted = 0;
+  let kept = 0;
+  for (const f of readdirSync(PATHS.draftsDir)) {
+    if (!f.endsWith(".json")) continue;
+    const id = f.slice(0, -".json".length);
+    try {
+      const d = getDraft(id);
+      if (d == null) continue;
+      const staged = Date.parse(d.staged_at);
+      const sent = d.sent_at != null ? Date.parse(d.sent_at) : null;
+      if (sent != null && sent < sentCutoff) {
+        discardDraft(id);
+        deleted++;
+        continue;
+      }
+      if (sent == null && Number.isFinite(staged) && staged < ttlCutoff) {
+        discardDraft(id);
+        deleted++;
+        continue;
+      }
+      kept++;
+    } catch {
+      // Malformed draft file: leave it (operator can clean up manually).
+      kept++;
+    }
+  }
+  return { deleted, kept };
+}
+
+/** Re-chmod the drafts directory and all draft files to 0600 / 0700.
+ *  Defense in depth in case something created them with wider perms. */
+export function enforcePermissions(): void {
+  ensureDir();
+  try { chmodSync(PATHS.draftsDir, 0o700); } catch { /* ignore */ }
+  for (const f of readdirSync(PATHS.draftsDir)) {
+    if (!f.endsWith(".json")) continue;
+    try { chmodSync(join(PATHS.draftsDir, f), 0o600); } catch { /* ignore */ }
+  }
+}
