@@ -94,6 +94,12 @@ export interface MessageRow {
   message_id: string;
   thread_jid: string;
   sender_jid: string;
+  /** Best-effort human-readable sender name resolved at read time via
+   *  the contacts table. Null for unknown senders (typically @lid
+   *  privacy-format JIDs that don't have a contacts row yet). For
+   *  `from_me=true` messages this is null — callers render those as
+   *  "Me" / "You" themselves. */
+  sender_name: string | null;
   from_me: boolean;
   ts: number;
   body: string | null;
@@ -244,6 +250,51 @@ export function upsertContact(c: UpsertContact): void {
 }
 
 /**
+ * Best-effort human-readable name for a JID. Tries the contacts table
+ * (display_name → push_name → null), then the threads table's
+ * display_name (Baileys names groups even when individual contacts are
+ * un-named). Returns null if nothing matches — caller decides on a
+ * presentation fallback (typically `formatJidAsPhone`).
+ */
+export function getContactDisplayName(jid: string): string | null {
+  const db = getMessagesDb();
+  const contact = db
+    .prepare("SELECT display_name, push_name FROM contacts WHERE jid = ?")
+    .get(jid) as { display_name: string | null; push_name: string | null } | undefined;
+  if (contact != null) {
+    const name = contact.display_name ?? contact.push_name;
+    if (name != null && name.trim().length > 0) return name;
+  }
+  const thread = db
+    .prepare("SELECT display_name FROM threads WHERE thread_jid = ?")
+    .get(jid) as { display_name: string | null } | undefined;
+  if (thread?.display_name != null && thread.display_name.trim().length > 0) {
+    return thread.display_name;
+  }
+  return null;
+}
+
+/**
+ * Pretty-format a WhatsApp user JID as a phone number when no contact
+ * name is available. "12158055729@s.whatsapp.net" → "+1 (215) 805-5729".
+ * Group JIDs and unparseable inputs round-trip unchanged.
+ */
+export function formatJidAsPhone(jid: string): string {
+  const at = jid.indexOf("@");
+  if (at < 0) return jid;
+  const suffix = jid.slice(at);
+  if (suffix === "@g.us") return jid;  // groups: caller should prefer thread name
+  const num = jid.slice(0, at).replace(/[^0-9]/g, "");
+  if (num.length === 0) return jid;
+  // US/CA numbers (11 digits starting with 1) get the (NNN) NNN-NNNN
+  // pretty form; everything else just gets the leading "+".
+  if (num.length === 11 && num.startsWith("1")) {
+    return `+1 (${num.slice(1, 4)}) ${num.slice(4, 7)}-${num.slice(7, 11)}`;
+  }
+  return `+${num}`;
+}
+
+/**
  * List threads with a recent message in [since, now]. Optionally filter
  * threads whose display_name OR jid contains contact_filter (substring).
  */
@@ -264,13 +315,37 @@ export function listThreads(opts: {
     const like = `%${opts.contact_filter}%`;
     params.push(like, like);
   }
+  // For groups: threads.display_name is set by Baileys's group-meta sync.
+  // For individuals: threads.display_name is null (each side knows the
+  // other by phone, not by a thread label), so fall back to the contacts
+  // table — that's where Baileys writes the Mac Contacts display_name
+  // and the WhatsApp profile push_name on contacts.upsert. Without this
+  // join, every individual chat surfaces to Claude as a raw JID and
+  // contact_filter substring-matches only group names. With the join,
+  // ~70% of individual chats resolve (the rest are @lid entries — a
+  // known follow-up for Baileys's privacy-format mapping).
+  if (opts.contact_filter != null && opts.contact_filter.length > 0) {
+    // Replace the basic display_name LIKE clause above with one that
+    // also searches the joined contact name.
+    where.pop();
+    const like = `%${opts.contact_filter}%`;
+    params.pop(); params.pop();
+    where.push("(threads.display_name LIKE ? OR threads.thread_jid LIKE ? OR contacts.display_name LIKE ? OR contacts.push_name LIKE ?)");
+    params.push(like, like, like, like);
+  }
   const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
   const limit = opts.limit ?? 100;
   const rows = db.prepare(`
-    SELECT thread_jid, display_name, is_group, last_message_ts, last_seen_at
+    SELECT
+      threads.thread_jid,
+      COALESCE(threads.display_name, contacts.display_name, contacts.push_name) AS display_name,
+      threads.is_group,
+      threads.last_message_ts,
+      threads.last_seen_at
     FROM threads
+    LEFT JOIN contacts ON contacts.jid = threads.thread_jid
     ${whereSql}
-    ORDER BY last_message_ts DESC
+    ORDER BY threads.last_message_ts DESC
     LIMIT ?
   `).all(...params, limit) as Array<{
     thread_jid: string;
@@ -296,17 +371,26 @@ export function getThreadMessages(opts: {
   const db = getMessagesDb();
   const limit = opts.limit ?? 50;
   const before = opts.before_ts ?? Number.MAX_SAFE_INTEGER;
+  // LEFT JOIN to contacts so the MCP-side tools (and the menubar's
+  // context bubbles) see real names instead of raw JIDs. Inbound
+  // messages whose sender_jid doesn't have a matching contacts row
+  // (mainly @lid privacy-format senders Baileys hasn't mapped yet)
+  // get sender_name = null and the caller falls back to phone-format.
   const rows = db.prepare(`
-    SELECT message_id, thread_jid, sender_jid, from_me, ts, body, body_sha256,
-           message_type, attachment_meta, reply_to_id
-    FROM messages
-    WHERE thread_jid = ? AND ts < ?
-    ORDER BY ts DESC
+    SELECT m.message_id, m.thread_jid, m.sender_jid, m.from_me, m.ts,
+           m.body, m.body_sha256, m.message_type, m.attachment_meta,
+           m.reply_to_id,
+           COALESCE(c.display_name, c.push_name) AS sender_name
+    FROM messages m
+    LEFT JOIN contacts c ON c.jid = m.sender_jid
+    WHERE m.thread_jid = ? AND m.ts < ?
+    ORDER BY m.ts DESC
     LIMIT ?
   `).all(opts.thread_jid, before, limit) as Array<{
     message_id: string;
     thread_jid: string;
     sender_jid: string;
+    sender_name: string | null;
     from_me: number;
     ts: number;
     body: string | null;
@@ -319,6 +403,7 @@ export function getThreadMessages(opts: {
     message_id: r.message_id,
     thread_jid: r.thread_jid,
     sender_jid: r.sender_jid,
+    sender_name: r.from_me === 1 ? null : r.sender_name,
     from_me: r.from_me === 1,
     ts: r.ts,
     body: r.body,
@@ -354,16 +439,22 @@ export function searchMessages(opts: {
     params.push(opts.since);
   }
   if (opts.contact_filter != null && opts.contact_filter.length > 0) {
-    where.push("(t.display_name LIKE ? OR m.thread_jid LIKE ?)");
+    // Match thread name (group), thread JID, or the resolved sender's
+    // contact name — so "search for messages from Paul" surfaces hits
+    // even when the thread itself isn't named after Paul.
+    where.push("(t.display_name LIKE ? OR m.thread_jid LIKE ? OR ct.display_name LIKE ? OR ct.push_name LIKE ?)");
     const like = `%${opts.contact_filter}%`;
-    params.push(like, like);
+    params.push(like, like, like, like);
   }
   const limit = opts.limit ?? 50;
   const rows = db.prepare(`
     SELECT m.message_id, m.thread_jid, m.sender_jid, m.from_me, m.ts, m.body,
-           m.body_sha256, m.message_type, m.attachment_meta, m.reply_to_id
+           m.body_sha256, m.message_type, m.attachment_meta, m.reply_to_id,
+           COALESCE(cs.display_name, cs.push_name) AS sender_name
     FROM messages m
     LEFT JOIN threads t ON t.thread_jid = m.thread_jid
+    LEFT JOIN contacts ct ON ct.jid = m.thread_jid
+    LEFT JOIN contacts cs ON cs.jid = m.sender_jid
     WHERE ${where.join(" AND ")}
     ORDER BY m.ts DESC
     LIMIT ?
@@ -371,6 +462,7 @@ export function searchMessages(opts: {
     message_id: string;
     thread_jid: string;
     sender_jid: string;
+    sender_name: string | null;
     from_me: number;
     ts: number;
     body: string | null;
@@ -383,6 +475,7 @@ export function searchMessages(opts: {
     message_id: r.message_id,
     thread_jid: r.thread_jid,
     sender_jid: r.sender_jid,
+    sender_name: r.from_me === 1 ? null : r.sender_name,
     from_me: r.from_me === 1,
     ts: r.ts,
     body: r.body,

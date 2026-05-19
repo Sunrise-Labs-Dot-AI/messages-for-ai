@@ -9,6 +9,9 @@ interface DaemonMessage {
   message_id: string;
   thread_jid: string;
   sender_jid: string;
+  /** Resolved sender name from contacts table; null for from_me or
+   *  unresolvable senders. */
+  sender_name: string | null;
   from_me: boolean;
   ts: number;
   body: string | null;

@@ -20,6 +20,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -48,6 +49,10 @@ export interface Draft extends DraftContext {
   platform: "whatsapp";
   approval_state: "pending" | "approved";
   to_handle: string;       // WhatsApp JID
+  /** Best-effort human-readable recipient name at stage time. Falls back
+   *  to a pretty-printed phone number if no contact is known. The
+   *  menubar prefers this over `to_handle` for the row title. */
+  to_handle_name: string | null;
   body: string;            // agent-authored text
   staged_at: string;       // ISO-8601
   sent_at: string | null;
@@ -78,6 +83,7 @@ function draftPath(id: string): string {
 
 export interface StageInput {
   to_handle: string;
+  to_handle_name?: string | null;
   body: string;
   source?: string;
   context_messages?: DraftContext["context_messages"];
@@ -95,6 +101,7 @@ export function stageDraft(input: StageInput): Draft {
     platform: "whatsapp",
     approval_state: "pending",
     to_handle: input.to_handle,
+    to_handle_name: input.to_handle_name ?? null,
     body: input.body,
     staged_at: new Date().toISOString(),
     sent_at: null,
@@ -148,12 +155,22 @@ export function listDrafts(): { drafts: Draft[]; skipped: number } {
   return { drafts, skipped };
 }
 
-/** Update a draft in-place. Used for approval-state flips and sent_at marking. */
+/** Update a draft in-place. Used for approval-state flips and sent_at marking.
+ *
+ * Atomic write via temp+rename. A direct overwrite of the file produces
+ * NO event on the parent directory's `DispatchSourceFileSystemObject`
+ * watcher in the menubar (which only fires on structural changes —
+ * files added, removed, renamed). The rename here produces a `.write`
+ * event on the directory FD, which the menubar's DraftStore consumes
+ * to re-list drafts and surface the `sent_at` flip. */
 export function updateDraft(id: string, patch: Partial<Pick<Draft, "approval_state" | "sent_at">>): Draft {
   const cur = getDraft(id);
   if (cur == null) throw new DraftSchemaError(`draft not found: ${id}`);
   const next: Draft = { ...cur, ...patch };
-  writeFileSync(draftPath(id), JSON.stringify(next, null, 2), { mode: 0o600 });
+  const finalPath = draftPath(id);
+  const tmpPath = `${finalPath}.tmp-${process.pid}`;
+  writeFileSync(tmpPath, JSON.stringify(next, null, 2), { mode: 0o600 });
+  renameSync(tmpPath, finalPath);
   return next;
 }
 

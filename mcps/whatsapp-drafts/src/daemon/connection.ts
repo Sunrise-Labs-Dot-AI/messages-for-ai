@@ -100,7 +100,11 @@ export class WhatsAppConnection extends EventEmitter {
     const sock = makeWASocket({
       version,
       auth: authState,
-      browser: Browsers.macOS("whatsapp-mcp"),
+      // Shows up in WhatsApp → Linked Devices as "Messages for AI on
+      // Mac OS". Matches the user-visible brand of the .app bundle so
+      // the user can identify it at a glance vs other WhatsApp Web
+      // sessions they might have linked.
+      browser: Browsers.macOS("Messages for AI"),
       printQRInTerminal: false,
       syncFullHistory: false,  // initial history-sync handled via messaging-history.set
       generateHighQualityLinkPreview: false,

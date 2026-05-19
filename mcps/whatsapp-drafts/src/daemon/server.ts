@@ -26,6 +26,8 @@ import {
   getThreadMessages,
   searchMessages,
   getMessageFull,
+  getContactDisplayName,
+  formatJidAsPhone,
 } from "../storage/messages.ts";
 import { deleteSession } from "../storage/session.ts";
 import {
@@ -101,7 +103,17 @@ export async function startRpcServer(connection: WhatsAppConnection): Promise<Rp
     const note: RpcNotification = { jsonrpc: "2.0", method: `${channel}.update`, params: payload };
     const line = JSON.stringify(note) + "\n";
     for (const sub of subs.values()) {
-      if (sub.channel === channel) {
+      // qr subscribers also receive state.update broadcasts: the
+      // pairing flow inherently cares about the post-scan transition
+      // (so the view can auto-dismiss on "connected") AND about the
+      // post-pair restartRequired cycle (so the view can stay on
+      // "pairingHandshake" rather than time out reading and surface a
+      // spurious "connection dropped" error). The contract is
+      // documented in menubar/Sources/.../WhatsAppQRSession.swift.
+      const wantsThis =
+        sub.channel === channel ||
+        (channel === "state" && sub.channel === "qr");
+      if (wantsThis) {
         try { sub.sock.write(line); } catch { /* peer gone */ }
       }
     }
@@ -273,8 +285,30 @@ async function handle(
         } catch {
           diag = "error";
         }
+        // Resolve a recipient display name at stage time. Caller may have
+        // pre-resolved one (an MCP middleware lookup); otherwise pull
+        // from contacts/threads tables; otherwise pretty-format the JID.
+        // Group JIDs always fall through to thread name → raw JID.
+        let resolvedName: string | null = p.to_handle_name ?? null;
+        if (resolvedName == null) {
+          try {
+            resolvedName = getContactDisplayName(p.to_handle);
+          } catch { /* DB hiccup — fall through to phone format */ }
+        }
+        if (resolvedName == null && !p.to_handle.endsWith("@g.us")) {
+          // Self-send special case: if the user is messaging themselves,
+          // show "You" rather than their own phone number — matches what
+          // every other chat app does for the self-thread.
+          const meJid = connection.getMe().jid;
+          if (meJid != null && p.to_handle === meJid) {
+            resolvedName = "You";
+          } else {
+            resolvedName = formatJidAsPhone(p.to_handle);
+          }
+        }
         const draft = stageDraft({
           to_handle: p.to_handle,
+          to_handle_name: resolvedName,
           body: p.body,
           source: p.source,
           context_messages: ctx.map((m) => ({
