@@ -2,6 +2,9 @@
   "mcpServers": {
     "imessage-drafts": {
       "command": "/Applications/Messages for AI.app/Contents/MacOS/imessage-drafts-mcp"
+    },
+    "whatsapp-drafts": {
+      "command": "/Applications/Messages for AI.app/Contents/MacOS/whatsapp-drafts-mcp"
     }
   }
 }

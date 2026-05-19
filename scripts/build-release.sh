@@ -360,10 +360,18 @@ ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_APP_ZIP"
 # `wait` blocks. If Apple's notary backlog times us out, a maintainer
 # can resume polling against the saved UUID instead of paying another
 # upload round-trip — see script header.
-APP_SUBMIT_JSON=$(xcrun notarytool submit "$NOTARIZE_APP_ZIP" \
+# Redirect submit output to a file rather than capture via $(...).
+# Long-running command substitutions can be killed by some sandboxed
+# parent shells (Claude Code's Bash tool reproducibly SIGBUS'd this
+# at the 70 MB upload size — see commit message). File-redirect is
+# functionally identical for our use but is robust against parent-
+# shell quirks.
+APP_SUBMIT_JSON_FILE="$DIST/notarize-submit.json"
+xcrun notarytool submit "$NOTARIZE_APP_ZIP" \
   --keychain-profile "$NOTARY_PROFILE" \
   --output-format json \
-  --no-wait)
+  --no-wait > "$APP_SUBMIT_JSON_FILE"
+APP_SUBMIT_JSON=$(cat "$APP_SUBMIT_JSON_FILE")
 APP_UUID=$(echo "$APP_SUBMIT_JSON" | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))')
 if [[ -z "$APP_UUID" ]]; then
   echo "✗ failed to parse app notarytool submission UUID from:" >&2
