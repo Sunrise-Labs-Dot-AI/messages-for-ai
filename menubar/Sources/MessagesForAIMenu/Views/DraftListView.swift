@@ -25,6 +25,16 @@ struct DraftListView: View {
   /// it can self-dismiss on `state.update: connected`.
   @State private var showPairingSheet = false
 
+  /// First-run onboarding sheet. Auto-presents when SettingsStore says
+  /// the first-run sentinel is absent. Initialized in `.task` since
+  /// `@EnvironmentObject` isn't available at property-init time.
+  @State private var showOnboardingSheet = false
+
+  /// Set by OnboardingView when the user opts into WhatsApp. We chain
+  /// directly into the pairing sheet after onboarding dismisses, so
+  /// the user doesn't have to find the "Connect WhatsApp" button.
+  @State private var wantsWhatsAppPairing = false
+
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   // Cap for the inner ScrollView. We subtract a rough estimate of the
   // surrounding chrome (header + divider + footer + padding ~ 180pt)
@@ -113,6 +123,28 @@ struct DraftListView: View {
     .frame(width: 420)
     .sheet(isPresented: $showPairingSheet) {
       WhatsAppPairingView(isPresented: $showPairingSheet)
+    }
+    .sheet(isPresented: $showOnboardingSheet) {
+      OnboardingView(
+        isPresented: $showOnboardingSheet,
+        wantsWhatsAppPairing: $wantsWhatsAppPairing
+      )
+    }
+    .onAppear {
+      // Auto-present onboarding on first popover render. Subsequent
+      // renders skip this (firstRunComplete flips to true on commit).
+      if !settings.firstRunComplete {
+        showOnboardingSheet = true
+      }
+    }
+    .onChange(of: showOnboardingSheet) { isOpen in
+      // After onboarding closes, chain into pairing if WhatsApp was
+      // checked. The daemon was kicked up by OnboardingView.commit()
+      // so the QR should appear within ~1s.
+      if !isOpen && wantsWhatsAppPairing {
+        wantsWhatsAppPairing = false
+        showPairingSheet = true
+      }
     }
   }
 
