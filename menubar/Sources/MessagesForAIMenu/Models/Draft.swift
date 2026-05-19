@@ -1,8 +1,35 @@
 import Foundation
 
-// Mirrors the on-disk JSON written by the imessage-drafts-mcp server's
-// stage_draft tool. Keep field names in sync with
-// `src/storage/drafts.ts` (TypeScript side).
+/// Which transport this draft targets. Read from the draft JSON's
+/// `platform` field; defaults to `.imessage` when the field is absent
+/// (back-compat with pre-v0.3.0 drafts in `~/.messages-mcp/drafts/`).
+///
+/// Encoded as a lowercase string in JSON (`"imessage"` / `"whatsapp"`)
+/// to match the TypeScript side's serialization.
+enum Platform: String, Codable, Equatable, CaseIterable {
+  case imessage
+  case whatsapp
+}
+
+/// Whether a WhatsApp draft has been approved for send by the user in
+/// the menubar. iMessage drafts don't carry this field on disk — the
+/// approval signal is conveyed entirely by the hold-to-fire UX. For
+/// WhatsApp the daemon refuses send until `approval_state == "approved"`.
+enum ApprovalState: String, Codable, Equatable {
+  case pending
+  case approved
+}
+
+// Mirrors the on-disk JSON written by either MCP server's stage_draft
+// tool:
+//   - iMessage: `~/.messages-mcp/drafts/{uuid}.json`,
+//     TS source `src/storage/drafts.ts` in messages-for-ai repo
+//   - WhatsApp: `~/.whatsapp-mcp/drafts/{uuid}.json`,
+//     TS source `src/storage/drafts.ts` in whatsapp-mcp repo
+//
+// Fields present only on one platform are Optional; Swift's synthesized
+// `init(from:)` treats absent JSON keys as nil for Optional properties,
+// so the same struct decodes both shapes without conditional logic.
 struct Draft: Codable, Identifiable, Equatable {
   let id: String
   let to_handle: String
@@ -30,7 +57,41 @@ struct Draft: Codable, Identifiable, Equatable {
   // self-explaining ("no chat for this handle", "no handle match", etc.).
   let context_diagnostic: ContextDiagnostic?
 
+  // ── WhatsApp-specific fields (Optional for iMessage drafts) ──────────
+  /// Written by the WhatsApp MCP's `stage_draft`. Currently always `1`.
+  /// Reserved so the menubar can refuse drafts written by a future
+  /// daemon version it doesn't understand (forward-compat).
+  let schema_version: Int?
+  /// Raw transport tag from the JSON `platform` field. Optional because
+  /// iMessage drafts predate the field. Callers should usually go
+  /// through `effectivePlatform` instead — it returns a non-Optional
+  /// `Platform` with `.imessage` as the default for legacy drafts.
+  let platform: Platform?
+  /// Whether the user has tapped "approve" on the WhatsApp draft in the
+  /// menubar. iMessage drafts don't write this field; for those, the
+  /// effective state is conveyed by the hold-to-fire interaction itself.
+  let approval_state: ApprovalState?
+  /// True when the WhatsApp daemon staged this draft within 60 s of an
+  /// inbound message from a non-contact sender. The menubar uses this
+  /// to raise the hold-to-fire duration from 1 s to 2 s — a safety
+  /// nudge against prompt-injection-driven drafts induced by an
+  /// unknown sender. Absent / false on iMessage drafts.
+  let induced_by_unknown_contact: Bool?
+
+  /// Effective transport. Returns the stored `platform` if present, or
+  /// `.imessage` as the back-compat default for legacy drafts that
+  /// predate the field. Always non-nil — call sites can `switch` on
+  /// this without an Optional dance.
+  var effectivePlatform: Platform { platform ?? .imessage }
+
   var isSent: Bool { sent_at != nil }
+
+  /// The WhatsApp daemon writes `approval_state: "approved"` on the
+  /// draft JSON when the user confirms in the menubar. iMessage drafts
+  /// never write this field. This computed flag answers "should the
+  /// menubar present this as ready-to-fire?" uniformly across both
+  /// platforms.
+  var isApproved: Bool { approval_state == .approved }
 
   var stagedDate: Date? { Self.parseISO(staged_at) }
   var sentDate: Date? {

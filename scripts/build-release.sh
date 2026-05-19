@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 #
-# Build, sign, and notarize a release of imessage-drafts-mcp + the menu bar
-# app, ready for upload to GitHub Releases.
+# Build, sign, and notarize a release of Messages for AI — the menubar app
+# plus all bundled MCP transports — ready for upload to GitHub Releases.
 #
-# Output: dist/imessage-drafts-mcp-<version>.zip — a self-contained archive
+# Output: dist/messages-for-ai-<version>.zip — a self-contained archive
 # containing:
-#   - Messages for AI.app/   (signed + notarized + stapled .app bundle;
-#                             contains BOTH the menubar UI binary and the
-#                             MCP binary inside Contents/MacOS/, sharing
-#                             one bundle identifier)
+#   - Messages for AI.app/   (signed + notarized + stapled .app bundle.
+#                             Contains the menubar UI binary AND the iMessage
+#                             MCP binary AND both WhatsApp binaries (stdio
+#                             MCP + background daemon) inside Contents/MacOS/,
+#                             all sharing one bundle identifier so a single
+#                             FDA grant on the .app covers every inner Mach-O.)
 #   - install.sh             (end-user install script that copies the .app
 #                             to /Applications/ and creates a backward-
 #                             compat symlink at ~/bin/imessage-drafts-mcp)
@@ -75,7 +77,7 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 DIST="$REPO_ROOT/dist"
 STAGE="$DIST/stage"
-RELEASE_NAME="imessage-drafts-mcp-$VERSION"
+RELEASE_NAME="messages-for-ai-$VERSION"
 
 # Find the Developer ID cert. Filters by EXPECTED_TEAM_ID to refuse
 # attacker-planted certs in the same keychain. Fails loudly if no
@@ -134,19 +136,44 @@ mkdir -p "$STAGE/$RELEASE_NAME"
 trap 'rc=$?; trap "" INT TERM; echo; echo "✗ build aborted (exit $rc); wiping $DIST/" >&2; rm -rf "$DIST"' INT TERM EXIT
 
 # ============================================================================
-# Build the two binaries (MCP via Bun, menubar via Swift)
+# Build the inner binaries (Bun for each MCP transport, Swift for menubar)
 # ============================================================================
 #
-# Neither binary is signed/notarized separately. We assemble them into
+# No inner binary is signed/notarized separately. We assemble them into
 # the .app FIRST, sign each in place with the bundle's identifier, then
 # seal+notarize the bundle as one unit. A single notary submission
-# covers both inner binaries via the bundle's seal.
+# covers every inner binary via the bundle's seal.
+
+mkdir -p "$REPO_ROOT/bin"
 
 echo
 echo "=== Building imessage-drafts-mcp (Bun) ==="
-echo "› bun build --compile"
-bun build src/index.ts --compile --outfile "bin/imessage-drafts-mcp"
-xattr -cr bin/imessage-drafts-mcp
+(
+  cd "$REPO_ROOT/mcps/imessage-drafts"
+  echo "› bun install"
+  bun install
+  echo "› bun build --compile"
+  bun build src/index.ts --compile --outfile "$REPO_ROOT/bin/imessage-drafts-mcp"
+)
+xattr -cr "$REPO_ROOT/bin/imessage-drafts-mcp"
+
+echo
+echo "=== Building whatsapp-drafts-mcp + whatsapp-drafts-daemon (Bun) ==="
+(
+  cd "$REPO_ROOT/mcps/whatsapp-drafts"
+  echo "› bun install --frozen-lockfile"
+  bun install --frozen-lockfile
+  echo "› bun build --compile (stdio MCP)"
+  bun build src/index.ts --compile --outfile "$REPO_ROOT/bin/whatsapp-drafts-mcp"
+  echo "› bun build --compile (Unix-socket daemon)"
+  # --external on native/heavy modules that don't compile-bundle cleanly;
+  # they're pulled from node_modules at runtime via the daemon's resolver.
+  bun build src/daemon/index.ts --compile \
+    --outfile "$REPO_ROOT/bin/whatsapp-drafts-daemon" \
+    --external jimp --external sharp \
+    --external link-preview-js --external audio-decode
+)
+xattr -cr "$REPO_ROOT/bin/whatsapp-drafts-mcp" "$REPO_ROOT/bin/whatsapp-drafts-daemon"
 
 echo
 echo "=== Building MessagesForAIMenu (Swift) ==="
@@ -159,13 +186,24 @@ cd "$REPO_ROOT"
 APP_NAME="Messages for AI"
 BUNDLE_ID="com.sunriselabs.messages-for-ai"
 EXE_NAME="MessagesForAIMenu"
-MCP_NAME="imessage-drafts-mcp"
+# Every inner Mach-O the bundle ships. The menubar binary is also the
+# CFBundleExecutable; the rest are sidecars (Claude Desktop launches the
+# *-mcp ones via stdio; the menubar's WhatsAppDaemonController spawns
+# the daemon binary at popover/onboarding time).
+INNER_BINARIES=(
+  "$EXE_NAME"
+  "imessage-drafts-mcp"
+  "whatsapp-drafts-mcp"
+  "whatsapp-drafts-daemon"
+)
 APP_PATH="$STAGE/$RELEASE_NAME/$APP_NAME.app"
 ENTITLEMENTS="$REPO_ROOT/menubar/scripts/messages-for-ai.entitlements"
 
 MENUBAR_BIN="$REPO_ROOT/menubar/.build/release/$EXE_NAME"
-MCP_BIN="$REPO_ROOT/bin/$MCP_NAME"
-for f in "$MENUBAR_BIN" "$MCP_BIN" "$ENTITLEMENTS"; do
+IMESSAGE_MCP_BIN="$REPO_ROOT/bin/imessage-drafts-mcp"
+WHATSAPP_MCP_BIN="$REPO_ROOT/bin/whatsapp-drafts-mcp"
+WHATSAPP_DAEMON_BIN="$REPO_ROOT/bin/whatsapp-drafts-daemon"
+for f in "$MENUBAR_BIN" "$IMESSAGE_MCP_BIN" "$WHATSAPP_MCP_BIN" "$WHATSAPP_DAEMON_BIN" "$ENTITLEMENTS"; do
   if [[ ! -e "$f" ]]; then
     echo "✗ build artifact missing: $f" >&2
     exit 1
@@ -176,18 +214,34 @@ done
 # Assemble Messages for AI.app
 # ============================================================================
 #
-# Both inner Mach-Os live in Contents/MacOS/. CFBundleExecutable is the
+# All inner Mach-Os live in Contents/MacOS/. CFBundleExecutable is the
 # menubar binary (it's what `open Messages for AI.app` launches and what
-# LaunchServices indexes). The MCP binary is a sidecar — Claude
-# Desktop's stdio MCP framework launches it directly by path, never via
-# LaunchServices.
+# LaunchServices indexes). The MCP binaries are sidecars — Claude
+# Desktop's stdio MCP framework launches them directly by path, never via
+# LaunchServices. The WhatsApp daemon is launched by the menubar process
+# itself (see WhatsAppDaemonController.swift).
 echo
 echo "=== Assembling $APP_NAME.app ==="
 
 mkdir -p "$APP_PATH/Contents/MacOS"
 mkdir -p "$APP_PATH/Contents/Resources"
-cp "$MENUBAR_BIN" "$APP_PATH/Contents/MacOS/$EXE_NAME"
-cp "$MCP_BIN"     "$APP_PATH/Contents/MacOS/$MCP_NAME"
+cp "$MENUBAR_BIN"         "$APP_PATH/Contents/MacOS/$EXE_NAME"
+cp "$IMESSAGE_MCP_BIN"    "$APP_PATH/Contents/MacOS/imessage-drafts-mcp"
+cp "$WHATSAPP_MCP_BIN"    "$APP_PATH/Contents/MacOS/whatsapp-drafts-mcp"
+cp "$WHATSAPP_DAEMON_BIN" "$APP_PATH/Contents/MacOS/whatsapp-drafts-daemon"
+
+# App icon — see menubar/scripts/generate-app-icon.swift for the source-of-
+# truth generator. v0.3.0 ships the "Prompt Sky" variant. The .icns must be
+# present here or notarization will succeed but the Finder/Dock icon will
+# silently fall back to the generic AppKit one (Apple doesn't fail builds
+# over missing CFBundleIconFile).
+ICON_SRC="$REPO_ROOT/menubar/Assets/MessagesForAI.icns"
+if [[ ! -f "$ICON_SRC" ]]; then
+  echo "✗ release build requires $ICON_SRC — run \`swift menubar/scripts/generate-app-icon.swift\` first" >&2
+  exit 1
+fi
+cp "$ICON_SRC" "$APP_PATH/Contents/Resources/MessagesForAI.icns"
+
 xattr -cr "$APP_PATH"
 
 cat > "$APP_PATH/Contents/Info.plist" <<EOF
@@ -203,6 +257,8 @@ cat > "$APP_PATH/Contents/Info.plist" <<EOF
   <string>$APP_NAME</string>
   <key>CFBundleDisplayName</key>
   <string>$APP_NAME</string>
+  <key>CFBundleIconFile</key>
+  <string>MessagesForAI</string>
   <key>CFBundleShortVersionString</key>
   <string>${VERSION#v}</string>
   <key>CFBundleVersion</key>
@@ -210,7 +266,7 @@ cat > "$APP_PATH/Contents/Info.plist" <<EOF
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
+  <string>14.0</string>
   <key>LSUIElement</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
@@ -241,19 +297,16 @@ EOF
 # --deep) so the explicit identifiers stick.
 
 echo
-echo "=== Signing inner binaries (both with --identifier $BUNDLE_ID) ==="
+echo "=== Signing inner binaries (all with --identifier $BUNDLE_ID) ==="
 
-echo "› menubar binary"
-"$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
-  --identifier "$BUNDLE_ID" \
-  --options=runtime \
-  "$APP_PATH/Contents/MacOS/$EXE_NAME"
-
-echo "› MCP binary"
-"$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
-  --identifier "$BUNDLE_ID" \
-  --options=runtime \
-  "$APP_PATH/Contents/MacOS/$MCP_NAME"
+for inner in "${INNER_BINARIES[@]}"; do
+  echo "› $inner"
+  "$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
+    --identifier "$BUNDLE_ID" \
+    --options=runtime \
+    --entitlements "$ENTITLEMENTS" \
+    "$APP_PATH/Contents/MacOS/$inner"
+done
 
 echo
 echo "=== Sealing .app bundle (NO --deep — preserves inner identifiers) ==="
@@ -274,7 +327,9 @@ echo "=== Sealing .app bundle (NO --deep — preserves inner identifiers) ==="
 verify_inner_identifiers() {
   local where="$1"
   local app_path="$2"
-  for f in "$app_path/Contents/MacOS/$EXE_NAME" "$app_path/Contents/MacOS/$MCP_NAME"; do
+  local inner
+  for inner in "${INNER_BINARIES[@]}"; do
+    local f="$app_path/Contents/MacOS/$inner"
     local got
     got=$("$CODESIGN" -dv --verbose=2 "$f" 2>&1 | sed -nE 's/^Identifier=(.*)$/\1/p' | head -1)
     if [[ "$got" != "$BUNDLE_ID" ]]; then
@@ -285,7 +340,7 @@ verify_inner_identifiers() {
       return 1
     fi
   done
-  echo "  ✓ [$where] both inner binaries report Identifier=$BUNDLE_ID"
+  echo "  ✓ [$where] all ${#INNER_BINARIES[@]} inner binaries report Identifier=$BUNDLE_ID"
 }
 
 verify_inner_identifiers "post-seal" "$APP_PATH" || exit 1
@@ -467,5 +522,5 @@ echo "  1. Sanity test the bundle locally:"
 echo "       cd /tmp && unzip $RELEASE_ZIP && cd $RELEASE_NAME && bash install.sh"
 echo "  2. Publish via gh CLI:"
 echo "       gh release create $VERSION $RELEASE_ZIP \\"
-echo "         --title 'imessage-drafts-mcp $VERSION' \\"
+echo "         --title 'Messages for AI $VERSION' \\"
 echo "         --notes 'See CHANGELOG / commit history.'"

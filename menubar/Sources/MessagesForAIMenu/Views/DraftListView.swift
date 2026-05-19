@@ -8,6 +8,12 @@ struct DraftListView: View {
   @EnvironmentObject var settings: SettingsStore
   @EnvironmentObject var contactsExporter: ContactsExporter
 
+  /// Onboarding / Settings / Pairing all open as separate SwiftUI
+  /// Windows (registered in App.swift) so they get real focus and
+  /// don't fight the popover's transient-dismiss behavior. From the
+  /// popover, we just openWindow them by id.
+  @Environment(\.openWindow) private var openWindow
+
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   // Cap for the inner ScrollView. We subtract a rough estimate of the
   // surrounding chrome (header + divider + footer + padding ~ 180pt)
@@ -94,6 +100,13 @@ struct DraftListView: View {
       footer
     }
     .frame(width: 420)
+    .onAppear {
+      // Auto-open onboarding on first popover render. Subsequent
+      // renders skip this (firstRunComplete flips to true on commit).
+      if !settings.firstRunComplete {
+        openWindow(id: WindowID.onboarding)
+      }
+    }
   }
 
   // MARK: - Sections
@@ -140,8 +153,16 @@ struct DraftListView: View {
           Image(systemName: "checkmark.circle.fill")
             .foregroundStyle(.green)
           VStack(alignment: .leading, spacing: 2) {
-            Text(draft.to_handle)
+            // Prefer the resolved name (set by the daemon at stage time
+            // from the contacts table / phone-format fallback) — the raw
+            // JID is uninformative ("12158055729@s.whatsapp.net" vs
+            // "James Stine Heath"). Falls back to the JID when no name
+            // could be resolved (which mostly happens for @lid privacy
+            // senders the contacts table doesn't have mapped yet).
+            Text(draft.to_handle_name ?? draft.to_handle)
               .font(.caption.weight(.medium))
+              .lineLimit(1)
+              .truncationMode(.middle)
             Text(draft.body)
               .font(.caption)
               .lineLimit(1)
@@ -163,45 +184,6 @@ struct DraftListView: View {
 
   private var footer: some View {
     VStack(spacing: 6) {
-      // Settings rows.
-      HStack(spacing: 8) {
-        Toggle(isOn: $settings.requireApproval) {
-          VStack(alignment: .leading, spacing: 1) {
-            Text("Require draft approval to send")
-              .font(.caption)
-            Text(settings.requireApproval
-                 ? "Agents must stage; only this app can send."
-                 : "Agents can send via MCP directly (after staged-age delay).")
-              .font(.caption2)
-              .foregroundStyle(.tertiary)
-          }
-        }
-        .toggleStyle(.switch)
-        .controlSize(.mini)
-
-        Spacer()
-      }
-
-      HStack(spacing: 8) {
-        Toggle(isOn: Binding(
-          get: { loginItem.isEnabled },
-          set: { loginItem.setEnabled($0) }
-        )) {
-          Text("Open at Login")
-            .font(.caption)
-        }
-        .toggleStyle(.switch)
-        .controlSize(.mini)
-
-        Spacer()
-      }
-
-      if let warning = loginItem.statusDescription {
-        Text(warning)
-          .font(.caption2)
-          .foregroundStyle(.orange)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
       if let err = loginItem.lastError {
         Text(err)
           .font(.caption2)
@@ -209,16 +191,24 @@ struct DraftListView: View {
           .frame(maxWidth: .infinity, alignment: .leading)
       }
 
-      // Action row.
+      // Action row. Per-transport toggles moved into the Settings
+      // sheet in v0.3.0 — this row stays focused on app actions.
       HStack(spacing: 12) {
         Button("Refresh") { store.refresh() }
           .buttonStyle(.plain)
           .foregroundStyle(.secondary)
 
-        // Plain mailto link. NSWorkspace.open delegates to the user's
-        // default mail handler (Mail.app, Gmail-via-browser, etc.); no
-        // dependency on a specific client. Text-only to match the
-        // surrounding footer chrome.
+        Button {
+          openWindow(id: WindowID.settings)
+        } label: {
+          HStack(spacing: 4) {
+            Image(systemName: "gearshape")
+            Text("Settings…")
+          }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+
         Button("Feedback") {
           if let url = URL(string: "mailto:support@sunriselabs.ai") {
             NSWorkspace.shared.open(url)

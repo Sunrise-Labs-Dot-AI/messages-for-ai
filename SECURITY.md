@@ -1,25 +1,36 @@
 # Security Considerations
 
-This document is the honest threat model for `imessage-drafts-mcp`. Read it
-before installing — the trust profile is non-trivial.
+This document is the honest threat model for **Messages for AI** — the
+.app that ships the menubar UI plus the iMessage and WhatsApp MCP
+transports. Read it before installing — the trust profile is non-trivial,
+and the WhatsApp transport in v0.3.0 adds a third-party-messaging risk
+surface that didn't exist in v0.2.x.
 
 ## Summary
 
-You are giving a local binary three macOS-level privileges:
+You are giving a single .app the following macOS-level privileges:
 
 1. **Full Disk Access (FDA)** — required to read `chat.db`. macOS does
-   not expose a "chat.db-only" scope; the FDA grant lets the binary
-   read **any file** in your home directory.
-2. **Automation control of Messages.app** — granted on first send.
-   Lets the binary spawn `osascript` to send iMessages/SMS to any
-   recipient you have, without further prompting.
+   not expose a "chat.db-only" scope; the FDA grant lets every binary
+   inside the .app read **any file** in your home directory. (The
+   .app's CFBundleIdentifier is the TCC grant key — one grant covers
+   the menubar, the iMessage MCP, the WhatsApp stdio MCP, and the
+   WhatsApp background daemon. See "Bundle identity" below.)
+2. **Automation control of Messages.app** — granted on first iMessage
+   send. Lets the binary spawn `osascript` to send iMessages/SMS to
+   any recipient you have, without further prompting.
 3. **Open-at-login** (menu bar app) — defaults on; the menu bar app
-   auto-launches when you sign in. Toggleable in the popover.
+   auto-launches when you sign in. Toggleable in Settings.
+4. **WhatsApp account linkage** (opt-in, off by default). Pairing
+   adds your WhatsApp account to the Baileys session on this Mac;
+   the daemon can read and send WhatsApp messages on your behalf
+   until you unlink. WhatsApp's ToS does not officially sanction
+   third-party clients — see the WhatsApp section below.
 
 If a future commit, dependency, or local binary replacement is
-malicious, those three privileges become its privileges. The trust
-boundary is "I trust this binary the way I trust software I write
-myself" — not "I trust this binary because of some sandbox."
+malicious, those privileges become its privileges. The trust boundary
+is "I trust this .app the way I trust software I write myself" — not
+"I trust this .app because of some sandbox."
 
 ## Threat model
 
@@ -33,8 +44,17 @@ myself" — not "I trust this binary because of some sandbox."
 - **Runaway send loops** where an agent gets into a bad state and
   re-sends or blast-sends repeatedly.
 - **Binary substitution** where an attacker with write access to
-  `~/bin/imessage-drafts-mcp` swaps the binary for a malicious one and
-  inherits the FDA + Automation grants.
+  `/Applications/Messages for AI.app/Contents/MacOS/` swaps an inner
+  binary for a malicious one and inherits the FDA + Automation
+  grants. (The .app's signature would be invalidated on next launch
+  by Gatekeeper, but only on FIRST run; subsequent launches don't
+  re-verify.)
+- **Local peer impersonation of the menubar.** The WhatsApp daemon
+  listens on a Unix socket at `~/.whatsapp-mcp/daemon.sock` which is
+  reachable by ANY local process running as the user. Without
+  peer-auth, an npm postinstall script or browser extension could
+  `socat` into the socket and bypass the daemon's hold-to-fire
+  guardrails. See "WhatsApp peer-auth" below.
 - **Supply chain** — a malicious update to the source repo, or a
   compromised dependency.
 
@@ -69,20 +89,58 @@ myself" — not "I trust this binary because of some sandbox."
 | **UUID validation on `draft_id`** | Path traversal via draft id | — |
 | **Drafts dir mode 0600** | Other users on the same Mac reading drafts | Other processes running as you can still read |
 | **Stable codesign identifier** | Adhoc rebuilds invalidating FDA on every install | Doesn't stop binary replacement |
-| **No network listener, no outbound calls** | Network-based attack surface | — |
+| **No iMessage-side network listener, no iMessage outbound calls** | Network-based attack surface on the iMessage transport | The WhatsApp daemon DOES open an outbound WebSocket to WhatsApp Web; see the WhatsApp section. |
 | **`PRAGMA query_only = ON` + `readonly: true` on `chat.db`** | Accidental writes corrupting Messages state | — |
+| **WhatsApp peer-auth: runtime self-identity match** | Local processes other than the .app's own binaries from connecting to the WhatsApp daemon's Unix socket | Bypassed when daemon runs with `WHATSAPP_MCP_DEV=1`; the daemon refuses dev mode if its own binary is signed for production. |
+| **WhatsApp session.db AES-GCM at rest** | Plaintext exfiltration of the Baileys session credential (the keys that authorize WhatsApp message read/send on your behalf) | Encryption key lives in the macOS Keychain; the daemon process and any other binary running as you can both reach it. |
+
+## Bundle identity
+
+All inner binaries (`MessagesForAIMenu`, `imessage-drafts-mcp`,
+`whatsapp-drafts-mcp`, `whatsapp-drafts-daemon`) ship in
+`/Applications/Messages for AI.app/Contents/MacOS/` and are
+codesigned with `--identifier com.sunriselabs.messages-for-ai` — the
+same string as the .app's `CFBundleIdentifier`. TCC keys grants by the
+running process's codesign `Identifier=`, so one FDA grant on the .app
+covers every inner Mach-O. This is also the foundation of the WhatsApp
+peer-auth check: the daemon authorizes only peers whose Identifier and
+TeamIdentifier match its own.
+
+## WhatsApp transport (opt-in)
+
+The WhatsApp transport uses [@whiskeysockets/baileys][baileys], an
+unofficial WhatsApp Web protocol client. WhatsApp's Terms of Service do
+not officially sanction third-party clients. Practical implications:
+
+- Your account COULD be flagged or banned. This is unlikely in practice
+  for normal-volume personal use, but it's not zero risk — read the
+  Baileys repo's own warnings before pairing.
+- The transport is OFF by default. The onboarding wizard makes you opt
+  in explicitly. You can unlink any time from Settings.
+- The daemon stores your Baileys session credentials at
+  `~/.whatsapp-mcp/session.db`, AES-GCM wrapped with a key derived from
+  a per-Mac Keychain item. Anything running as you can still reach the
+  Keychain item — defense-in-depth, not full isolation.
+- Daemon stdout/stderr are piped to
+  `~/.messages-mcp/logs/whatsapp-daemon.log` (10 MB rotation). Logs are
+  message-content-free, but they DO record JIDs and connection events
+  — review before sharing.
+
+[baileys]: https://github.com/WhiskeySockets/Baileys
 
 ## Configuration knobs
 
 User-controllable in the menu bar UI:
 
-- **Require draft approval to send** (default ON). Toggle in the
-  popover footer. When on, the MCP `send_draft` tool is
-  disabled entirely — every send must come from a human pressing
-  Hold-to-Send in the menu bar app. Persists to
-  `~/.messages-mcp/settings.json` as `{ "require_approval": bool }`;
-  the MCP server reads it on every send call so toggling takes
-  effect immediately without restarting any client.
+- **iMessage / WhatsApp enabled toggles** (Settings sheet). Toggling
+  WhatsApp off SIGTERMs the bundled daemon; toggling on respawns it.
+- **Require approval to send** (per-transport, default ON). When on,
+  MCP `send_draft` is disabled entirely — every send must come from a
+  human pressing Hold-to-Fire in the menu bar app. Persists to
+  `~/.messages-mcp/settings.json` (schema v2) under
+  `transports.imessage.require_approval` and (for WhatsApp's own MCP)
+  `~/.whatsapp-mcp/settings.json`; both MCP servers read on every send
+  call so toggling takes effect immediately.
 
 Env vars (configure for trusted automation contexts):
 
@@ -91,20 +149,24 @@ Env vars (configure for trusted automation contexts):
   applies when `require_approval` is off.
 - `IMESSAGE_DAILY_SEND_CAP` — maximum sends per UTC day. Default `50`.
   Set to `0` to disable.
-- `IMESSAGE_MCP_IDENTIFIER` — codesign identifier embedded in the inner
-  MCP binary by `scripts/dev-install.sh`. Default
+- `MESSAGES_MCP_IDENTIFIER` — codesign identifier embedded in every
+  inner MCP binary by `scripts/dev-install.sh`. Default
   `com.sunriselabs.messages-for-ai` (same as the parent .app bundle's
-  `CFBundleIdentifier`). For the `.app`-wrap architecture, the inner
+  `CFBundleIdentifier`). For the `.app`-wrap architecture, every inner
   binary's identifier MUST match the bundle's so that TCC's grant on
-  the .app covers the running MCP process. Changing this to a value
+  the .app covers all running processes. Changing this to a value
   that differs from the bundle's identifier will break FDA — TCC
   compares the running process's `Identifier=` against the granted
   identifier as strings; mismatch = no grant match.
+- `WHATSAPP_MCP_DEV=1` — bypasses the WhatsApp daemon's peer-auth.
+  Use only when running the daemon from source; the daemon refuses to
+  start under this flag if its own binary is signed for production.
 
 ## What you should do as a user
 
-1. **Read the source before installing.** The codebase is ~3000 lines
-   of TypeScript + ~700 lines of Swift. A careful review is feasible.
+1. **Read the source before installing.** The codebase is ~5000 lines
+   of TypeScript (across two MCP transports) + ~1500 lines of Swift.
+   A careful review is feasible.
 2. **Build from source.** Don't run prebuilt binaries someone else
    shipped you.
 3. **Pin to a tag.** Don't track `main` in production-feeling setups.
@@ -117,9 +179,15 @@ Env vars (configure for trusted automation contexts):
    agents stage-only; you click Send in the menu bar.
 6. **Audit your daily send-audit log occasionally.** If something
    weird happened, it's in `~/.messages-mcp/send-audit.log`.
-7. **Treat `~/bin/imessage-drafts-mcp` like an SSH key.** Permissions matter.
-   If a compromised app on your Mac could write to your home dir, it
-   could replace this binary and inherit the FDA + Automation grants.
+7. **Treat `/Applications/Messages for AI.app` like an SSH key.**
+   Permissions matter. If a compromised app on your Mac could write
+   to `/Applications/`, it could replace an inner binary and inherit
+   the FDA + Automation grants. The .app's signature would invalidate
+   on next Gatekeeper check, but Gatekeeper only re-verifies on first
+   launch — subsequent launches don't.
+8. **Audit `~/.messages-mcp/logs/whatsapp-daemon.log` if you've paired
+   WhatsApp.** Connection events + JIDs only (no message content), but
+   useful when something looks off.
 
 ## Reporting a vulnerability
 

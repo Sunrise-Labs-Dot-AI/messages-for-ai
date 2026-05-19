@@ -10,6 +10,14 @@ struct DraftRowView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       header
+      // Show the induced-draft warning between the header and the body
+      // bubble — flagged by the WhatsApp daemon when a draft is staged
+      // within 60 s of an inbound message from a non-contact sender.
+      // The visual nudge pairs with the doubled hold-to-fire duration
+      // (1.0 s → 2.0 s, applied below in `actions`).
+      if draft.induced_by_unknown_contact == true {
+        InducedDraftBadge()
+      }
       bodyBubble
       if let lastError {
         Text(lastError)
@@ -22,6 +30,15 @@ struct DraftRowView: View {
     .padding(14)
     .background(Color(nsColor: .controlBackgroundColor))
     .clipShape(RoundedRectangle(cornerRadius: 10))
+  }
+
+  /// Hold-to-fire duration for THIS draft's Send button.
+  /// - 2.0 s for WhatsApp drafts flagged as induced by an unknown
+  ///   contact (prompt-injection-defense friction).
+  /// - 1.0 s default for everything else — short enough not to feel
+  ///   like a chore, long enough to be a clear commitment.
+  private var holdDuration: Double {
+    draft.induced_by_unknown_contact == true ? 2.0 : 1.0
   }
 
   // MARK: - Sections
@@ -47,6 +64,13 @@ struct DraftRowView: View {
         }
       }
       Spacer()
+      // Show the platform badge only for non-iMessage drafts. iMessage
+      // is the unmarked default — labeling every iMessage row would be
+      // visual noise for the v0.2.x user who never adds WhatsApp. This
+      // mirrors Apple's pattern of only annotating SMS threads.
+      if draft.effectivePlatform != .imessage {
+        PlatformBadge(platform: draft.effectivePlatform)
+      }
       Text(relativeStagedAt)
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -75,9 +99,15 @@ struct DraftRowView: View {
   private var actions: some View {
     HStack(spacing: 8) {
       // Hold-to-fire Send. Prevents misclick sends from the popover.
-      // The 1.0s threshold is short enough not to feel like a chore
-      // but long enough to be a clear commitment.
-      HoldToFireButton(duration: 1.0, isSending: sending) {
+      // Duration is platform/draft-dependent (see `holdDuration` above):
+      // 1 s default, 2 s for induced-by-unknown-contact WhatsApp drafts.
+      // Tint matches the draft's platform — keeps the visual story
+      // consistent with the badge + outgoing bubble color.
+      HoldToFireButton(
+        duration: holdDuration,
+        isSending: sending,
+        tint: draft.effectivePlatform.accentColor
+      ) {
         Task { await send() }
       }
 
@@ -193,7 +223,11 @@ struct DraftRowView: View {
       ForEach(Array(messages.enumerated()), id: \.offset) { idx, msg in
         let prev = idx > 0 ? messages[idx - 1] : nil
         let showSender = msg.from_me ? false : (prev?.sender_handle != msg.sender_handle)
-        ContextBubbleView(message: msg, showSender: showSender)
+        ContextBubbleView(
+          message: msg,
+          showSender: showSender,
+          platform: draft.effectivePlatform
+        )
       }
     }
   }
@@ -219,12 +253,28 @@ struct DraftRowView: View {
   private func send() async {
     sending = true
     lastError = nil
-    let result = await DraftSender.send(toHandle: draft.to_handle, body: draft.body)
+    let result = await DraftSender.send(draft: draft)
     if result.ok, let service = result.service {
-      do {
-        try store.markSent(id: draft.id, sentAt: Date(), service: service)
-      } catch {
-        lastError = "sent ok but failed to update draft file: \(error.localizedDescription)"
+      // For iMessage drafts, the menubar owns the sent_at write —
+      // markSent updates the draft JSON.
+      // For WhatsApp drafts, the daemon already wrote sent_at to disk
+      // as part of sendDraft; DraftStore's FS watcher picks it up.
+      // Calling markSent on a WhatsApp draft would throw
+      // platformMismatch, so route by platform.
+      if draft.effectivePlatform == .imessage {
+        do {
+          try store.markSent(id: draft.id, sentAt: Date(), service: service)
+        } catch {
+          lastError = "sent ok but failed to update draft file: \(error.localizedDescription)"
+        }
+      } else {
+        // WhatsApp: the daemon already persisted sent_at via atomic
+        // temp+rename, which should trigger the DraftStore directory
+        // watcher. Defensive refresh as a belt-and-suspenders so the
+        // row flips to "sent" immediately even if the watcher misses
+        // the event (rare, but the cost of an extra refresh — one
+        // small re-list of ~5 JSON files — is negligible).
+        store.refresh()
       }
     } else {
       lastError = result.error ?? "unknown error"

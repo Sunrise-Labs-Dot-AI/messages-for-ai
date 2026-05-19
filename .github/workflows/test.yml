@@ -19,8 +19,21 @@ jobs:
     # in-memory SQLite and don't touch chat.db / Messages.app, so
     # Linux would also work today — but keeping the runner close to
     # the production env catches mac-specific regressions early.
+    #
+    # Matrix over both MCPs: v0.3.0 moved each into its own subdir
+    # (mcps/imessage-drafts, mcps/whatsapp-drafts), each with its own
+    # package.json + bun.lock + tests. Each shard installs + type-
+    # checks + tests its own subdir. fail-fast off so a regression in
+    # one MCP doesn't mask the other's status.
     runs-on: macos-latest
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        mcp:
+          - mcps/imessage-drafts
+          - mcps/whatsapp-drafts
+    name: bun-test (${{ matrix.mcp }})
     steps:
       - uses: actions/checkout@v4
 
@@ -30,12 +43,15 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
+        working-directory: ${{ matrix.mcp }}
         run: bun install --frozen-lockfile
 
       - name: Type-check
+        working-directory: ${{ matrix.mcp }}
         run: bun --bun tsc --noEmit
 
       - name: Test
+        working-directory: ${{ matrix.mcp }}
         run: bun test
 
   swift-build:

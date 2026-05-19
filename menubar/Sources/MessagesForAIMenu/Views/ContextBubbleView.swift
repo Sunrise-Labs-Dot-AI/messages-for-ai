@@ -1,13 +1,24 @@
 import SwiftUI
 
-// Renders one message in iMessage-style: outgoing (from_me) on the right
-// with an accent-colored bubble, incoming on the left with a gray bubble.
+// Renders one message in Messages.app-style: outgoing (from_me) on the
+// right with a platform-accented bubble, incoming on the left with a
+// gray bubble. The from-me bubble color tracks the draft's platform —
+// blue for iMessage, green for WhatsApp — matching each platform's
+// native UI. Incoming bubbles stay neutral gray on both platforms.
+//
 // `showSender` controls whether the sender's name appears above an
 // incoming bubble — used by the list view to suppress the label for
 // consecutive messages from the same sender (matches Apple's grouping).
+//
+// `platform` is the parent draft's `effectivePlatform`. It exists ONLY
+// to drive the from-me bubble color; incoming bubble color and layout
+// are platform-independent. Callers pass `.imessage` to get the legacy
+// behavior unchanged (this is also the value Draft.swift's
+// `effectivePlatform` returns for legacy drafts without the field).
 struct ContextBubbleView: View {
   let message: ContextMessage
   let showSender: Bool
+  let platform: Platform
 
   var body: some View {
     HStack(alignment: .bottom, spacing: 0) {
@@ -28,7 +39,7 @@ struct ContextBubbleView: View {
           .padding(.vertical, 6)
           .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-              .fill(message.from_me ? Color.accentColor : Color(nsColor: .quaternaryLabelColor))
+              .fill(message.from_me ? platform.accentColor : Color(nsColor: .quaternaryLabelColor))
           )
           .textSelection(.enabled)
 
