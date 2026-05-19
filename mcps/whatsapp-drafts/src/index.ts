@@ -31,8 +31,9 @@ async function main() {
         "send_whatsapp_draft returns explicit error codes (PENDING_APPROVAL, " +
         "MIN_AGE_NOT_REACHED, INTER_SEND_TOO_FAST, BURST_LIMIT_HIT, " +
         "DAILY_CAP_HIT, SEND_FAILED) so the caller can disambiguate. " +
-        "The daemon must be running (launchctl-managed); if it isn't, every " +
-        "tool returns a clear 'daemon not running' error.",
+        "The daemon must be running (spawned and monitored by the Messages " +
+        "for AI menu bar app); if it isn't, every tool returns a clear " +
+        "'daemon not running' error.",
     },
   );
 
