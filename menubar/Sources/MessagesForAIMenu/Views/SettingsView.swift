@@ -15,15 +15,21 @@ struct SettingsView: View {
     // The native macOS title bar (set in App.swift as "Messages for AI
     // Settings") is the window's chrome — no in-content header needed.
     // The Window already provides traffic-light controls + drag.
+    //
+    // Top padding is larger than the other sides so the iMessage section
+    // header doesn't crowd the title bar. The Window frame is set in
+    // App.swift; don't redeclare it here (conflicting frames let the
+    // ScrollView creep up under the title bar in 14.x).
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
         imessageSection
         whatsappSection
         loginItemRow
       }
-      .padding(16)
+      .padding(.horizontal, 16)
+      .padding(.top, 24)
+      .padding(.bottom, 16)
     }
-    .frame(width: 480, height: 520)
   }
 
   // MARK: - iMessage
