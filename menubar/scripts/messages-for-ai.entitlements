@@ -2,6 +2,20 @@
 <!--
   Entitlements for Messages for AI (hardened-runtime, non-sandboxed).
 
+  JIT (v0.3.0):
+
+  `com.apple.security.cs.allow-jit` and `com.apple.security.cs.allow-
+  unsigned-executable-memory` are REQUIRED for any Bun-compiled inner
+  Mach-O (imessage-drafts-mcp, whatsapp-drafts-mcp, whatsapp-drafts-
+  daemon). Bun uses a JavaScript JIT and an FFI trampoline JIT —
+  Hardened Runtime SIGTRAPs the process the first time it tries to
+  map writable+executable pages without these entitlements. Symptom
+  before the fix: WhatsApp daemon exited status=5 (SIGTRAP) ~2-3s
+  after spawn, the moment the menubar's first RPC call invoked
+  peer-auth's FFI-backed getsockopt/proc_pidpath path. imessage-drafts-
+  mcp never crashed in the wild only because its short-lived stdio
+  calls didn't hit the JIT-needed code paths often enough to trigger.
+
   Apple Events scope (v0.1.1, PR 5b code-review finding #10):
 
   `com.apple.security.automation.apple-events` is required for ANY
@@ -32,6 +46,10 @@
     <key>com.apple.security.personal-information.addressbook</key>
     <true/>
     <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
     <key>com.apple.security.scripting-targets</key>
     <dict>

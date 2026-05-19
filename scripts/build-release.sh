@@ -289,6 +289,7 @@ for inner in "${INNER_BINARIES[@]}"; do
   "$CODESIGN" --force --timestamp --sign "$SIGN_IDENTITY" \
     --identifier "$BUNDLE_ID" \
     --options=runtime \
+    --entitlements "$ENTITLEMENTS" \
     "$APP_PATH/Contents/MacOS/$inner"
 done
 

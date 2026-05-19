@@ -142,6 +142,7 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
   for inner in "${INNER_BINARIES[@]}"; do
     "$CODESIGN" --force --sign "$SIGN_IDENTITY" \
       --identifier "$IDENTIFIER" --options=runtime \
+      --entitlements "$ENTITLEMENTS" \
       "$REPO_ROOT/bin/$inner"
   done
 else
@@ -150,6 +151,7 @@ else
   for inner in "${INNER_BINARIES[@]}"; do
     "$CODESIGN" --force --sign - \
       --identifier "$IDENTIFIER" --options=runtime \
+      --entitlements "$ENTITLEMENTS" \
       "$REPO_ROOT/bin/$inner"
   done
 fi
