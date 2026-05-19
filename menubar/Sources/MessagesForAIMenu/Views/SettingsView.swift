@@ -9,8 +9,8 @@ struct SettingsView: View {
   @EnvironmentObject var loginItem: LoginItemController
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
 
-  @Binding var activeSheet: AppSheet?
-  @Binding var pendingSheet: AppSheet?
+  @Environment(\.openWindow) private var openWindow
+  @Environment(\.dismissWindow) private var dismissWindow
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -49,7 +49,7 @@ struct SettingsView: View {
   private var footer: some View {
     HStack {
       Spacer()
-      Button("Done") { activeSheet = nil }
+      Button("Done") { dismissWindow(id: WindowID.settings) }
         .keyboardShortcut(.defaultAction)
     }
     .padding(.horizontal, 16)
@@ -99,10 +99,7 @@ struct SettingsView: View {
       VStack(alignment: .leading, spacing: 10) {
         connectionRow
         Button {
-          // Chain via the pendingSheet pattern so SwiftUI fully
-          // dismisses Settings before presenting Pairing.
-          pendingSheet = .whatsappPairing
-          activeSheet = nil
+          openWindow(id: WindowID.whatsappPairing)
         } label: {
           HStack(spacing: 6) {
             Image(systemName: Platform.whatsapp.sfSymbol)

@@ -32,11 +32,8 @@ import AppKit
 /// The loggedOutRecovery branch presents a confirmation + invokes
 /// `unlinkAndReset` then drops back to `.subscribing` for a fresh pair.
 struct WhatsAppPairingView: View {
-  /// Unified sheet state binding (DraftListView owns it). Setting to
-  /// nil dismisses this sheet.
-  @Binding var activeSheet: AppSheet?
-
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
+  @Environment(\.dismissWindow) private var dismissWindow
 
   @State private var phase: Phase = .checkingSentinel
   /// Time at which the currently-displayed QR expires. Drives the
@@ -142,7 +139,7 @@ struct WhatsAppPairingView: View {
         .font(.headline)
       Spacer()
       Button {
-        activeSheet = nil
+        dismissWindow(id: WindowID.whatsappPairing)
       } label: {
         Image(systemName: "xmark.circle.fill")
           .font(.title2)
@@ -278,7 +275,7 @@ struct WhatsAppPairingView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .task {
       try? await Task.sleep(nanoseconds: 1_500_000_000)
-      activeSheet = nil
+      dismissWindow(id: WindowID.whatsappPairing)
     }
   }
 

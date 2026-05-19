@@ -12,11 +12,8 @@ struct OnboardingView: View {
   @EnvironmentObject var settings: SettingsStore
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
 
-  /// Unified sheet state (DraftListView owns it). Setting to nil
-  /// dismisses; setting pendingSheet then nil-ing this chains into a
-  /// new sheet.
-  @Binding var activeSheet: AppSheet?
-  @Binding var pendingSheet: AppSheet?
+  @Environment(\.openWindow) private var openWindow
+  @Environment(\.dismissWindow) private var dismissWindow
 
   // Local state while the user is making their picks. We don't write to
   // SettingsStore until "Get Started" — premature writes would surface
@@ -175,14 +172,12 @@ struct OnboardingView: View {
     settings.firstRunComplete = true
 
     if whatsapp {
-      // Spin up the WhatsApp service so the pairing sheet finds a
+      // Spin up the WhatsApp service so the pairing window finds a
       // live socket. Idempotent — safe even if it's already up.
       whatsappDaemon.start()
-      // Queue the pairing sheet so the parent's onDismiss closure
-      // transitions to it after this one fully dismisses.
-      pendingSheet = .whatsappPairing
+      openWindow(id: WindowID.whatsappPairing)
     }
 
-    activeSheet = nil
+    dismissWindow(id: WindowID.onboarding)
   }
 }

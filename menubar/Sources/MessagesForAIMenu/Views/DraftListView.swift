@@ -2,36 +2,17 @@ import SwiftUI
 import AppKit
 import Contacts
 
-/// Discriminated sheet state. A single `.sheet(item:)` modifier on
-/// DraftListView drives all three flows so SwiftUI's sheet state
-/// machine is unambiguous — multiple chained `.sheet(isPresented:)`
-/// modifiers on the same view trip a SwiftUI bug where `Bool = false`
-/// from a child binding doesn't dismiss the sheet (the X-button-doesn't-
-/// dismiss symptom).
-enum AppSheet: Identifiable, Hashable {
-  case onboarding
-  case settings
-  case whatsappPairing
-
-  var id: Self { self }
-}
-
 struct DraftListView: View {
   @EnvironmentObject var store: DraftStore
   @EnvironmentObject var loginItem: LoginItemController
   @EnvironmentObject var settings: SettingsStore
   @EnvironmentObject var contactsExporter: ContactsExporter
 
-  /// Single source of truth for which sheet is open. Set to nil to
-  /// dismiss; assign a new case to switch sheets (the onDismiss
-  /// closure honors a queued `pendingSheet` for case-to-case transitions
-  /// without the SwiftUI race that happens when you set one Bool false
-  /// and another true in the same tick).
-  @State private var activeSheet: AppSheet?
-
-  /// Queued for "close current sheet, then open this one." Read in
-  /// `onDismiss` and presented on the next runloop tick.
-  @State private var pendingSheet: AppSheet?
+  /// Onboarding / Settings / Pairing all open as separate SwiftUI
+  /// Windows (registered in App.swift) so they get real focus and
+  /// don't fight the popover's transient-dismiss behavior. From the
+  /// popover, we just openWindow them by id.
+  @Environment(\.openWindow) private var openWindow
 
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   // Cap for the inner ScrollView. We subtract a rough estimate of the
@@ -119,38 +100,11 @@ struct DraftListView: View {
       footer
     }
     .frame(width: 420)
-    .sheet(item: $activeSheet, onDismiss: {
-      // Honor any queued case-to-case transition (Settings → Pairing,
-      // Onboarding → Pairing). Hopping through nil on the same tick
-      // is what makes the transition reliable in SwiftUI's sheet
-      // state machine.
-      if let next = pendingSheet {
-        pendingSheet = nil
-        DispatchQueue.main.async {
-          activeSheet = next
-        }
-      }
-    }) { sheet in
-      switch sheet {
-      case .onboarding:
-        OnboardingView(
-          activeSheet: $activeSheet,
-          pendingSheet: $pendingSheet
-        )
-      case .settings:
-        SettingsView(
-          activeSheet: $activeSheet,
-          pendingSheet: $pendingSheet
-        )
-      case .whatsappPairing:
-        WhatsAppPairingView(activeSheet: $activeSheet)
-      }
-    }
     .onAppear {
-      // Auto-present onboarding on first popover render. Subsequent
+      // Auto-open onboarding on first popover render. Subsequent
       // renders skip this (firstRunComplete flips to true on commit).
-      if !settings.firstRunComplete && activeSheet == nil {
-        activeSheet = .onboarding
+      if !settings.firstRunComplete {
+        openWindow(id: WindowID.onboarding)
       }
     }
   }
@@ -237,7 +191,7 @@ struct DraftListView: View {
           .foregroundStyle(.secondary)
 
         Button {
-          activeSheet = .settings
+          openWindow(id: WindowID.settings)
         } label: {
           HStack(spacing: 4) {
             Image(systemName: "gearshape")
