@@ -12,13 +12,13 @@ import Darwin
 ///
 /// Peer authentication is enforced on the daemon side: `~/.whatsapp-mcp/
 /// daemon.sock` is reachable by every process running as the user, so
-/// the daemon checks the peer's code-signing identity per connection
-/// against `PEER_ALLOWED_REQUIREMENTS` (empty in the unreleased dev
-/// build → daemon must run with `WHATSAPP_MCP_DEV=1` to allow any
-/// peer). The release pipeline will populate that allowlist with the
-/// menu bar app bundle's designated requirement. From the client side
-/// there's nothing to do — failed peer-auth surfaces as a closed
-/// connection / EOF.
+/// the daemon checks each connecting peer's code-signing identity at
+/// runtime against its own (commit 11). Since the daemon ships inside
+/// the same .app bundle as this menubar binary and both are signed
+/// with `com.sunriselabs.messages-for-ai`, peer-auth is automatic in
+/// release builds. Dev builds bypass via `WHATSAPP_MCP_DEV=1`. From
+/// the client side there's nothing to do — failed peer-auth surfaces
+/// as a closed connection / EOF.
 enum WhatsAppRPCClient {
   /// Default 10s timeout. Longer than the daemon's own send timeout
   /// (Baileys can take a few seconds) but short enough that a stuck
@@ -101,11 +101,15 @@ enum WhatsAppRPCClient {
     var description: String {
       switch self {
       case .daemonNotInstalled:
-        return "WhatsApp daemon socket not found at ~/.whatsapp-mcp/daemon.sock. Install whatsapp-mcp from https://github.com/Sunrise-Labs-Dot-AI/whatsapp-mcp"
+        // v0.3.0+ ships the daemon inside the .app bundle, so a missing
+        // socket means the daemon hasn't been spawned yet (rather than
+        // a separate install being absent). The menubar's
+        // WhatsAppDaemonController is responsible for spawning it.
+        return "WhatsApp daemon hasn't started yet. Open the menubar popover and toggle WhatsApp on from Settings."
       case .daemonNotRunning:
-        return "WhatsApp daemon socket exists but is not accepting connections. Is the daemon running? (Check: launchctl list | grep whatsapp-mcp)"
+        return "WhatsApp daemon socket exists but isn't accepting connections. The daemon may have just crashed — check ~/.messages-mcp/logs/whatsapp-daemon.log."
       case .peerAuthRejected:
-        return "WhatsApp daemon rejected this binary. The menubar app's code-signing identity may not be on the daemon's PEER_ALLOWED_REQUIREMENTS allowlist."
+        return "WhatsApp daemon rejected this binary. The connecting process's code-signing identity doesn't match the daemon's — most likely the menubar app and daemon were built or signed with different identities."
       case .timeout:
         return "WhatsApp daemon did not respond within \(Int(timeoutSeconds))s"
       case .socketError(let errno, let op):
