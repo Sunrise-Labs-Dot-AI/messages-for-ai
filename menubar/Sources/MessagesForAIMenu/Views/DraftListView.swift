@@ -8,19 +8,6 @@ struct DraftListView: View {
   @EnvironmentObject var settings: SettingsStore
   @EnvironmentObject var contactsExporter: ContactsExporter
 
-  /// True when whatsapp-mcp appears to be installed locally. Cheap
-  /// check — just looks for the umbrella state directory. We don't
-  /// probe the daemon socket here; that's the pairing sheet's job and
-  /// it surfaces a clearer error if the daemon is installed-but-dead.
-  /// Mirrors the same feature flag DraftStore uses to enable the
-  /// WhatsApp watcher.
-  private var whatsappInstalled: Bool {
-    FileManager.default.fileExists(atPath:
-      FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".whatsapp-mcp").path
-    )
-  }
-
   /// Drives the pairing sheet's presentation. Bound into the sheet so
   /// it can self-dismiss on `state.update: connected`.
   @State private var showPairingSheet = false
@@ -30,10 +17,13 @@ struct DraftListView: View {
   /// `@EnvironmentObject` isn't available at property-init time.
   @State private var showOnboardingSheet = false
 
-  /// Set by OnboardingView when the user opts into WhatsApp. We chain
-  /// directly into the pairing sheet after onboarding dismisses, so
-  /// the user doesn't have to find the "Connect WhatsApp" button.
+  /// Set by OnboardingView (or SettingsView) when the user opts into
+  /// WhatsApp. We chain directly into the pairing sheet after the
+  /// source sheet closes — SwiftUI stack-of-sheets is brittle.
   @State private var wantsWhatsAppPairing = false
+
+  /// Settings sheet — accessed from the footer gear button.
+  @State private var showSettingsSheet = false
 
   private var pending: [Draft] { store.drafts.filter { !$0.isSent } }
   // Cap for the inner ScrollView. We subtract a rough estimate of the
@@ -130,6 +120,12 @@ struct DraftListView: View {
         wantsWhatsAppPairing: $wantsWhatsAppPairing
       )
     }
+    .sheet(isPresented: $showSettingsSheet) {
+      SettingsView(
+        isPresented: $showSettingsSheet,
+        wantsWhatsAppPairing: $wantsWhatsAppPairing
+      )
+    }
     .onAppear {
       // Auto-present onboarding on first popover render. Subsequent
       // renders skip this (firstRunComplete flips to true on commit).
@@ -141,6 +137,14 @@ struct DraftListView: View {
       // After onboarding closes, chain into pairing if WhatsApp was
       // checked. The daemon was kicked up by OnboardingView.commit()
       // so the QR should appear within ~1s.
+      if !isOpen && wantsWhatsAppPairing {
+        wantsWhatsAppPairing = false
+        showPairingSheet = true
+      }
+    }
+    .onChange(of: showSettingsSheet) { isOpen in
+      // Same chain: Settings closes → if the user clicked "Connect
+      // WhatsApp" from inside Settings, present the pairing sheet now.
       if !isOpen && wantsWhatsAppPairing {
         wantsWhatsAppPairing = false
         showPairingSheet = true
@@ -215,45 +219,6 @@ struct DraftListView: View {
 
   private var footer: some View {
     VStack(spacing: 6) {
-      // Settings rows.
-      HStack(spacing: 8) {
-        Toggle(isOn: $settings.requireApproval) {
-          VStack(alignment: .leading, spacing: 1) {
-            Text("Require draft approval to send")
-              .font(.caption)
-            Text(settings.requireApproval
-                 ? "Agents must stage; only this app can send."
-                 : "Agents can send via MCP directly (after staged-age delay).")
-              .font(.caption2)
-              .foregroundStyle(.tertiary)
-          }
-        }
-        .toggleStyle(.switch)
-        .controlSize(.mini)
-
-        Spacer()
-      }
-
-      HStack(spacing: 8) {
-        Toggle(isOn: Binding(
-          get: { loginItem.isEnabled },
-          set: { loginItem.setEnabled($0) }
-        )) {
-          Text("Open at Login")
-            .font(.caption)
-        }
-        .toggleStyle(.switch)
-        .controlSize(.mini)
-
-        Spacer()
-      }
-
-      if let warning = loginItem.statusDescription {
-        Text(warning)
-          .font(.caption2)
-          .foregroundStyle(.orange)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
       if let err = loginItem.lastError {
         Text(err)
           .font(.caption2)
@@ -261,35 +226,24 @@ struct DraftListView: View {
           .frame(maxWidth: .infinity, alignment: .leading)
       }
 
-      // Action row.
+      // Action row. Per-transport toggles moved into the Settings
+      // sheet in v0.3.0 — this row stays focused on app actions.
       HStack(spacing: 12) {
         Button("Refresh") { store.refresh() }
           .buttonStyle(.plain)
           .foregroundStyle(.secondary)
 
-        // Only show the WhatsApp pair entry point when the user has
-        // whatsapp-mcp installed. Hiding it entirely on machines
-        // without the daemon is less visually noisy than showing a
-        // disabled button, and matches the rest of the feature flag
-        // (DraftStore won't be watching the WhatsApp dir anyway).
-        if whatsappInstalled {
-          Button {
-            showPairingSheet = true
-          } label: {
-            HStack(spacing: 4) {
-              Image(systemName: Platform.whatsapp.sfSymbol)
-              Text("Connect WhatsApp")
-            }
+        Button {
+          showSettingsSheet = true
+        } label: {
+          HStack(spacing: 4) {
+            Image(systemName: "gearshape")
+            Text("Settings…")
           }
-          .buttonStyle(.plain)
-          .foregroundStyle(Platform.whatsapp.accentColor)
-          .help("Pair this Mac to your WhatsApp account via QR scan")
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
 
-        // Plain mailto link. NSWorkspace.open delegates to the user's
-        // default mail handler (Mail.app, Gmail-via-browser, etc.); no
-        // dependency on a specific client. Text-only to match the
-        // surrounding footer chrome.
         Button("Feedback") {
           if let url = URL(string: "mailto:support@sunriselabs.ai") {
             NSWorkspace.shared.open(url)
