@@ -20,7 +20,7 @@ import { DraftIdInput, DraftIdShape, StageDraftInput, StageDraftShape } from "..
 import type { Settings } from "../settings.ts";
 import { readSettings, SettingsError } from "../settings.ts";
 import { errorResult, jsonResult } from "./_result.ts";
-import { wrapBodyInPlace } from "./_untrusted.ts";
+import { wrapBodyInPlace, wrapUntrusted } from "./_untrusted.ts";
 
 const RPC_CODE = {
   PENDING_APPROVAL: -32020,
@@ -66,12 +66,26 @@ interface DraftRpc {
   induced_by_unknown_contact: boolean;
 }
 
-/** Wrap untrusted body fields (peer-authored context messages) but leave
- *  the agent-authored `body` clean. */
+/** Wrap untrusted fields (peer-authored context messages) but leave
+ *  the agent-authored `body` clean.
+ *
+ *  Both message bodies AND sender_name are peer-controlled: sender_name
+ *  comes from the WhatsApp contact's profile (display_name / push_name in
+ *  the contacts table, populated from Baileys contact events). A contact
+ *  who sets their profile name to a tag-close payload could otherwise
+ *  inject directives into the model's view of the staged draft. The
+ *  sanitizeIncomingBody pass at write time (in storage/messages.ts) does
+ *  NOT cover contact names — they go through the contacts table on a
+ *  different path — so the wrap is essential at the MCP response
+ *  boundary. */
 function maskDraft(d: DraftRpc): DraftRpc {
   return {
     ...d,
-    context_messages: d.context_messages.map((m) => ({ ...m, body: m.body == null ? null : wrapBodyInPlace({ body: m.body }).body })),
+    context_messages: d.context_messages.map((m) => ({
+      ...m,
+      body: m.body == null ? null : wrapBodyInPlace({ body: m.body }).body,
+      sender_name: m.sender_name == null ? null : wrapUntrusted(m.sender_name),
+    })),
   };
 }
 

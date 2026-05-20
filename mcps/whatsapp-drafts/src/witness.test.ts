@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, chmodSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, chmodSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   _setHomeForTesting,
+  registerWithWitness,
   writeLastInvocation,
   type WitnessRecord,
 } from "./witness.ts";
@@ -95,5 +97,67 @@ describe("writeLastInvocation (WhatsApp)", () => {
     writeLastInvocation("second");
     const inoAfter = statSync(path).ino;
     expect(inoAfter).not.toBe(inoBefore);
+  });
+});
+
+// Regression coverage for the code-review fix that gates the witness write
+// on handler success — mirror of the iMessage tests.
+describe("registerWithWitness: error-result gating", () => {
+  function makeStubServer() {
+    let captured: ((extra: unknown) => Promise<unknown>) | null = null;
+    const stub = {
+      registerTool: (
+        _name: unknown,
+        _config: unknown,
+        cb: (extra: unknown) => Promise<unknown>,
+      ) => {
+        captured = cb;
+        return {} as unknown;
+      },
+    };
+    return {
+      server: stub as unknown as McpServer,
+      run: async (...args: unknown[]) => {
+        if (captured == null) throw new Error("handler never registered");
+        return (captured as (...a: unknown[]) => Promise<unknown>)(...args);
+      },
+    };
+  }
+
+  test("isError:true handler result does NOT write a witness", async () => {
+    const dir = setupTmpHome();
+    const { server, run } = makeStubServer();
+    registerWithWitness(server, "list_whatsapp_threads", { description: "test" }, async () => ({
+      isError: true,
+      content: [{ type: "text", text: "daemon not running" }],
+    }));
+
+    await run({});
+
+    expect(existsSync(join(dir, "last_invocation_whatsapp.json"))).toBe(false);
+  });
+
+  test("isError:false (or absent) handler result DOES write a witness", async () => {
+    const dir = setupTmpHome();
+    const { server, run } = makeStubServer();
+    registerWithWitness(server, "list_whatsapp_threads", { description: "test" }, async () => ({
+      content: [{ type: "text", text: "ok" }],
+    }));
+
+    await run({});
+
+    const raw = readFileSync(join(dir, "last_invocation_whatsapp.json"), "utf8");
+    expect((JSON.parse(raw) as WitnessRecord).tool).toBe("list_whatsapp_threads");
+  });
+
+  test("handler-thrown errors propagate AND skip the witness write", async () => {
+    const dir = setupTmpHome();
+    const { server, run } = makeStubServer();
+    registerWithWitness(server, "list_whatsapp_threads", { description: "test" }, async () => {
+      throw new Error("boom");
+    });
+
+    await expect(run({})).rejects.toThrow("boom");
+    expect(existsSync(join(dir, "last_invocation_whatsapp.json"))).toBe(false);
   });
 });

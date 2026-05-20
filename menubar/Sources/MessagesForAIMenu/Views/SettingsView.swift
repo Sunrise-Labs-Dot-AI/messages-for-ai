@@ -311,21 +311,39 @@ struct SettingsView: View {
         case nil: return ("circle.dotted", .secondary)
         }
       }()
-      Image(systemName: symbol).foregroundStyle(color)
+      Image(systemName: symbol)
+        .foregroundStyle(color)
+        .accessibilityHidden(true)
       Text(label).font(.caption)
       Spacer()
     }
+    // Combine icon + label so VoiceOver announces the row as a single
+    // sentence instead of reading the SF Symbol name separately.
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(label), \(Self.statusWord(for: passing))")
   }
 
   private func lastInvocationRow(label: String, record: WitnessRecord?) -> some View {
     HStack(spacing: 8) {
       Image(systemName: record == nil ? "circle.dotted" : "clock")
         .foregroundStyle(record == nil ? Color.secondary : Color.green)
+        .accessibilityHidden(true)
       Text(label).font(.caption)
       Spacer()
       Text(record.map { Self.relative($0.ts) } ?? "never")
         .font(.caption.monospaced())
         .foregroundStyle(.secondary)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(label): \(record.map { Self.relative($0.ts) } ?? "never")")
+  }
+
+  /// Status word used inside combined accessibility labels.
+  private static func statusWord(for value: Bool?) -> String {
+    switch value {
+    case true: return "passed"
+    case false: return "failed"
+    case nil: return "not yet checked"
     }
   }
 

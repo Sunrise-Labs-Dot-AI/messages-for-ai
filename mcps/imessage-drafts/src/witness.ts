@@ -8,6 +8,7 @@
 // on structural events (add/remove/rename), so atomic rename — not in-place
 // write — is what makes the watcher reliable.
 
+import { randomBytes } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -61,7 +62,12 @@ export function writeLastInvocation(toolName: string): void {
       writer_path: process.argv[0] ?? "",
     };
     const finalPath = join(dir, FILENAME);
-    const tmpPath = `${finalPath}.tmp.${process.pid}`;
+    // Random suffix on the tmp path prevents a local attacker from
+    // pre-creating `last_invocation_imessage.json.tmp.<pid>` as a symlink
+    // to a sensitive file (e.g. settings.json) and tricking writeFileSync
+    // into overwriting that file. pid alone is predictable from
+    // `/proc`-style enumeration; random bytes are not.
+    const tmpPath = `${finalPath}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
     writeFileSync(tmpPath, JSON.stringify(record));
     renameSync(tmpPath, finalPath);
   } catch {
@@ -71,14 +77,23 @@ export function writeLastInvocation(toolName: string): void {
 
 /**
  * Wraps server.registerTool, emitting a witness write after the handler
- * resolves. Errors thrown by the handler propagate unchanged; witness errors
- * are absorbed at two layers (writeLastInvocation's own try/catch and this
- * outer try/catch — defense in depth).
+ * resolves SUCCESSFULLY. Handler-thrown errors propagate unchanged AND
+ * skip the witness write. Handler-returned MCP error results
+ * (`{isError: true, ...}` — the standard MCP failure signal) also skip
+ * the witness write. The walkthrough's "Claude reached this MCP" gate
+ * uses the witness as proof of success — false-positive greens when
+ * Claude got an error back would defeat the entire verification flow
+ * (e.g. FDA-not-granted on iMessage would silently pass).
  *
- * The generic mirrors the SDK's `registerTool<InputArgs, OutputArgs>` signature
- * so callers see the same `args` typing they'd get calling `server.registerTool`
- * directly. `Parameters<McpServer["registerTool"]>` collapses to `never` because
- * of the overload, so we replicate the signature manually.
+ * Witness errors themselves are absorbed at two layers
+ * (writeLastInvocation's own try/catch and this outer try/catch —
+ * defense in depth).
+ *
+ * The generic mirrors the SDK's `registerTool<InputArgs, OutputArgs>`
+ * signature so callers see the same `args` typing they'd get calling
+ * `server.registerTool` directly. `Parameters<McpServer["registerTool"]>`
+ * collapses to `never` because of the overload, so we replicate the
+ * signature manually.
  */
 export function registerWithWitness<
   InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined,
@@ -100,10 +115,19 @@ export function registerWithWitness<
     const result = await (
       cb as (...a: Parameters<ToolCallback<InputArgs>>) => Promise<unknown>
     )(...args);
-    try {
-      writeLastInvocation(name);
-    } catch {
-      // swallow — never propagate witness errors to MCP callers
+    // Skip witness when the handler returned an MCP error result.
+    // Tools in this codebase use errorResult() which returns
+    // { isError: true, content: [...] }; we trust that single boolean.
+    const isError =
+      typeof result === "object" &&
+      result !== null &&
+      (result as { isError?: unknown }).isError === true;
+    if (!isError) {
+      try {
+        writeLastInvocation(name);
+      } catch {
+        // swallow — never propagate witness errors to MCP callers
+      }
     }
     return result;
   }) as ToolCallback<InputArgs>;

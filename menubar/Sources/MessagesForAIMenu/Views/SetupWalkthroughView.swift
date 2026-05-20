@@ -195,6 +195,9 @@ struct SetupWalkthroughView: View {
             }
             .keyboardShortcut(.defaultAction)
             .disabled(!allVerifiedOrSkipped)
+            .accessibilityHint(allVerifiedOrSkipped
+                ? "Marks setup complete and closes the window."
+                : "Disabled. Run the test prompt for each enabled transport above to enable this button.")
         }
     }
 
@@ -210,6 +213,11 @@ struct SetupWalkthroughView: View {
             Text(check.label).font(.callout)
             Spacer()
         }
+        // Combine the icon + label so VoiceOver announces a single
+        // sentence ("iMessage MCP binary present, passed") instead of
+        // reading the bare SF Symbol name as a separate element.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(check.label), \(Self.statusWord(for: check.passing))")
     }
 
     private func statusBadge(for value: Bool?) -> some View {
@@ -224,6 +232,19 @@ struct SetupWalkthroughView: View {
             .font(.system(size: 16))
             .foregroundStyle(color)
             .frame(width: 22, height: 22)
+            // Hidden from AT — the parent row supplies its own
+            // combined accessibilityLabel; surfacing the raw SF Symbol
+            // name would just add noise.
+            .accessibilityHidden(true)
+    }
+
+    /// Status word used inside combined accessibility labels.
+    private static func statusWord(for value: Bool?) -> String {
+        switch value {
+        case true: return "passed"
+        case false: return "failed"
+        case nil: return "not yet checked"
+        }
     }
 
     private func statusText(for verified: Bool?, transport: Platform) -> String {
@@ -258,18 +279,43 @@ struct SetupWalkthroughView: View {
     // MARK: - Verification logic
 
     /// Evaluate an incoming witness record against this walkthrough's
-    /// freshness gate + pid identity check. Only flips the per-transport
-    /// flag to true when both pass; never reverses an already-green state
-    /// inside this session.
+    /// freshness gate + writer-binary identity check.
+    ///
+    /// Verification chain:
+    ///   1. `record.ts > walkthroughStartedAt` — rejects stale invocations
+    ///      written before this view appeared.
+    ///   2. `record.writerPath` is non-empty AND resolves under the bundle
+    ///      prefix (canonical-path check rejects symlink escapes).
+    ///   3. The binary at `writerPath` passes `SecStaticCodeCheckValidity`
+    ///      and its signing identifier matches
+    ///      `com.sunriselabs.messages-for-ai`.
+    ///
+    /// Static-path verification (not live-pid) because stdio MCPs are
+    /// short-lived per-tool-call processes. By the time the menubar's
+    /// DispatchSource fires + main-queue dispatch hops + this function
+    /// runs, the writing pid is typically dead — `SecCodeCopyGuestWithAttributes`
+    /// would return failure and the walkthrough would never go green.
+    /// `record.writerPath` plus `HealthChecks.codesignIdentifier(of:)`
+    /// validates the on-disk binary instead, which is short-lived-process-safe.
+    ///
+    /// Residual exposure: a malicious local process can write a forged
+    /// witness with `writer_path` pointing at the real bundle binary
+    /// (its path is hardcoded + public). The `walkthroughStartedAt` gate
+    /// narrows the attack window to "while the user has the walkthrough
+    /// open." Closing this fully requires nonce-binding the test prompt
+    /// to the witness, filed for v0.3.3.
     private func evaluateInvocation(_ transport: Platform, record: WitnessRecord?) {
         guard let record = record else { return }
         // Freshness: must have been written after this view appeared.
         guard record.ts > walkthroughStartedAt else { return }
-        // Identity: pid must currently belong to a process signed with
-        // our expected identifier. If the pid has already exited (the
-        // MCP is short-lived stdio) we treat that as failed verification
-        // and keep waiting — the next invocation will be picked up.
-        guard HealthChecks.verifyRunningPid(record.pid) else { return }
+        // Identity: the binary at writer_path must (a) exist under the
+        // expected bundle prefix and (b) pass strict codesign validation
+        // with our expected identifier.
+        guard !record.writerPath.isEmpty,
+              checks.binaryExists(at: record.writerPath),
+              checks.codesignIdentifier(of: record.writerPath)
+                == HealthChecks.expectedSigningIdentifier
+        else { return }
 
         switch transport {
         case .imessage: imessageVerified = true
@@ -280,11 +326,20 @@ struct SetupWalkthroughView: View {
     private func refreshProgrammaticChecks() {
         var rows: [ProgrammaticCheck] = []
 
-        let bins: [(String, String)] = [
+        // Only surface binary-presence rows for transports the user
+        // has actually enabled. An iMessage-only user shouldn't see two
+        // red "WhatsApp binary present" rows on a fresh install — that
+        // looks like something is broken when in fact the user just
+        // didn't opt in. (The WhatsApp daemon binary is included only
+        // when the WhatsApp transport is enabled, since its sole
+        // purpose is to back the WhatsApp daemon.)
+        var bins: [(String, String)] = [
             ("iMessage MCP binary", "imessage-drafts-mcp"),
-            ("WhatsApp MCP binary", "whatsapp-drafts-mcp"),
-            ("WhatsApp daemon binary", "whatsapp-drafts-daemon"),
         ]
+        if settings.whatsappEnabled {
+            bins.append(("WhatsApp MCP binary", "whatsapp-drafts-mcp"))
+            bins.append(("WhatsApp daemon binary", "whatsapp-drafts-daemon"))
+        }
         for (label, name) in bins {
             let path = Self.bundlePrefix + name
             let exists = checks.binaryExists(at: path)
