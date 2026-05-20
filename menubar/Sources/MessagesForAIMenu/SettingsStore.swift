@@ -35,6 +35,21 @@ final class SettingsStore: ObservableObject {
       mirrorIntoWhatsAppMcpSettings()
     }
   }
+  /// True once the user has confirmed Claude can see this app's MCPs via
+  /// the setup walkthrough. Existing v0.3.0/v0.3.1 users see the
+  /// walkthrough once after upgrade (the discoverability bug PR #14 fixed
+  /// made the upgrade-time confirmation valuable); absence in the on-disk
+  /// file defaults to false. Set by SetupWalkthroughView's "All set"
+  /// button.
+  @Published var walkthroughComplete: Bool {
+    didSet { persist() }
+  }
+  /// True once the user has explicitly skipped the walkthrough. Suppresses
+  /// the auto-open on launch but Settings → Status still surfaces unverified
+  /// state. Set by SetupWalkthroughView's "Skip for now" button.
+  @Published var walkthroughSkipped: Bool {
+    didSet { persist() }
+  }
 
   @Published private(set) var lastError: String?
 
@@ -56,6 +71,8 @@ final class SettingsStore: ObservableObject {
     self.imessageEnabled = loaded.imessageEnabled
     self.whatsappEnabled = loaded.whatsappEnabled
     self.whatsappRequireApproval = loaded.whatsappRequireApproval
+    self.walkthroughComplete = loaded.walkthroughComplete
+    self.walkthroughSkipped = loaded.walkthroughSkipped
 
     if loaded.requiresMigrationWrite {
       // First run, or v1→v2 migration: write the canonical v2 schema
@@ -73,6 +90,8 @@ final class SettingsStore: ObservableObject {
     let imessageEnabled: Bool
     let whatsappEnabled: Bool
     let whatsappRequireApproval: Bool
+    let walkthroughComplete: Bool
+    let walkthroughSkipped: Bool
     /// True when the on-disk file is missing or was v1; tells init() to
     /// write the canonical v2 schema immediately.
     let requiresMigrationWrite: Bool
@@ -95,6 +114,8 @@ final class SettingsStore: ObservableObject {
         imessageEnabled: true,
         whatsappEnabled: false,
         whatsappRequireApproval: whatsappMcpApproval ?? true,
+        walkthroughComplete: false,
+        walkthroughSkipped: false,
         requiresMigrationWrite: true
       )
     }
@@ -117,6 +138,12 @@ final class SettingsStore: ObservableObject {
         imessageEnabled: imessage["enabled"] as? Bool ?? true,
         whatsappEnabled: whatsapp["enabled"] as? Bool ?? false,
         whatsappRequireApproval: whatsappApproval,
+        // Absence == false. Existing v0.3.0/v0.3.1 users get the
+        // walkthrough on upgrade — exactly the cohort hit by the
+        // discoverability bug PR #14 fixed. Per the resolved Open
+        // Question #1 in the v0.3.2 plan.
+        walkthroughComplete: json["walkthrough_complete"] as? Bool ?? false,
+        walkthroughSkipped: json["walkthrough_skipped"] as? Bool ?? false,
         requiresMigrationWrite: false
       )
     }
@@ -131,6 +158,8 @@ final class SettingsStore: ObservableObject {
       imessageEnabled: true,
       whatsappEnabled: false,
       whatsappRequireApproval: whatsappMcpApproval ?? true,
+      walkthroughComplete: false,
+      walkthroughSkipped: false,
       requiresMigrationWrite: true
     )
   }
@@ -176,6 +205,11 @@ final class SettingsStore: ObservableObject {
     [
       "schema_version": 2,
       "first_run_complete": firstRunComplete,
+      // Additive fields for v0.3.2; absence defaults to false on read so
+      // upgrading users see the walkthrough once. Not bumping schema_version
+      // because the additive shape is back-compat for v0.3.x readers.
+      "walkthrough_complete": walkthroughComplete,
+      "walkthrough_skipped": walkthroughSkipped,
       // Legacy flat key, mirrored from transports.imessage.require_approval.
       // Lets v0.2.x MCP server processes still running in this Claude
       // Desktop session keep seeing the toggle until next restart.

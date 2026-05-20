@@ -7,6 +7,7 @@ enum WindowID {
   static let onboarding = "onboarding"
   static let settings = "settings"
   static let whatsappPairing = "whatsapp-pairing"
+  static let setupWalkthrough = "setup-walkthrough"
 }
 
 @main
