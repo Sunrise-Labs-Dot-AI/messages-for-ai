@@ -56,9 +56,10 @@ interface DraftRpc {
   source: string;
   context_messages: Array<{
     message_id: string;
-    sender_jid: string;
+    sender_handle: string;
+    sender_name: string | null;
     from_me: boolean;
-    ts: number;
+    sent_at: string;
     body: string | null;
   }>;
   context_diagnostic: null | "no_thread_match" | "thread_empty" | "error";

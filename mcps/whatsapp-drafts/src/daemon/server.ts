@@ -313,9 +313,20 @@ async function handle(
           source: p.source,
           context_messages: ctx.map((m) => ({
             message_id: m.message_id,
-            sender_jid: m.sender_jid,
+            // v0.3.2: write the menubar-side field names directly so
+            // ContextMessage Codable parses without compat fallback.
+            // sender_name resolved at stage time using the same helper
+            // the read-path tools use (gets @lid mapping for free).
+            sender_handle: m.sender_jid,
+            sender_name: m.from_me ? null : (() => {
+              try {
+                return getContactDisplayName(m.sender_jid);
+              } catch {
+                return null;
+              }
+            })(),
             from_me: m.from_me,
-            ts: m.ts,
+            sent_at: new Date(m.ts).toISOString(),
             body: m.body,
           })),
           context_diagnostic: diag,

@@ -128,12 +128,74 @@ struct Draft: Codable, Identifiable, Equatable {
 // embedded in the draft JSON. Mirrors `DraftContextMessage` on the
 // TypeScript side. Identifiable for ForEach — we synthesize a stable id
 // from index + sent_at since chat.db's ROWID isn't shipped.
+//
+// Dual-key decoding: v0.3.0/v0.3.1 WhatsApp daemons wrote `sender_jid`
+// (a JID) + `ts` (unix-ms number) instead of `sender_handle` + `sent_at`
+// (the names the iMessage path has always used and the menubar's Codable
+// expects). v0.3.2 daemons emit the new names; the decoder below accepts
+// either shape so in-flight drafts staged on the old daemon still render
+// context correctly after upgrade.
+//
+// REMOVE after v0.3.3 ships — by then any in-flight v0.3.0/v0.3.1 WhatsApp
+// drafts will have been swept by sweepDrafts() (24h sent / 7-day TTL).
+// Tracked: v0.3.3 plan item "delete dual-key compat in ContextMessage."
 struct ContextMessage: Codable, Hashable {
   let from_me: Bool
   let sender_handle: String?
   let sender_name: String?
   let body: String?
   let sent_at: String?
+
+  enum CodingKeys: String, CodingKey {
+    case from_me
+    case sender_handle
+    case sender_name
+    case body
+    case sent_at
+    // Legacy v0.3.0/v0.3.1 WhatsApp keys — accept but never emit.
+    case sender_jid
+    case ts
+  }
+
+  init(from_me: Bool, sender_handle: String?, sender_name: String?, body: String?, sent_at: String?) {
+    self.from_me = from_me
+    self.sender_handle = sender_handle
+    self.sender_name = sender_name
+    self.body = body
+    self.sent_at = sent_at
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    self.from_me = try c.decode(Bool.self, forKey: .from_me)
+    // Prefer the new key; fall back to the legacy one if the new one
+    // is absent. Both keys present (shouldn't happen) → new wins.
+    self.sender_handle = try (c.decodeIfPresent(String.self, forKey: .sender_handle)
+      ?? c.decodeIfPresent(String.self, forKey: .sender_jid))
+    self.sender_name = try c.decodeIfPresent(String.self, forKey: .sender_name)
+    self.body = try c.decodeIfPresent(String.self, forKey: .body)
+    if let isoString = try c.decodeIfPresent(String.self, forKey: .sent_at) {
+      self.sent_at = isoString
+    } else if let unixMs = try c.decodeIfPresent(Double.self, forKey: .ts) {
+      // Legacy daemons wrote ts as unix-ms number; convert to the ISO
+      // string the menubar expects. The conversion is one-way — encode
+      // below always emits sent_at.
+      let f = ISO8601DateFormatter()
+      f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+      self.sent_at = f.string(from: Date(timeIntervalSince1970: unixMs / 1000))
+    } else {
+      self.sent_at = nil
+    }
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(from_me, forKey: .from_me)
+    try c.encodeIfPresent(sender_handle, forKey: .sender_handle)
+    try c.encodeIfPresent(sender_name, forKey: .sender_name)
+    try c.encodeIfPresent(body, forKey: .body)
+    try c.encodeIfPresent(sent_at, forKey: .sent_at)
+  }
 
   var displayName: String {
     if from_me { return "You" }
