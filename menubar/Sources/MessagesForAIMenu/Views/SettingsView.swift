@@ -10,6 +10,9 @@ struct SettingsView: View {
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
 
   @Environment(\.openWindow) private var openWindow
+  @StateObject private var invocations = LastInvocationStore()
+
+  private let checks = HealthChecks()
 
   var body: some View {
     // The native macOS title bar (set in App.swift as "Messages for AI
@@ -25,6 +28,7 @@ struct SettingsView: View {
         imessageSection
         whatsappSection
         loginItemRow
+        statusSection
       }
       .padding(.horizontal, 16)
       .padding(.top, 24)
@@ -219,6 +223,116 @@ struct SettingsView: View {
     .padding(12)
     .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
     .clipShape(RoundedRectangle(cornerRadius: 8))
+  }
+
+  // MARK: - Status
+
+  /// On-demand diagnostics surface — same HealthChecks primitives the
+  /// SetupWalkthroughView uses, plus the latest witness timestamp per
+  /// transport so the user can answer "is Claude actually using this?"
+  /// at a glance. "Re-run setup walkthrough" is the recovery affordance
+  /// when something has broken (e.g. Claude Desktop was re-installed
+  /// without the MCP config).
+  private var statusSection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Text("Status")
+          .font(.headline)
+        Spacer()
+      }
+
+      let imessageBinPath = HealthChecks.defaultBundleBinaryPrefix + "imessage-drafts-mcp"
+      let whatsappBinPath = HealthChecks.defaultBundleBinaryPrefix + "whatsapp-drafts-mcp"
+      let daemonBinPath = HealthChecks.defaultBundleBinaryPrefix + "whatsapp-drafts-daemon"
+      let configState = checks.claudeDesktopConfigState()
+
+      statusRow(
+        label: "iMessage MCP binary",
+        passing: checks.binaryExists(at: imessageBinPath)
+          && checks.codesignIdentifier(of: imessageBinPath) == HealthChecks.expectedSigningIdentifier
+      )
+      if settings.whatsappEnabled {
+        statusRow(
+          label: "WhatsApp MCP binary",
+          passing: checks.binaryExists(at: whatsappBinPath)
+            && checks.codesignIdentifier(of: whatsappBinPath) == HealthChecks.expectedSigningIdentifier
+        )
+        statusRow(
+          label: "WhatsApp daemon binary",
+          passing: checks.binaryExists(at: daemonBinPath)
+            && checks.codesignIdentifier(of: daemonBinPath) == HealthChecks.expectedSigningIdentifier
+        )
+      }
+
+      switch configState {
+      case .found:
+        statusRow(label: "Claude Desktop config references this app", passing: true)
+      case .notFound:
+        statusRow(label: "Claude Desktop config doesn't reference this app", passing: false)
+      case .fileAbsent:
+        statusRow(label: "Claude Desktop not detected", passing: nil)
+      case .parseError:
+        statusRow(label: "Claude Desktop config can't be parsed", passing: false)
+      }
+
+      lastInvocationRow(label: "Last iMessage call from Claude", record: invocations.imessage)
+      if settings.whatsappEnabled {
+        lastInvocationRow(label: "Last WhatsApp call from Claude", record: invocations.whatsapp)
+      }
+
+      HStack(spacing: 10) {
+        Button("Re-run setup walkthrough") {
+          openWindow(id: WindowID.setupWalkthrough)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        Button("Reveal logs") {
+          let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".messages-mcp/logs")
+          NSWorkspace.shared.open(url)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        Spacer()
+      }
+      .padding(.top, 4)
+    }
+    .padding(14)
+    .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
+    .clipShape(RoundedRectangle(cornerRadius: 10))
+  }
+
+  private func statusRow(label: String, passing: Bool?) -> some View {
+    HStack(spacing: 8) {
+      let (symbol, color): (String, Color) = {
+        switch passing {
+        case true: return ("checkmark.circle.fill", .green)
+        case false: return ("xmark.circle.fill", .red)
+        case nil: return ("circle.dotted", .secondary)
+        }
+      }()
+      Image(systemName: symbol).foregroundStyle(color)
+      Text(label).font(.caption)
+      Spacer()
+    }
+  }
+
+  private func lastInvocationRow(label: String, record: WitnessRecord?) -> some View {
+    HStack(spacing: 8) {
+      Image(systemName: record == nil ? "circle.dotted" : "clock")
+        .foregroundStyle(record == nil ? Color.secondary : Color.green)
+      Text(label).font(.caption)
+      Spacer()
+      Text(record.map { Self.relative($0.ts) } ?? "never")
+        .font(.caption.monospaced())
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private static func relative(_ date: Date) -> String {
+    let f = RelativeDateTimeFormatter()
+    f.unitsStyle = .short
+    return f.localizedString(for: date, relativeTo: Date())
   }
 
   // MARK: - Card scaffold
