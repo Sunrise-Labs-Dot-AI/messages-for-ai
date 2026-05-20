@@ -15,5 +15,16 @@ let package = Package(
       name: "MessagesForAIMenu",
       path: "Sources/MessagesForAIMenu"
     ),
+    // v0.3.2 reduced-scope test target. Covers the net-new walkthrough
+    // verification primitives (HealthChecks) + the settings fields the
+    // walkthrough depends on (SettingsStore migration / defaults).
+    // WhatsAppDaemonControllerTests + DraftStoreTests are deferred to
+    // v0.3.3 per the plan-review (require mocked Process / regression
+    // coverage of the DispatchSource directory-watcher lesson).
+    .testTarget(
+      name: "MessagesForAIMenuTests",
+      dependencies: ["MessagesForAIMenu"],
+      path: "Tests/MessagesForAIMenuTests"
+    ),
   ]
 )

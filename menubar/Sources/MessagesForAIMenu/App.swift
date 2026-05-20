@@ -7,6 +7,7 @@ enum WindowID {
   static let onboarding = "onboarding"
   static let settings = "settings"
   static let whatsappPairing = "whatsapp-pairing"
+  static let setupWalkthrough = "setup-walkthrough"
 }
 
 @main
@@ -77,7 +78,17 @@ struct MessagesForAIMenuApp: App {
     Window("Connect WhatsApp", id: WindowID.whatsappPairing) {
       WhatsAppPairingView()
         .environmentObject(whatsappDaemon)
+        .environmentObject(settings)
         .frame(width: 380, height: 480)
+        .trackWindowLifecycle(appDelegate: appDelegate)
+    }
+    .windowResizability(.contentSize)
+
+    Window("Setup Walkthrough", id: WindowID.setupWalkthrough) {
+      SetupWalkthroughView()
+        .environmentObject(settings)
+        .environmentObject(whatsappDaemon)
+        .frame(minWidth: 520, idealWidth: 560, minHeight: 540, idealHeight: 640)
         .trackWindowLifecycle(appDelegate: appDelegate)
     }
     .windowResizability(.contentSize)

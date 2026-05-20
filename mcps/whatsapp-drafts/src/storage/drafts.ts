@@ -31,12 +31,22 @@ import { PATHS } from "../paths.ts";
 export const DRAFT_SCHEMA_VERSION = 1;
 
 export interface DraftContext {
-  /** Snapshot of the last N messages in the thread when the draft was staged. */
+  /** Snapshot of the last N messages in the thread when the draft was staged.
+   *
+   *  v0.3.2 field rename: `sender_jid` → `sender_handle`, `ts` (unix ms) →
+   *  `sent_at` (ISO-8601 string). Aligns with the menubar's existing
+   *  ContextMessage Codable terminology that the iMessage path already
+   *  uses. Also adds `sender_name` resolved via getContactDisplayName at
+   *  stage time so context bubbles render names instead of raw JIDs. The
+   *  v0.3.0/v0.3.1 daemon wrote `sender_jid` + `ts`; the menubar's
+   *  Codable handles both shapes for one release (see
+   *  menubar/Sources/MessagesForAIMenu/Models/Draft.swift). */
   context_messages: Array<{
     message_id: string;
-    sender_jid: string;
+    sender_handle: string;
+    sender_name: string | null;
     from_me: boolean;
-    ts: number;
+    sent_at: string;
     body: string | null;
   }>;
   /** Diagnostic when context lookup failed. Mirrors imessage-mcp's pattern. */

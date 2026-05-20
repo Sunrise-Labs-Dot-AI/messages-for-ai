@@ -17,7 +17,7 @@ async function main() {
   migrateLegacyDir();
 
   const server = new McpServer(
-    { name: "imessage-drafts-mcp", version: "0.2.0" },
+    { name: "imessage-drafts-mcp", version: "0.3.2" },
     {
       instructions:
         "Read-only iMessage access (chat.db) plus a local draft-staging API for the macOS Messages app. " +

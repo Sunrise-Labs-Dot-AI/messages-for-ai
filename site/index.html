@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Messages for AI — AI proposes, you approve</title>
+  <meta name="description" content="Local macOS menu bar app that lets Claude draft iMessage and WhatsApp messages — you hold-to-fire to send. Drafts stage locally, never auto-send.">
+  <meta property="og:title" content="Messages for AI">
+  <meta property="og:description" content="AI proposes, you approve. Local menu bar app for iMessage and WhatsApp.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://messagesfor.ai">
+
+  <link rel="icon" type="image/png" href="/icon.png">
+
+  <style>
+    :root {
+      --fg: #111;
+      --fg-muted: #555;
+      --bg: #fff;
+      --accent: #0066ff;
+      --border: #e8e8e8;
+      --radius: 10px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fg: #f0f0f0;
+        --fg-muted: #aaa;
+        --bg: #0a0a0a;
+        --accent: #4d9fff;
+        --border: #1f1f1f;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 80px 24px 64px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 64px;
+    }
+
+    header img {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+    }
+
+    header .brand {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    h1 {
+      font-size: clamp(36px, 6vw, 56px);
+      line-height: 1.1;
+      letter-spacing: -0.025em;
+      margin: 0 0 20px;
+      font-weight: 600;
+    }
+
+    .tagline {
+      font-size: 20px;
+      color: var(--fg-muted);
+      margin: 0 0 40px;
+      max-width: 560px;
+      line-height: 1.45;
+    }
+
+    .cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 28px;
+      background: var(--fg);
+      color: var(--bg);
+      text-decoration: none;
+      border-radius: var(--radius);
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.005em;
+      transition: opacity 0.15s ease;
+    }
+
+    .cta:hover { opacity: 0.85; }
+
+    .cta-sub {
+      display: block;
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--fg-muted);
+    }
+
+    .cta-row {
+      margin-bottom: 64px;
+    }
+
+    .screenshot-placeholder {
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--fg-muted);
+      font-size: 14px;
+      margin-bottom: 64px;
+      background: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.02) 100%);
+    }
+
+    .highlights {
+      display: grid;
+      gap: 20px;
+      margin-bottom: 64px;
+    }
+
+    .highlight {
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    .highlight h3 {
+      margin: 0 0 6px;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.005em;
+    }
+
+    .highlight p {
+      margin: 0;
+      font-size: 14px;
+      color: var(--fg-muted);
+      line-height: 1.5;
+    }
+
+    footer {
+      padding-top: 32px;
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+      color: var(--fg-muted);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 24px;
+      justify-content: space-between;
+    }
+
+    footer a {
+      color: var(--fg-muted);
+      text-decoration: none;
+    }
+
+    footer a:hover { color: var(--fg); }
+
+    .req {
+      font-size: 13px;
+      color: var(--fg-muted);
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <img src="/icon.png" alt="" width="36" height="36" onerror="this.style.display='none'">
+      <span class="brand">Messages for AI</span>
+    </header>
+
+    <h1>AI proposes, you&nbsp;approve.</h1>
+
+    <p class="tagline">
+      A local macOS menu bar app that lets Claude draft your iMessage and WhatsApp replies.
+      Every send goes through a hold-to-fire button in your menu bar.
+      Drafts never auto-send.
+    </p>
+
+    <div class="cta-row">
+      <a class="cta" href="https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai/releases/latest">
+        Download for macOS
+        <svg aria-hidden="true" focusable="false" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </a>
+      <span class="cta-sub">Free. Open source. Requires macOS 14 (Sonoma) or later.</span>
+    </div>
+
+    <div class="screenshot-placeholder"
+         role="img"
+         aria-label="Screenshot placeholder: a real image will replace this and show the Messages for AI menu bar drafts list with a staged iMessage draft pending approval.">
+      <span aria-hidden="true">[screenshot of the menu bar drafts list]</span>
+    </div>
+
+    <div class="highlights">
+      <div class="highlight">
+        <h3>Drafts stay local</h3>
+        <p>iMessage and WhatsApp message history never leaves your Mac. The menu bar app is the only thing that can send.</p>
+      </div>
+      <div class="highlight">
+        <h3>Hold-to-fire approval</h3>
+        <p>Claude stages a draft. You read it, hold the menu bar button, and it sends. No keyboard shortcut can fire it; no MCP call can fire it. Just your finger.</p>
+      </div>
+      <div class="highlight">
+        <h3>Two transports, one app</h3>
+        <p>iMessage via Apple's stack. WhatsApp via Baileys (unofficial, ToS caveats apply — see GitHub). Both sign as one bundle so a single Full Disk Access grant covers everything.</p>
+      </div>
+    </div>
+
+    <footer>
+      <span>&copy; 2026 Sunrise Labs</span>
+      <span>
+        <a href="https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai">GitHub</a>
+        &nbsp;·&nbsp;
+        <a href="https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai/blob/main/SECURITY.md">Security</a>
+        &nbsp;·&nbsp;
+        <a href="https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai/issues">Report an issue</a>
+      </span>
+    </footer>
+  </div>
+</body>
+</html>

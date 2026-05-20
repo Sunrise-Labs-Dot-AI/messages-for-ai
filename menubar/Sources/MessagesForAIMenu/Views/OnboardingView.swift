@@ -153,9 +153,16 @@ struct OnboardingView: View {
 
     if whatsapp {
       // Spin up the WhatsApp service so the pairing window finds a
-      // live socket. Idempotent — safe even if it's already up.
+      // live socket. Idempotent — safe even if it's already up. The
+      // walkthrough opens later from WhatsAppPairingView's connected
+      // phase (avoids three-window contention with pairing).
       whatsappDaemon.start()
       openWindow(id: WindowID.whatsappPairing)
+    } else {
+      // iMessage-only path: hand off directly to the walkthrough so
+      // the user verifies the install. WhatsApp-enabled path defers
+      // to the pairing window's post-connect handoff.
+      openWindow(id: WindowID.setupWalkthrough)
     }
 
     dismissWindow(id: WindowID.onboarding)

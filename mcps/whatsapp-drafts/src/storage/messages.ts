@@ -50,6 +50,23 @@ CREATE TABLE IF NOT EXISTS contacts (
   push_name     TEXT,
   is_business   INTEGER NOT NULL DEFAULT 0
 );
+
+-- v0.3.2: WhatsApp emits some sender JIDs in privacy-identifier ("@lid")
+-- form rather than the canonical "@s.whatsapp.net" phone-number form.
+-- Roughly 30% of contacts surface this way in observed traffic. The
+-- mapping from one to the other is exposed by Baileys via auth-state
+-- events; the daemon writes (lid, pn) pairs here so read-side resolution
+-- (getContactDisplayName, getThreadMessages LEFT JOIN) can JOIN through
+-- and present a real name instead of a raw @lid.
+--
+-- Populated by daemon-side code (see "deferred to v0.3.3" note in
+-- daemon/connection.ts when that wiring lands). Until then the table
+-- stays empty and the resolution path no-ops — read tools surface
+-- unresolved @lid JIDs as raw strings, same as today.
+CREATE TABLE IF NOT EXISTS lid_pn_map (
+  lid TEXT PRIMARY KEY,
+  pn  TEXT NOT NULL
+);
 `;
 
 export type MessageType = "text" | "image" | "voice" | "video" | "document" | "system";
@@ -250,21 +267,68 @@ export function upsertContact(c: UpsertContact): void {
 }
 
 /**
- * Best-effort human-readable name for a JID. Tries the contacts table
- * (display_name → push_name → null), then the threads table's
- * display_name (Baileys names groups even when individual contacts are
- * un-named). Returns null if nothing matches — caller decides on a
- * presentation fallback (typically `formatJidAsPhone`).
+ * Insert / update a privacy-id → phone-number mapping. Daemon calls this
+ * when Baileys exposes a (lid, pn) pair (e.g. via the lid-update event or
+ * a contact's `lid` field on contacts.upsert). MCP-side reads don't call
+ * this. Safe to call repeatedly with the same pair — UPSERT semantics.
+ *
+ * Schema columns enumerated explicitly — never SELECT *. Errors are
+ * caller-handled; this function does not log row contents (the lid and pn
+ * together are personally-identifying information).
+ */
+export function upsertLidMapping(lid: string, pn: string): void {
+  const db = getMessagesDb();
+  db.prepare(`
+    INSERT INTO lid_pn_map (lid, pn) VALUES (?, ?)
+    ON CONFLICT(lid) DO UPDATE SET pn = excluded.pn
+  `).run(lid, pn);
+}
+
+/**
+ * Best-effort human-readable name for a JID. Resolution order:
+ *
+ *   1. contacts row keyed by the JID directly (display_name → push_name)
+ *   2. for `@lid` privacy-id JIDs: look up the phone-number JID via
+ *      `lid_pn_map`, then recurse step 1 on the resolved phone JID
+ *   3. threads.display_name (Baileys names groups even when individual
+ *      contacts aren't yet known)
+ *
+ * Returns null if nothing matches — caller falls back to `formatJidAsPhone`.
+ *
+ * Selects enumerated columns only (never SELECT *) to bound what an error
+ * stack trace can surface in worst case. Error handlers above this layer
+ * must log a generic message ("contact lookup failed") rather than the row
+ * contents.
  */
 export function getContactDisplayName(jid: string): string | null {
   const db = getMessagesDb();
-  const contact = db
+
+  const direct = db
     .prepare("SELECT display_name, push_name FROM contacts WHERE jid = ?")
     .get(jid) as { display_name: string | null; push_name: string | null } | undefined;
-  if (contact != null) {
-    const name = contact.display_name ?? contact.push_name;
+  if (direct != null) {
+    const name = direct.display_name ?? direct.push_name;
     if (name != null && name.trim().length > 0) return name;
   }
+
+  // @lid → phone-number JID indirection. Only attempts the JOIN for inputs
+  // that look like a privacy-id JID, so the common @s.whatsapp.net case
+  // pays no extra cost.
+  if (jid.endsWith("@lid")) {
+    const mapped = db
+      .prepare("SELECT pn FROM lid_pn_map WHERE lid = ?")
+      .get(jid) as { pn: string } | undefined;
+    if (mapped != null) {
+      const viaLid = db
+        .prepare("SELECT display_name, push_name FROM contacts WHERE jid = ?")
+        .get(mapped.pn) as { display_name: string | null; push_name: string | null } | undefined;
+      if (viaLid != null) {
+        const name = viaLid.display_name ?? viaLid.push_name;
+        if (name != null && name.trim().length > 0) return name;
+      }
+    }
+  }
+
   const thread = db
     .prepare("SELECT display_name FROM threads WHERE thread_jid = ?")
     .get(jid) as { display_name: string | null } | undefined;
@@ -376,13 +440,24 @@ export function getThreadMessages(opts: {
   // messages whose sender_jid doesn't have a matching contacts row
   // (mainly @lid privacy-format senders Baileys hasn't mapped yet)
   // get sender_name = null and the caller falls back to phone-format.
+  // Two-leg LEFT JOIN to resolve sender_name:
+  //   - direct: messages.sender_jid → contacts.jid
+  //   - via lid: messages.sender_jid (@lid) → lid_pn_map.lid → lid_pn_map.pn → contacts.jid
+  // Direct match wins; @lid indirection fills in the ~30% of senders that
+  // Baileys exposes only in privacy-id form (the lid_pn_map populator
+  // lands daemon-side in a follow-up; this read path is forward-compat).
   const rows = db.prepare(`
     SELECT m.message_id, m.thread_jid, m.sender_jid, m.from_me, m.ts,
            m.body, m.body_sha256, m.message_type, m.attachment_meta,
            m.reply_to_id,
-           COALESCE(c.display_name, c.push_name) AS sender_name
+           COALESCE(
+             c_direct.display_name, c_direct.push_name,
+             c_via_lid.display_name, c_via_lid.push_name
+           ) AS sender_name
     FROM messages m
-    LEFT JOIN contacts c ON c.jid = m.sender_jid
+    LEFT JOIN contacts  c_direct  ON c_direct.jid  = m.sender_jid
+    LEFT JOIN lid_pn_map l        ON l.lid         = m.sender_jid
+    LEFT JOIN contacts  c_via_lid ON c_via_lid.jid = l.pn
     WHERE m.thread_jid = ? AND m.ts < ?
     ORDER BY m.ts DESC
     LIMIT ?

@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerWithWitness } from "../witness.ts";
 import { HealthCheckShape } from "../schema.ts";
 import { jsonResult, errorResult } from "./_result.ts";
 import {
@@ -25,7 +26,8 @@ import { getContactsSidecarDiagnostic } from "../storage/contacts-cache.ts";
 // the exact file the user needs to add to System Settings → Privacy &
 // Security → Full Disk Access.
 export function registerHealthTools(server: McpServer): void {
-  server.registerTool(
+  registerWithWitness(
+    server,
     "health_check",
     {
       title: "Diagnose imessage-drafts-mcp permissions and contact lookup",

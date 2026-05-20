@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerWithWitness } from "../witness.ts";
 import {
   StageDraftShape,
   ListDraftsShape,
@@ -56,7 +57,8 @@ export function _wrapDraftForResponse(d: Draft | null): Draft | null {
 }
 
 export function registerDraftTools(server: McpServer): void {
-  server.registerTool(
+  registerWithWitness(
+    server,
     "stage_draft",
     {
       title: "Stage an iMessage draft (does NOT send)",
@@ -120,7 +122,8 @@ export function registerDraftTools(server: McpServer): void {
     }
   );
 
-  server.registerTool(
+  registerWithWitness(
+    server,
     "list_drafts",
     {
       title: "List staged iMessage drafts",
@@ -140,7 +143,8 @@ export function registerDraftTools(server: McpServer): void {
     }
   );
 
-  server.registerTool(
+  registerWithWitness(
+    server,
     "get_draft",
     {
       title: "Get a staged iMessage draft",
@@ -164,7 +168,8 @@ export function registerDraftTools(server: McpServer): void {
     }
   );
 
-  server.registerTool(
+  registerWithWitness(
+    server,
     "discard_draft",
     {
       title: "Discard a staged iMessage draft",
@@ -182,7 +187,8 @@ export function registerDraftTools(server: McpServer): void {
     }
   );
 
-  server.registerTool(
+  registerWithWitness(
+    server,
     "send_draft",
     {
       title: "Send a staged iMessage draft (DESTRUCTIVE — actually sends)",
