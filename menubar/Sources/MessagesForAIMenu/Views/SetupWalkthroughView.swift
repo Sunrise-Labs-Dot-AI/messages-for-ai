@@ -77,6 +77,25 @@ struct SetupWalkthroughView: View {
             claudeDesktopBundleURL = NSWorkspace.shared.urlForApplication(
                 withBundleIdentifier: "com.anthropic.claudefordesktop"
             )
+            // Kick the WhatsApp daemon if the transport is enabled.
+            // start() is idempotent (the controller short-circuits if
+            // already running). Without this call, a user who opens the
+            // walkthrough before clicking the menubar icon (e.g. via the
+            // Dock launch path) sees red rows because DraftListView's
+            // .task — which is the OTHER place the daemon gets kicked —
+            // hasn't fired yet.
+            if settings.whatsappEnabled {
+                whatsappDaemon.start()
+            }
+        }
+        // Re-render the status rows the moment the daemon's state
+        // changes, not just every 5s on the tick. Without these, a
+        // .starting → .running transition lags up to 5s in the UI.
+        .onChange(of: whatsappDaemon.status) { _, _ in
+            refreshProgrammaticChecks()
+        }
+        .onChange(of: whatsappDaemon.baileysState) { _, _ in
+            refreshProgrammaticChecks()
         }
         .onReceive(tick) { _ in
             elapsed = Date().timeIntervalSince(walkthroughStartedAt)
@@ -469,13 +488,43 @@ struct SetupWalkthroughView: View {
         }
 
         if settings.whatsappEnabled {
-            let running: Bool = {
-                if case .running = whatsappDaemon.status { return true }
-                return false
+            // Tri-state representation so transitional states (.starting,
+            // .backingOff, running-but-baileys-still-connecting) show as
+            // pending instead of failing. The label changes too — a
+            // "WhatsApp daemon starting…" with a neutral icon is much
+            // clearer than "WhatsApp daemon running ✗" during the few
+            // seconds between launch and the daemon's first poll landing.
+            let (daemonLabel, daemonPassing): (String, Bool?) = {
+                switch whatsappDaemon.status {
+                case .idle:        return ("WhatsApp daemon starting…", nil)
+                case .starting:    return ("WhatsApp daemon starting…", nil)
+                case .running:     return ("WhatsApp daemon running", true)
+                case .backingOff:  return ("WhatsApp daemon reconnecting…", nil)
+                case .crashLooping: return ("WhatsApp daemon couldn't start", false)
+                case .stopped:     return ("WhatsApp daemon stopped", false)
+                }
             }()
-            rows.append(ProgrammaticCheck(label: "WhatsApp daemon running", passing: running))
-            let paired = whatsappDaemon.baileysState == "connected"
-            rows.append(ProgrammaticCheck(label: "WhatsApp paired (Baileys connected)", passing: paired))
+            rows.append(ProgrammaticCheck(label: daemonLabel, passing: daemonPassing))
+
+            // Baileys pairing — depends on the daemon being up first.
+            // When the daemon isn't running, this row is pending (not
+            // failed) since it can't be evaluated yet.
+            let (baileysLabel, baileysPassing): (String, Bool?) = {
+                guard case .running = whatsappDaemon.status else {
+                    return ("WhatsApp connection (waiting for daemon)", nil)
+                }
+                switch whatsappDaemon.baileysState {
+                case "connected":     return ("WhatsApp paired (Baileys connected)", true)
+                case "connecting":    return ("WhatsApp connecting…", nil)
+                case "reconnecting":  return ("WhatsApp reconnecting…", nil)
+                case "logged_out":    return ("WhatsApp logged out — re-pair needed", false)
+                // Daemon up but the first state-poll hasn't landed yet.
+                case .none:           return ("WhatsApp connecting…", nil)
+                // Future Baileys states we don't yet model: show raw + pending.
+                case .some(let s):    return ("WhatsApp state: \(s)", nil)
+                }
+            }()
+            rows.append(ProgrammaticCheck(label: baileysLabel, passing: baileysPassing))
         }
 
         programmaticChecks = rows
