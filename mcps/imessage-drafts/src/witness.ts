@@ -55,11 +55,18 @@ export function writeLastInvocation(toolName: string): void {
   try {
     const dir = homeDir();
     mkdirSync(dir, { recursive: true });
+    // process.execPath is the canonical "real path to the running
+    // executable" — in Bun-compiled standalone binaries it returns the
+    // path to the compiled .mcp binary. process.argv[0], counterintuitively,
+    // returns "bun" (Bun's embedded runtime identity inside the compiled
+    // image), which makes the menubar's writer_path codesign check
+    // useless. The walkthrough relies on this path to verify the writer's
+    // identity — keep it accurate.
     const record: WitnessRecord = {
       tool: toolName,
       ts: new Date().toISOString(),
       pid: process.pid,
-      writer_path: process.argv[0] ?? "",
+      writer_path: process.execPath,
     };
     const finalPath = join(dir, FILENAME);
     // Random suffix on the tmp path prevents a local attacker from

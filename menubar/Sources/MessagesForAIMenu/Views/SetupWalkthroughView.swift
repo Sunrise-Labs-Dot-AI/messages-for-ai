@@ -45,6 +45,10 @@ struct SetupWalkthroughView: View {
     @State private var whatsappVerified: Bool? = nil
 
     @State private var claudeDesktopBundleURL: URL? = nil
+    /// Result of the most recent "Add to Claude Desktop config" click.
+    /// Drives the inline outcome view; nil means the button hasn't been
+    /// clicked yet (default state).
+    @State private var wireResult: ClaudeConfigWriteResult? = nil
 
     // 1s tick for elapsed-time tracking (60s timeout per transport).
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -183,83 +187,144 @@ struct SetupWalkthroughView: View {
         }
     }
 
-    /// Inline remediation block. Surfaces a self-contained prompt the
-    /// user can paste into Claude Desktop (Cowork) or Claude Code; Claude
-    /// then edits `~/Library/Application Support/Claude/claude_desktop_config.json`
-    /// on the user's behalf. Avoids asking non-technical users to
-    /// hand-edit JSON.
+    /// Inline remediation block. The menubar is unsandboxed and can
+    /// edit `~/Library/Application Support/Claude/claude_desktop_config.json`
+    /// directly — no need to ask Claude Desktop (Cowork) to edit its own
+    /// config, which its sandbox blocks anyway. One button, atomic
+    /// JSON merge, preserves every other key in the existing config.
+    @ViewBuilder
     private var claudeConfigHelp: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(claudeConfigState == .parseError
-                 ? "Your Claude Desktop config exists but the JSON is malformed. The prompt below asks Claude to read it, fix the syntax, and wire in this app's MCPs in one go."
-                 : "Don't edit JSON yourself. Paste this prompt into Claude Desktop (use Cowork / agent mode) or Claude Code, and Claude will update the config for you.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        if let result = wireResult {
+            wireOutcomeView(for: result)
+                .padding(.leading, 32)
+                .padding(.top, 4)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(claudeConfigState == .parseError
+                     ? "Your Claude Desktop config file exists but the JSON is malformed. Open it in Finder, fix the syntax, then come back here."
+                     : "We can do this for you — one click adds this app's MCP entries to your Claude Desktop config. The rest of your config is preserved.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Text(claudeConfigPrompt)
-                .font(.caption.monospaced())
-                .textSelection(.enabled)
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-
-            HStack(spacing: 8) {
-                Button("Copy prompt") {
-                    let pb = NSPasteboard.general
-                    pb.clearContents()
-                    pb.setString(claudeConfigPrompt, forType: .string)
+                HStack(spacing: 8) {
+                    if claudeConfigState != .parseError {
+                        Button("Add to Claude Desktop config") {
+                            applyClaudeConfigWrite(forceOverwrite: false)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Button("Reveal config in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(
+                            [ClaudeConfigWriter.configPath]
+                        )
+                    }
+                    Spacer()
                 }
+            }
+            .padding(.leading, 32)
+            .padding(.top, 4)
+        }
+    }
+
+    /// Render the outcome of a "Add to Claude Desktop config" click.
+    /// Each case has its own affordance — success suggests restarting
+    /// Claude Desktop, conflict offers a force-overwrite, parse/IO
+    /// errors surface the path so the user can fix manually.
+    @ViewBuilder
+    private func wireOutcomeView(for result: ClaudeConfigWriteResult) -> some View {
+        switch result {
+        case .wrote(let keys):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.green)
+                    Text("Added: \(keys.joined(separator: ", "))").font(.caption.weight(.medium))
+                }
+                Text("Quit and reopen Claude Desktop so it picks up the new config, then run the test prompt below.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let bundleURL = claudeDesktopBundleURL {
                     Button("Open Claude Desktop") {
                         NSWorkspace.shared.open(bundleURL)
                     }
+                    .controlSize(.small)
                 }
-                Spacer()
             }
-
-            Text("After Claude finishes, quit and reopen Claude Desktop so it picks up the new config, then re-run this walkthrough from Settings → Status.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        case .alreadyWired:
+            // Shouldn't normally surface — claudeConfigState would have
+            // shown .found and the help block wouldn't have rendered.
+            Text("Already wired ✓").font(.caption).foregroundStyle(.secondary)
+        case .conflict(let keys):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color.orange)
+                    Text("Conflicting entries: \(keys.joined(separator: ", "))")
+                        .font(.caption.weight(.medium))
+                }
+                Text("Those names already exist in your config and point at different commands. If those are from a previous install you want to replace, click \"Overwrite\". Otherwise rename or remove them in your config first.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("Overwrite") {
+                        applyClaudeConfigWrite(forceOverwrite: true)
+                    }
+                    Button("Reveal config in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(
+                            [ClaudeConfigWriter.configPath]
+                        )
+                    }
+                }
+                .controlSize(.small)
+            }
+        case .parseError:
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Color.red)
+                    Text("Config file has a JSON syntax error.").font(.caption.weight(.medium))
+                }
+                Text("Open it in Finder, fix the JSON, then click \"Add to Claude Desktop config\" again.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("Reveal config in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(
+                            [ClaudeConfigWriter.configPath]
+                        )
+                    }
+                    Button("Try again") {
+                        wireResult = nil
+                    }
+                }
+                .controlSize(.small)
+            }
+        case .ioError(let msg):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Color.red)
+                    Text("Couldn't write config").font(.caption.weight(.medium))
+                }
+                Text(msg).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Try again") {
+                    wireResult = nil
+                }
+                .controlSize(.small)
+            }
         }
-        .padding(.leading, 32)
-        .padding(.top, 4)
     }
 
-    /// The prompt the user pastes into Claude. Transport-aware — only
-    /// includes the MCP entries for transports the user enabled in
-    /// onboarding, so an iMessage-only user doesn't get a WhatsApp
-    /// entry they don't want.
-    private var claudeConfigPrompt: String {
-        var entries: [String] = []
-        if settings.imessageEnabled {
-            entries.append(#"  "imessage-drafts": {"# + "\n" +
-                           #"    "command": "/Applications/Messages for AI.app/Contents/MacOS/imessage-drafts-mcp""# + "\n" +
-                           #"  }"#)
-        }
-        if settings.whatsappEnabled {
-            entries.append(#"  "whatsapp-drafts": {"# + "\n" +
-                           #"    "command": "/Applications/Messages for AI.app/Contents/MacOS/whatsapp-drafts-mcp""# + "\n" +
-                           #"  }"#)
-        }
-        let entriesBlock = entries.joined(separator: ",\n")
-
-        return """
-        I just installed the "Messages for AI" app on my Mac and need to wire it into Claude Desktop. \
-        Please read my Claude Desktop config at ~/Library/Application Support/Claude/claude_desktop_config.json, \
-        then add the following entries to the `mcpServers` object (creating the object if it doesn't exist, \
-        preserving every other key in the file). The values are exact paths — don't rewrite them.
-
-        {
-          "mcpServers": {
-        \(entriesBlock)
-          }
-        }
-
-        After saving, tell me to quit and reopen Claude Desktop so it picks up the change.
-        """
+    /// Run the config writer with the current transport selection and
+    /// refresh the programmatic checks so the row above updates from
+    /// .notFound → .found in the same render pass.
+    private func applyClaudeConfigWrite(forceOverwrite: Bool) {
+        var transports: [Platform] = []
+        if settings.imessageEnabled { transports.append(.imessage) }
+        if settings.whatsappEnabled { transports.append(.whatsapp) }
+        wireResult = ClaudeConfigWriter.wire(
+            transports: transports,
+            forceOverwrite: forceOverwrite
+        )
+        refreshProgrammaticChecks()
     }
 
     private func testNowPane(transport: Platform) -> some View {
