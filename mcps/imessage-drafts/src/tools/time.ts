@@ -1,9 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerWithWitness } from "../witness.ts";
 import { CurrentTimeShape } from "../schema.ts";
 import { jsonResult } from "./_result.ts";
 
 export function registerTimeTool(server: McpServer): void {
-  server.registerTool(
+  registerWithWitness(
+    server,
     "get_current_time",
     {
       title: "Current time (for constructing `since` filters)",

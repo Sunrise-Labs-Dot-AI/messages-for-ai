@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerWithWitness } from "../witness.ts";
 import { ListThreadsShape, GetThreadShape, requireSinceOrContactFilter } from "../schema.ts";
 import { listThreads, getThreadMessages } from "../chatdb/queries.ts";
 import { errorResult, jsonResult } from "./_result.ts";
@@ -6,7 +7,8 @@ import { wrapUntrusted, wrapBodyInPlace } from "./_untrusted.ts";
 import type { ThreadMessage } from "../chatdb/queries.ts";
 
 export function registerThreadTools(server: McpServer): void {
-  server.registerTool(
+  registerWithWitness(
+    server,
     "list_threads",
     {
       title: "List iMessage threads",
@@ -60,7 +62,8 @@ export function registerThreadTools(server: McpServer): void {
     }
   );
 
-  server.registerTool(
+  registerWithWitness(
+    server,
     "get_thread",
     {
       title: "Get messages in an iMessage thread",

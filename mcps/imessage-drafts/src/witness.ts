@@ -11,7 +11,16 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type {
+  McpServer,
+  RegisteredTool,
+  ToolCallback,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
+import type {
+  AnySchema,
+  ZodRawShapeCompat,
+} from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 
 const TRANSPORT = "imessage" as const;
 const FILENAME = `last_invocation_${TRANSPORT}.json`;
@@ -66,27 +75,37 @@ export function writeLastInvocation(toolName: string): void {
  * are absorbed at two layers (writeLastInvocation's own try/catch and this
  * outer try/catch — defense in depth).
  *
- * Generic preserves the SDK's input-schema → callback-args type linkage at
- * each callsite; callers see the same `args` typing they would calling
- * `server.registerTool` directly.
+ * The generic mirrors the SDK's `registerTool<InputArgs, OutputArgs>` signature
+ * so callers see the same `args` typing they'd get calling `server.registerTool`
+ * directly. `Parameters<McpServer["registerTool"]>` collapses to `never` because
+ * of the overload, so we replicate the signature manually.
  */
 export function registerWithWitness<
-  Cfg extends Parameters<McpServer["registerTool"]>[1],
-  Cb extends Parameters<McpServer["registerTool"]>[2],
+  InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined,
+  OutputArgs extends ZodRawShapeCompat | AnySchema = ZodRawShapeCompat | AnySchema,
 >(
   server: McpServer,
   name: string,
-  config: Cfg,
-  cb: Cb,
-): ReturnType<McpServer["registerTool"]> {
-  const wrapped = (async (...args: Parameters<Cb>) => {
-    const result = await (cb as (...a: Parameters<Cb>) => unknown)(...args);
+  config: {
+    title?: string;
+    description?: string;
+    inputSchema?: InputArgs;
+    outputSchema?: OutputArgs;
+    annotations?: ToolAnnotations;
+    _meta?: Record<string, unknown>;
+  },
+  cb: ToolCallback<InputArgs>,
+): RegisteredTool {
+  const wrapped = (async (...args: Parameters<ToolCallback<InputArgs>>) => {
+    const result = await (
+      cb as (...a: Parameters<ToolCallback<InputArgs>>) => Promise<unknown>
+    )(...args);
     try {
       writeLastInvocation(name);
     } catch {
       // swallow — never propagate witness errors to MCP callers
     }
     return result;
-  }) as unknown as Cb;
+  }) as ToolCallback<InputArgs>;
   return server.registerTool(name, config, wrapped);
 }
