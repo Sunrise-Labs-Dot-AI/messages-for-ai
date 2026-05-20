@@ -33,7 +33,9 @@ import AppKit
 /// `unlinkAndReset` then drops back to `.subscribing` for a fresh pair.
 struct WhatsAppPairingView: View {
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
+  @EnvironmentObject var settings: SettingsStore
   @Environment(\.dismissWindow) private var dismissWindow
+  @Environment(\.openWindow) private var openWindow
 
   @State private var phase: Phase = .checkingSentinel
   /// Time at which the currently-displayed QR expires. Drives the
@@ -251,6 +253,12 @@ struct WhatsAppPairingView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .task {
       try? await Task.sleep(nanoseconds: 1_500_000_000)
+      // Chain into the setup walkthrough for users who haven't completed
+      // (or explicitly skipped) it yet. Avoids three-window contention by
+      // opening the walkthrough BEFORE dismissing the pairing window.
+      if !settings.walkthroughComplete && !settings.walkthroughSkipped {
+        openWindow(id: WindowID.setupWalkthrough)
+      }
       dismissWindow(id: WindowID.whatsappPairing)
     }
   }

@@ -105,6 +105,12 @@ struct DraftListView: View {
       // renders skip this (firstRunComplete flips to true on commit).
       if !settings.firstRunComplete {
         openWindow(id: WindowID.onboarding)
+      } else if !settings.walkthroughComplete && !settings.walkthroughSkipped {
+        // Upgrade path: existing v0.3.0/v0.3.1 users have first_run_complete=true
+        // but no walkthrough flag in their settings.json (absence == false).
+        // Show the walkthrough once — these are precisely the users hit by the
+        // discoverability bug PR #14 fixed.
+        openWindow(id: WindowID.setupWalkthrough)
       }
     }
   }
