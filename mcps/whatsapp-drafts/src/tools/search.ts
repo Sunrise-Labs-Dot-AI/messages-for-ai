@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { callDaemon, DaemonRpcError, DaemonUnavailableError } from "../daemon/rpc-client.ts";
+import { registerWithWitness } from "../witness.ts";
 import { SearchInput, SearchShape, isoToMs } from "../schema.ts";
 import { errorResult, jsonResult } from "./_result.ts";
 import { wrapBodyInPlace } from "./_untrusted.ts";
@@ -22,11 +23,15 @@ interface DaemonMessage {
 }
 
 export function registerSearchTool(server: McpServer) {
-  server.tool(
+  registerWithWitness(
+    server,
     "search_whatsapps",
-    "Case-insensitive substring search over cached WhatsApp message bodies. " +
-      "Query must be ≥2 chars. Either `since` or `contact_filter` is required.",
-    SearchShape,
+    {
+      description:
+        "Case-insensitive substring search over cached WhatsApp message bodies. " +
+        "Query must be ≥2 chars. Either `since` or `contact_filter` is required.",
+      inputSchema: SearchShape,
+    },
     async (rawArgs) => {
       const parsed = SearchInput.safeParse(rawArgs);
       if (!parsed.success) return errorResult(parsed.error.errors.map((e) => e.message).join("; "));

@@ -15,6 +15,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { callDaemon, DaemonRpcError, DaemonUnavailableError } from "../daemon/rpc-client.ts";
+import { registerWithWitness } from "../witness.ts";
 import { DraftIdInput, DraftIdShape, StageDraftInput, StageDraftShape } from "../schema.ts";
 import type { Settings } from "../settings.ts";
 import { readSettings, SettingsError } from "../settings.ts";
@@ -74,13 +75,17 @@ function maskDraft(d: DraftRpc): DraftRpc {
 }
 
 export function registerDraftTools(server: McpServer) {
-  server.tool(
+  registerWithWitness(
+    server,
     "stage_whatsapp_draft",
-    "Stage an outbound WhatsApp message as a DRAFT (does NOT send). The user " +
-      "approves via the menu bar app's hold-to-fire (Phase 3) or, if " +
-      "settings.require_approval is OFF, via send_whatsapp_draft. Drafts " +
-      "include a 5-message thread-context snapshot for the approval surface.",
-    StageDraftShape,
+    {
+      description:
+        "Stage an outbound WhatsApp message as a DRAFT (does NOT send). The user " +
+        "approves via the menu bar app's hold-to-fire (Phase 3) or, if " +
+        "settings.require_approval is OFF, via send_whatsapp_draft. Drafts " +
+        "include a 5-message thread-context snapshot for the approval surface.",
+      inputSchema: StageDraftShape,
+    },
     async (raw) => {
       const parsed = StageDraftInput.safeParse(raw);
       if (!parsed.success) return errorResult(parsed.error.errors.map((e) => e.message).join("; "));
@@ -93,11 +98,14 @@ export function registerDraftTools(server: McpServer) {
     },
   );
 
-  server.tool(
+  registerWithWitness(
+    server,
     "list_whatsapp_drafts",
-    "List currently-staged drafts, newest-first. Drafts with sent_at set " +
-      "are returned until the daemon's daily sweep purges them.",
-    {} as Record<string, never>,
+    {
+      description:
+        "List currently-staged drafts, newest-first. Drafts with sent_at set " +
+        "are returned until the daemon's daily sweep purges them.",
+    },
     async () => {
       try {
         const r = await callDaemon<{ drafts: DraftRpc[]; skipped: number }>("getDrafts");
@@ -108,10 +116,13 @@ export function registerDraftTools(server: McpServer) {
     },
   );
 
-  server.tool(
+  registerWithWitness(
+    server,
     "get_whatsapp_draft",
-    "Retrieve a single staged draft by id.",
-    DraftIdShape,
+    {
+      description: "Retrieve a single staged draft by id.",
+      inputSchema: DraftIdShape,
+    },
     async (raw) => {
       const parsed = DraftIdInput.safeParse(raw);
       if (!parsed.success) return errorResult(parsed.error.errors.map((e) => e.message).join("; "));
@@ -124,10 +135,13 @@ export function registerDraftTools(server: McpServer) {
     },
   );
 
-  server.tool(
+  registerWithWitness(
+    server,
     "discard_whatsapp_draft",
-    "Delete a staged draft. The draft must not have been sent.",
-    DraftIdShape,
+    {
+      description: "Delete a staged draft. The draft must not have been sent.",
+      inputSchema: DraftIdShape,
+    },
     async (raw) => {
       const parsed = DraftIdInput.safeParse(raw);
       if (!parsed.success) return errorResult(parsed.error.errors.map((e) => e.message).join("; "));
@@ -140,13 +154,17 @@ export function registerDraftTools(server: McpServer) {
     },
   );
 
-  server.tool(
+  registerWithWitness(
+    server,
     "send_whatsapp_draft",
-    "Send a previously-staged WhatsApp draft. Subject to the full check ladder: " +
-      "approval-gate (default ON), minimum staged age, inter-send delay, " +
-      "burst limit, daily cap. Returns explicit error codes so callers can " +
-      "distinguish 'not approved' from 'cap hit' from 'send failed'.",
-    DraftIdShape,
+    {
+      description:
+        "Send a previously-staged WhatsApp draft. Subject to the full check ladder: " +
+        "approval-gate (default ON), minimum staged age, inter-send delay, " +
+        "burst limit, daily cap. Returns explicit error codes so callers can " +
+        "distinguish 'not approved' from 'cap hit' from 'send failed'.",
+      inputSchema: DraftIdShape,
+    },
     async (raw) => {
       const parsed = DraftIdInput.safeParse(raw);
       if (!parsed.success) return errorResult(parsed.error.errors.map((e) => e.message).join("; "));
