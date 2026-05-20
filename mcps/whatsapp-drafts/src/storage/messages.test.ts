@@ -11,7 +11,11 @@ process.env.WHATSAPP_MCP_HOME = tmp;
 const {
   insertMessage,
   upsertThread,
+  upsertContact,
+  upsertLidMapping,
   listThreads,
+  getContactDisplayName,
+  formatJidAsPhone,
   getThreadMessages,
   searchMessages,
   getMessageFull,
@@ -19,6 +23,9 @@ const {
   getMessagesDb,
   _resetForTesting,
 } = await import("./messages.ts");
+
+// All fixtures synthetic — never copy from real session.db. The lid/pn
+// pairs below are made-up identifiers chosen to look obviously fake.
 
 afterAll(() => {
   _resetForTesting();
@@ -32,6 +39,7 @@ beforeEach(() => {
   db.exec("DELETE FROM messages");
   db.exec("DELETE FROM threads");
   db.exec("DELETE FROM contacts");
+  db.exec("DELETE FROM lid_pn_map");
 });
 
 describe("messages.db", () => {
@@ -130,6 +138,143 @@ describe("messages.db", () => {
     });
     const r = searchMessages({ query: "rain", since: 0 });
     expect(r).toHaveLength(1);
+  });
+
+  // ---- @lid privacy-id resolution -----------------------------------
+
+  describe("getContactDisplayName + @lid mapping", () => {
+    test("direct @s.whatsapp.net JID resolves via contacts.display_name", () => {
+      upsertContact({ jid: "12025550001@s.whatsapp.net", display_name: "Alice Test", push_name: "alice" });
+      expect(getContactDisplayName("12025550001@s.whatsapp.net")).toBe("Alice Test");
+    });
+
+    test("direct JID falls back to push_name when display_name is null", () => {
+      upsertContact({ jid: "12025550002@s.whatsapp.net", display_name: null, push_name: "bob-push" });
+      expect(getContactDisplayName("12025550002@s.whatsapp.net")).toBe("bob-push");
+    });
+
+    test("@lid resolves through lid_pn_map to a contacts row", () => {
+      upsertLidMapping("99999@lid", "12025550003@s.whatsapp.net");
+      upsertContact({ jid: "12025550003@s.whatsapp.net", display_name: "Carol Test", push_name: null });
+      expect(getContactDisplayName("99999@lid")).toBe("Carol Test");
+    });
+
+    test("@lid with mapping but no contacts row returns null (caller formats as phone)", () => {
+      upsertLidMapping("88888@lid", "12025550004@s.whatsapp.net");
+      // No contacts row for 12025550004@s.whatsapp.net
+      expect(getContactDisplayName("88888@lid")).toBeNull();
+    });
+
+    test("@lid with no mapping at all returns null (graceful, no error)", () => {
+      // Empty lid_pn_map; @lid input with no row.
+      expect(getContactDisplayName("77777@lid")).toBeNull();
+    });
+
+    test("upsertLidMapping is idempotent on lid (UPSERT updates pn)", () => {
+      upsertLidMapping("66666@lid", "12025550005@s.whatsapp.net");
+      upsertLidMapping("66666@lid", "12025550006@s.whatsapp.net");
+      upsertContact({ jid: "12025550005@s.whatsapp.net", display_name: "Stale", push_name: null });
+      upsertContact({ jid: "12025550006@s.whatsapp.net", display_name: "Fresh", push_name: null });
+      expect(getContactDisplayName("66666@lid")).toBe("Fresh");
+    });
+
+    test("getThreadMessages resolves sender_name through @lid LEFT JOIN", () => {
+      upsertThread({
+        thread_jid: "group@g.us",
+        display_name: "Group Chat",
+        is_group: true,
+        last_message_ts: 1700000000000,
+      });
+      upsertLidMapping("55555@lid", "12025550007@s.whatsapp.net");
+      upsertContact({ jid: "12025550007@s.whatsapp.net", display_name: "Dave Test", push_name: null });
+      insertMessage({
+        message_id: "m-lid",
+        thread_jid: "group@g.us",
+        sender_jid: "55555@lid",
+        from_me: false,
+        ts: 1700000000000,
+        body: "hi",
+        message_type: "text",
+        source: "live",
+      });
+      const msgs = getThreadMessages({ thread_jid: "group@g.us" });
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]!.sender_name).toBe("Dave Test");
+    });
+
+    test("getThreadMessages: direct contact match wins over lid indirection", () => {
+      // Sender JID has BOTH a direct contacts row AND a lid mapping to a
+      // different contact. The direct match should win — COALESCE column
+      // order in the SQL is (direct, lid-indirect).
+      upsertThread({
+        thread_jid: "t-direct@s.whatsapp.net",
+        display_name: null,
+        is_group: false,
+        last_message_ts: 1,
+      });
+      // Direct contact for sender:
+      upsertContact({ jid: "44444@lid", display_name: "Direct Match", push_name: null });
+      // Lid mapping that would also resolve, but to a different contact:
+      upsertLidMapping("44444@lid", "12025550008@s.whatsapp.net");
+      upsertContact({ jid: "12025550008@s.whatsapp.net", display_name: "Indirect Match", push_name: null });
+      insertMessage({
+        message_id: "m-pick",
+        thread_jid: "t-direct@s.whatsapp.net",
+        sender_jid: "44444@lid",
+        from_me: false,
+        ts: 1,
+        body: "x",
+        message_type: "text",
+        source: "live",
+      });
+      const msgs = getThreadMessages({ thread_jid: "t-direct@s.whatsapp.net" });
+      expect(msgs[0]!.sender_name).toBe("Direct Match");
+    });
+
+    test("getThreadMessages: sender_name=null when neither direct nor lid match", () => {
+      upsertThread({
+        thread_jid: "t-unmatched@g.us",
+        display_name: null,
+        is_group: true,
+        last_message_ts: 1,
+      });
+      insertMessage({
+        message_id: "m-unmatched",
+        thread_jid: "t-unmatched@g.us",
+        sender_jid: "33333@lid",
+        from_me: false,
+        ts: 1,
+        body: "y",
+        message_type: "text",
+        source: "live",
+      });
+      const msgs = getThreadMessages({ thread_jid: "t-unmatched@g.us" });
+      expect(msgs[0]!.sender_name).toBeNull();
+    });
+  });
+
+  // ---- formatJidAsPhone ----------------------------------------------
+
+  describe("formatJidAsPhone", () => {
+    test("US 11-digit number gets the pretty +1 (NNN) NNN-NNNN form", () => {
+      expect(formatJidAsPhone("12025550100@s.whatsapp.net")).toBe("+1 (202) 555-0100");
+    });
+
+    test("non-US international number gets a bare +N prefix", () => {
+      expect(formatJidAsPhone("447911123456@s.whatsapp.net")).toBe("+447911123456");
+    });
+
+    test("group JID round-trips unchanged (callers use thread name)", () => {
+      expect(formatJidAsPhone("120363012345678901@g.us")).toBe("120363012345678901@g.us");
+    });
+
+    test("JID with no digits round-trips unchanged", () => {
+      expect(formatJidAsPhone("notanumber@s.whatsapp.net")).toBe("notanumber@s.whatsapp.net");
+    });
+
+    test("malformed JID with no @ round-trips unchanged", () => {
+      expect(formatJidAsPhone("12025550100")).toBe("12025550100");
+    });
   });
 
   test("sweepOldMessages deletes old rows", () => {
