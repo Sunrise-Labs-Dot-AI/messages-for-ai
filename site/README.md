@@ -35,3 +35,17 @@ above.)
 - If the site grows beyond a landing page, migrate to a framework
   (Next.js / Astro / SvelteKit) and re-deploy. Vercel handles all three
   with zero config.
+
+## Release-time checklist
+
+The Download button points at
+`/releases/latest/download/Messages-for-AI.dmg`. GitHub resolves the
+`latest` segment to the most recent release, and `scripts/build-dmg.sh`
+always outputs the .dmg under that stable filename — so `index.html`
+never needs touching across releases. As long as every release uploads
+a `Messages-for-AI.dmg` asset, the marketing site stays current
+automatically.
+
+(History: through v0.3.2 the asset was versioned, e.g.
+`messages-for-ai-v0.3.2.dmg`, which required bumping the link on every
+release. Switched to the stable name starting v0.3.2.1.)

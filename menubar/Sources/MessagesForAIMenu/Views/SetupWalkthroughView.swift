@@ -34,12 +34,21 @@ struct SetupWalkthroughView: View {
 
     // Programmatic check results, computed on appear + every 5s.
     @State private var programmaticChecks: [ProgrammaticCheck] = []
+    // Claude Desktop config state lives separately so the row can render
+    // its own inline help block (a pastable prompt for Claude to wire up
+    // the MCPs autonomously). The ProgrammaticCheck rows above are
+    // pass/fail/neutral and don't carry remediation affordances.
+    @State private var claudeConfigState: ClaudeConfigState = .fileAbsent
 
     // Per-transport verification: nil = waiting, true = green, false = 60s timeout.
     @State private var imessageVerified: Bool? = nil
     @State private var whatsappVerified: Bool? = nil
 
     @State private var claudeDesktopBundleURL: URL? = nil
+    /// Result of the most recent "Add to Claude Desktop config" click.
+    /// Drives the inline outcome view; nil means the button hasn't been
+    /// clicked yet (default state).
+    @State private var wireResult: ClaudeConfigWriteResult? = nil
 
     // 1s tick for elapsed-time tracking (60s timeout per transport).
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -72,6 +81,25 @@ struct SetupWalkthroughView: View {
             claudeDesktopBundleURL = NSWorkspace.shared.urlForApplication(
                 withBundleIdentifier: "com.anthropic.claudefordesktop"
             )
+            // Kick the WhatsApp daemon if the transport is enabled.
+            // start() is idempotent (the controller short-circuits if
+            // already running). Without this call, a user who opens the
+            // walkthrough before clicking the menubar icon (e.g. via the
+            // Dock launch path) sees red rows because DraftListView's
+            // .task — which is the OTHER place the daemon gets kicked —
+            // hasn't fired yet.
+            if settings.whatsappEnabled {
+                whatsappDaemon.start()
+            }
+        }
+        // Re-render the status rows the moment the daemon's state
+        // changes, not just every 5s on the tick. Without these, a
+        // .starting → .running transition lags up to 5s in the UI.
+        .onChange(of: whatsappDaemon.status) { _, _ in
+            refreshProgrammaticChecks()
+        }
+        .onChange(of: whatsappDaemon.baileysState) { _, _ in
+            refreshProgrammaticChecks()
         }
         .onReceive(tick) { _ in
             elapsed = Date().timeIntervalSince(walkthroughStartedAt)
@@ -117,11 +145,186 @@ struct SetupWalkthroughView: View {
                 ForEach(programmaticChecks) { check in
                     checkRow(check)
                 }
+                claudeConfigRow
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
+    }
+
+    /// The Claude Desktop config check — rendered separately from the
+    /// other rows because it carries an inline help block (a pastable
+    /// prompt) when the config isn't yet wired up. Aimed at less-technical
+    /// users who shouldn't be expected to hand-edit JSON.
+    private var claudeConfigRow: some View {
+        let (label, passing): (String, Bool?) = {
+            switch claudeConfigState {
+            case .found:
+                return ("Claude Desktop config references this app", true)
+            case .notFound:
+                return ("Claude Desktop config doesn't reference this app yet", false)
+            case .fileAbsent:
+                // Not a failure — Claude Desktop may simply not be installed.
+                return ("Claude Desktop not detected (Claude Code-only setup is fine)", nil)
+            case .parseError:
+                return ("Claude Desktop config exists but can't be parsed", false)
+            }
+        }()
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                statusBadge(for: passing)
+                Text(label).font(.callout)
+                Spacer()
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(label), \(Self.statusWord(for: passing))")
+
+            if claudeConfigState == .notFound || claudeConfigState == .parseError {
+                claudeConfigHelp
+            }
+        }
+    }
+
+    /// Inline remediation block. The menubar is unsandboxed and can
+    /// edit `~/Library/Application Support/Claude/claude_desktop_config.json`
+    /// directly — no need to ask Claude Desktop (Cowork) to edit its own
+    /// config, which its sandbox blocks anyway. One button, atomic
+    /// JSON merge, preserves every other key in the existing config.
+    @ViewBuilder
+    private var claudeConfigHelp: some View {
+        if let result = wireResult {
+            wireOutcomeView(for: result)
+                .padding(.leading, 32)
+                .padding(.top, 4)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(claudeConfigState == .parseError
+                     ? "Your Claude Desktop config file exists but the JSON is malformed. Open it in Finder, fix the syntax, then come back here."
+                     : "We can do this for you — one click adds this app's MCP entries to your Claude Desktop config. The rest of your config is preserved.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    if claudeConfigState != .parseError {
+                        Button("Add to Claude Desktop config") {
+                            applyClaudeConfigWrite(forceOverwrite: false)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Button("Reveal config in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(
+                            [ClaudeConfigWriter.configPath]
+                        )
+                    }
+                    Spacer()
+                }
+            }
+            .padding(.leading, 32)
+            .padding(.top, 4)
+        }
+    }
+
+    /// Render the outcome of a "Add to Claude Desktop config" click.
+    /// Each case has its own affordance — success suggests restarting
+    /// Claude Desktop, conflict offers a force-overwrite, parse/IO
+    /// errors surface the path so the user can fix manually.
+    @ViewBuilder
+    private func wireOutcomeView(for result: ClaudeConfigWriteResult) -> some View {
+        switch result {
+        case .wrote(let keys):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.green)
+                    Text("Added: \(keys.joined(separator: ", "))").font(.caption.weight(.medium))
+                }
+                Text("Quit and reopen Claude Desktop so it picks up the new config, then run the test prompt below.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let bundleURL = claudeDesktopBundleURL {
+                    Button("Open Claude Desktop") {
+                        NSWorkspace.shared.open(bundleURL)
+                    }
+                    .controlSize(.small)
+                }
+            }
+        case .alreadyWired:
+            // Shouldn't normally surface — claudeConfigState would have
+            // shown .found and the help block wouldn't have rendered.
+            Text("Already wired ✓").font(.caption).foregroundStyle(.secondary)
+        case .conflict(let keys):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color.orange)
+                    Text("Conflicting entries: \(keys.joined(separator: ", "))")
+                        .font(.caption.weight(.medium))
+                }
+                Text("Those names already exist in your config and point at different commands. If those are from a previous install you want to replace, click \"Overwrite\". Otherwise rename or remove them in your config first.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("Overwrite") {
+                        applyClaudeConfigWrite(forceOverwrite: true)
+                    }
+                    Button("Reveal config in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(
+                            [ClaudeConfigWriter.configPath]
+                        )
+                    }
+                }
+                .controlSize(.small)
+            }
+        case .parseError:
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Color.red)
+                    Text("Config file has a JSON syntax error.").font(.caption.weight(.medium))
+                }
+                Text("Open it in Finder, fix the JSON, then click \"Add to Claude Desktop config\" again.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("Reveal config in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(
+                            [ClaudeConfigWriter.configPath]
+                        )
+                    }
+                    Button("Try again") {
+                        wireResult = nil
+                    }
+                }
+                .controlSize(.small)
+            }
+        case .ioError(let msg):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Color.red)
+                    Text("Couldn't write config").font(.caption.weight(.medium))
+                }
+                Text(msg).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Try again") {
+                    wireResult = nil
+                }
+                .controlSize(.small)
+            }
+        }
+    }
+
+    /// Run the config writer with the current transport selection and
+    /// refresh the programmatic checks so the row above updates from
+    /// .notFound → .found in the same render pass.
+    private func applyClaudeConfigWrite(forceOverwrite: Bool) {
+        var transports: [Platform] = []
+        if settings.imessageEnabled { transports.append(.imessage) }
+        if settings.whatsappEnabled { transports.append(.whatsapp) }
+        wireResult = ClaudeConfigWriter.wire(
+            transports: transports,
+            forceOverwrite: forceOverwrite
+        )
+        refreshProgrammaticChecks()
     }
 
     private func testNowPane(transport: Platform) -> some View {
@@ -350,37 +553,50 @@ struct SetupWalkthroughView: View {
         }
 
         if settings.whatsappEnabled {
-            let running: Bool = {
-                if case .running = whatsappDaemon.status { return true }
-                return false
+            // Tri-state representation so transitional states (.starting,
+            // .backingOff, running-but-baileys-still-connecting) show as
+            // pending instead of failing. The label changes too — a
+            // "WhatsApp daemon starting…" with a neutral icon is much
+            // clearer than "WhatsApp daemon running ✗" during the few
+            // seconds between launch and the daemon's first poll landing.
+            let (daemonLabel, daemonPassing): (String, Bool?) = {
+                switch whatsappDaemon.status {
+                case .idle:        return ("WhatsApp daemon starting…", nil)
+                case .starting:    return ("WhatsApp daemon starting…", nil)
+                case .running:     return ("WhatsApp daemon running", true)
+                case .backingOff:  return ("WhatsApp daemon reconnecting…", nil)
+                case .crashLooping: return ("WhatsApp daemon couldn't start", false)
+                case .stopped:     return ("WhatsApp daemon stopped", false)
+                }
             }()
-            rows.append(ProgrammaticCheck(label: "WhatsApp daemon running", passing: running))
-            let paired = whatsappDaemon.baileysState == "connected"
-            rows.append(ProgrammaticCheck(label: "WhatsApp paired (Baileys connected)", passing: paired))
-        }
+            rows.append(ProgrammaticCheck(label: daemonLabel, passing: daemonPassing))
 
-        // Claude Desktop config — only surface the case, never raw strings.
-        let configState = checks.claudeDesktopConfigState()
-        let configLabel: String
-        let configPass: Bool?
-        switch configState {
-        case .found:
-            configLabel = "Claude Desktop config references this app"
-            configPass = true
-        case .notFound:
-            configLabel = "Claude Desktop config doesn't reference this app yet"
-            configPass = false
-        case .fileAbsent:
-            // Not a failure — Claude Desktop may simply not be installed.
-            configLabel = "Claude Desktop not detected (Claude Code-only setup is fine)"
-            configPass = nil
-        case .parseError:
-            configLabel = "Claude Desktop config exists but can't be parsed"
-            configPass = false
+            // Baileys pairing — depends on the daemon being up first.
+            // When the daemon isn't running, this row is pending (not
+            // failed) since it can't be evaluated yet.
+            let (baileysLabel, baileysPassing): (String, Bool?) = {
+                guard case .running = whatsappDaemon.status else {
+                    return ("WhatsApp connection (waiting for daemon)", nil)
+                }
+                switch whatsappDaemon.baileysState {
+                case "connected":     return ("WhatsApp paired (Baileys connected)", true)
+                case "connecting":    return ("WhatsApp connecting…", nil)
+                case "reconnecting":  return ("WhatsApp reconnecting…", nil)
+                case "logged_out":    return ("WhatsApp logged out — re-pair needed", false)
+                // Daemon up but the first state-poll hasn't landed yet.
+                case .none:           return ("WhatsApp connecting…", nil)
+                // Future Baileys states we don't yet model: show raw + pending.
+                case .some(let s):    return ("WhatsApp state: \(s)", nil)
+                }
+            }()
+            rows.append(ProgrammaticCheck(label: baileysLabel, passing: baileysPassing))
         }
-        rows.append(ProgrammaticCheck(label: configLabel, passing: configPass))
 
         programmaticChecks = rows
+        // Claude Desktop config state is rendered by `claudeConfigRow`
+        // (not appended to programmaticChecks) so the row can carry an
+        // inline help block when remediation is needed.
+        claudeConfigState = checks.claudeDesktopConfigState()
     }
 }
 

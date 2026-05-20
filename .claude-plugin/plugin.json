@@ -1,7 +1,7 @@
 {
   "name": "messages-for-ai",
   "description": "AI proposes, you approve. Local menubar app + MCPs for iMessage and WhatsApp: Claude drafts, you hold-to-fire in the menubar. v0.3.2 adds a post-onboarding walkthrough that proves Claude can reach each MCP, plus a persistent Status pane for re-running the checks on demand. Full audit log under ~/.messages-mcp/send-audit.log. Requires Messages for AI.app installed from GitHub Releases.",
-  "version": "0.3.2",
+  "version": "0.3.2.1",
   "keywords": [
     "imessage",
     "whatsapp",

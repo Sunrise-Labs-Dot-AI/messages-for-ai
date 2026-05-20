@@ -38,9 +38,11 @@
 # Required environment:
 #   - Developer ID Application cert in keychain (auto-detected)
 #   - Notarytool credentials stored in keychain as profile
-#     "imessage-drafts-mcp-notary" (override via NOTARY_PROFILE env var).
-#     One-time setup:
-#       xcrun notarytool store-credentials imessage-drafts-mcp-notary \
+#     "imessage-mcp-notary" (legacy name from the imessage-mcp era; kept
+#     to avoid re-storing credentials on every maintainer's machine).
+#     Override via NOTARY_PROFILE env var if your keychain uses a
+#     different name. One-time setup:
+#       xcrun notarytool store-credentials imessage-mcp-notary \
 #         --apple-id <your-apple-id-email> \
 #         --team-id <your-team-id> \
 #         --password <app-specific-password-from-appleid.apple.com>
@@ -58,7 +60,7 @@
 set -euo pipefail
 
 VERSION="${1:?usage: build-release.sh <version>, e.g. v0.1.1}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-imessage-drafts-mcp-notary}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-imessage-mcp-notary}"
 
 # The only Apple Developer Team ID this build accepts. Auto-detected
 # certs from a different Team ID will be REJECTED rather than silently
@@ -360,27 +362,123 @@ ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_APP_ZIP"
 # `wait` blocks. If Apple's notary backlog times us out, a maintainer
 # can resume polling against the saved UUID instead of paying another
 # upload round-trip — see script header.
+#
 # Redirect submit output to a file rather than capture via $(...).
 # Long-running command substitutions can be killed by some sandboxed
 # parent shells (Claude Code's Bash tool reproducibly SIGBUS'd this
 # at the 70 MB upload size — see commit message). File-redirect is
 # functionally identical for our use but is robust against parent-
 # shell quirks.
+#
+# ── notarytool 1.1.0 SIGBUS in CoreFoundation string formatter ──
+# Apple's notarytool 1.1.0 crashes with EXC_BAD_ACCESS / SIGBUS inside
+# __CFStringCreateImmutableFunnel3 AFTER the upload completes and
+# Apple acknowledges the submission. The crash is in the response-
+# printing path, not the upload — Apple's history shows the submission
+# even when the local notarytool exits with signal 10. To survive this:
+#   1. Wrap `submit` in `set +e` so the script doesn't bail.
+#   2. Recover the UUID from the JSON file (happy path) or from
+#      `notarytool history` (SIGBUS-after-upload path).
+#   3. Poll for status via `info --output-format json` (shorter response
+#      strings than `wait`, less likely to trip the formatter bug).
 APP_SUBMIT_JSON_FILE="$DIST/notarize-submit.json"
+set +e
 xcrun notarytool submit "$NOTARIZE_APP_ZIP" \
   --keychain-profile "$NOTARY_PROFILE" \
   --output-format json \
-  --no-wait > "$APP_SUBMIT_JSON_FILE"
-APP_SUBMIT_JSON=$(cat "$APP_SUBMIT_JSON_FILE")
-APP_UUID=$(echo "$APP_SUBMIT_JSON" | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))')
+  --no-wait > "$APP_SUBMIT_JSON_FILE" 2>&1
+SUBMIT_RC=$?
+set -e
+
+APP_UUID=""
+if [[ -s "$APP_SUBMIT_JSON_FILE" ]]; then
+  APP_UUID=$(/usr/bin/python3 - "$APP_SUBMIT_JSON_FILE" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f).get("id", ""))
+except Exception:
+    pass
+PY
+)
+fi
+
 if [[ -z "$APP_UUID" ]]; then
-  echo "✗ failed to parse app notarytool submission UUID from:" >&2
-  echo "$APP_SUBMIT_JSON" >&2
+  echo "  ⚠ notarytool submit didn't return a parseable UUID (rc=$SUBMIT_RC)." >&2
+  echo "  ⚠ Querying notarytool history for the most recent submission — Apple typically" >&2
+  echo "  ⚠ records the upload server-side even when the local notarytool crashes (SIGBUS" >&2
+  echo "  ⚠ in CFStringCreateImmutableFunnel3, known notarytool 1.1.0 bug)." >&2
+  APP_UUID=$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" --output-format json 2>/dev/null \
+    | /usr/bin/python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    history = data.get("history", [])
+    if history:
+        print(history[0].get("id", ""))
+except Exception:
+    pass
+')
+fi
+
+if [[ -z "$APP_UUID" ]]; then
+  echo "✗ could not obtain notarytool submission UUID. submit rc=$SUBMIT_RC." >&2
+  echo "  submit output:" >&2
+  cat "$APP_SUBMIT_JSON_FILE" >&2
   exit 1
 fi
 echo "$APP_UUID" > "$DIST/notarize-app.uuid"
-echo "› submission uuid: $APP_UUID (resumable via: xcrun notarytool wait $APP_UUID --keychain-profile $NOTARY_PROFILE)"
-xcrun notarytool wait "$APP_UUID" --keychain-profile "$NOTARY_PROFILE"
+if [[ $SUBMIT_RC -ne 0 ]]; then
+  echo "  ⚠ notarytool submit rc=$SUBMIT_RC but Apple accepted submission $APP_UUID."
+  echo "  ⚠ (Known notarytool 1.1.0 SIGBUS in response-printing path; upload completed.)"
+fi
+echo "› submission uuid: $APP_UUID"
+echo "› (resumable via: xcrun notarytool info $APP_UUID --keychain-profile $NOTARY_PROFILE)"
+
+# Poll for completion via `info --output-format json`. We don't use
+# `notarytool wait` because it hits the same response-formatting SIGBUS
+# on long responses; `info` returns a short JSON object that the
+# formatter handles reliably.
+echo "› polling for notarization completion (timeout: 60 min; Apple's queue can backlog)..."
+NOTARIZE_STATUS=""
+for i in $(seq 1 180); do
+  set +e
+  INFO_JSON=$(xcrun notarytool info "$APP_UUID" --keychain-profile "$NOTARY_PROFILE" --output-format json 2>/dev/null)
+  INFO_RC=$?
+  set -e
+  NOTARIZE_STATUS=$(echo "$INFO_JSON" | /usr/bin/python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("status", "Unknown"))
+except Exception:
+    print("ParseError")
+' 2>/dev/null)
+  case "$NOTARIZE_STATUS" in
+    Accepted)
+      echo "  ✓ Accepted (poll $i, ~$((i*20))s)"
+      break
+      ;;
+    "In Progress")
+      printf "  · in progress (poll %d, ~%ds)\n" "$i" "$((i*20))"
+      sleep 20
+      ;;
+    Rejected|Invalid)
+      echo "✗ notarization $NOTARIZE_STATUS for $APP_UUID" >&2
+      xcrun notarytool log "$APP_UUID" --keychain-profile "$NOTARY_PROFILE" >&2 || true
+      exit 1
+      ;;
+    *)
+      echo "  ? unrecognized status='$NOTARIZE_STATUS' (info rc=$INFO_RC, poll $i)" >&2
+      sleep 20
+      ;;
+  esac
+done
+
+if [[ "$NOTARIZE_STATUS" != "Accepted" ]]; then
+  echo "✗ notarization didn't complete within poll timeout. Last status: $NOTARIZE_STATUS" >&2
+  echo "  Resume manually: xcrun notarytool info $APP_UUID --keychain-profile $NOTARY_PROFILE" >&2
+  exit 1
+fi
 
 echo "› stapling notarization ticket to app"
 xcrun stapler staple "$APP_PATH"

@@ -194,11 +194,16 @@
     </p>
 
     <div class="cta-row">
-      <a class="cta" href="https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai/releases/latest">
+      <!-- Direct-download URL: /releases/latest/download/<asset-name> bypasses
+           the release-page detour and triggers an actual file download.
+           Asset name is stable (Messages-for-AI.dmg) so this URL never needs
+           updating across releases — scripts/build-dmg.sh outputs under the
+           same filename every time. See site/README.md for context. -->
+      <a class="cta" href="https://github.com/Sunrise-Labs-Dot-AI/messages-for-ai/releases/latest/download/Messages-for-AI.dmg">
         Download for macOS
         <svg aria-hidden="true" focusable="false" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
       </a>
-      <span class="cta-sub">Free. Open source. Requires macOS 14 (Sonoma) or later.</span>
+      <span class="cta-sub">Free. Open source. Notarized for macOS 14 (Sonoma) or later. Mount the .dmg and drag to Applications.</span>
     </div>
 
     <div class="screenshot-placeholder"
