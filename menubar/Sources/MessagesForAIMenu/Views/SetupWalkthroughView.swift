@@ -34,6 +34,11 @@ struct SetupWalkthroughView: View {
 
     // Programmatic check results, computed on appear + every 5s.
     @State private var programmaticChecks: [ProgrammaticCheck] = []
+    // Claude Desktop config state lives separately so the row can render
+    // its own inline help block (a pastable prompt for Claude to wire up
+    // the MCPs autonomously). The ProgrammaticCheck rows above are
+    // pass/fail/neutral and don't carry remediation affordances.
+    @State private var claudeConfigState: ClaudeConfigState = .fileAbsent
 
     // Per-transport verification: nil = waiting, true = green, false = 60s timeout.
     @State private var imessageVerified: Bool? = nil
@@ -117,11 +122,125 @@ struct SetupWalkthroughView: View {
                 ForEach(programmaticChecks) { check in
                     checkRow(check)
                 }
+                claudeConfigRow
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
+    }
+
+    /// The Claude Desktop config check — rendered separately from the
+    /// other rows because it carries an inline help block (a pastable
+    /// prompt) when the config isn't yet wired up. Aimed at less-technical
+    /// users who shouldn't be expected to hand-edit JSON.
+    private var claudeConfigRow: some View {
+        let (label, passing): (String, Bool?) = {
+            switch claudeConfigState {
+            case .found:
+                return ("Claude Desktop config references this app", true)
+            case .notFound:
+                return ("Claude Desktop config doesn't reference this app yet", false)
+            case .fileAbsent:
+                // Not a failure — Claude Desktop may simply not be installed.
+                return ("Claude Desktop not detected (Claude Code-only setup is fine)", nil)
+            case .parseError:
+                return ("Claude Desktop config exists but can't be parsed", false)
+            }
+        }()
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                statusBadge(for: passing)
+                Text(label).font(.callout)
+                Spacer()
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(label), \(Self.statusWord(for: passing))")
+
+            if claudeConfigState == .notFound || claudeConfigState == .parseError {
+                claudeConfigHelp
+            }
+        }
+    }
+
+    /// Inline remediation block. Surfaces a self-contained prompt the
+    /// user can paste into Claude Desktop (Cowork) or Claude Code; Claude
+    /// then edits `~/Library/Application Support/Claude/claude_desktop_config.json`
+    /// on the user's behalf. Avoids asking non-technical users to
+    /// hand-edit JSON.
+    private var claudeConfigHelp: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(claudeConfigState == .parseError
+                 ? "Your Claude Desktop config exists but the JSON is malformed. The prompt below asks Claude to read it, fix the syntax, and wire in this app's MCPs in one go."
+                 : "Don't edit JSON yourself. Paste this prompt into Claude Desktop (use Cowork / agent mode) or Claude Code, and Claude will update the config for you.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(claudeConfigPrompt)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            HStack(spacing: 8) {
+                Button("Copy prompt") {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(claudeConfigPrompt, forType: .string)
+                }
+                if let bundleURL = claudeDesktopBundleURL {
+                    Button("Open Claude Desktop") {
+                        NSWorkspace.shared.open(bundleURL)
+                    }
+                }
+                Spacer()
+            }
+
+            Text("After Claude finishes, quit and reopen Claude Desktop so it picks up the new config, then re-run this walkthrough from Settings → Status.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.leading, 32)
+        .padding(.top, 4)
+    }
+
+    /// The prompt the user pastes into Claude. Transport-aware — only
+    /// includes the MCP entries for transports the user enabled in
+    /// onboarding, so an iMessage-only user doesn't get a WhatsApp
+    /// entry they don't want.
+    private var claudeConfigPrompt: String {
+        var entries: [String] = []
+        if settings.imessageEnabled {
+            entries.append(#"  "imessage-drafts": {"# + "\n" +
+                           #"    "command": "/Applications/Messages for AI.app/Contents/MacOS/imessage-drafts-mcp""# + "\n" +
+                           #"  }"#)
+        }
+        if settings.whatsappEnabled {
+            entries.append(#"  "whatsapp-drafts": {"# + "\n" +
+                           #"    "command": "/Applications/Messages for AI.app/Contents/MacOS/whatsapp-drafts-mcp""# + "\n" +
+                           #"  }"#)
+        }
+        let entriesBlock = entries.joined(separator: ",\n")
+
+        return """
+        I just installed the "Messages for AI" app on my Mac and need to wire it into Claude Desktop. \
+        Please read my Claude Desktop config at ~/Library/Application Support/Claude/claude_desktop_config.json, \
+        then add the following entries to the `mcpServers` object (creating the object if it doesn't exist, \
+        preserving every other key in the file). The values are exact paths — don't rewrite them.
+
+        {
+          "mcpServers": {
+        \(entriesBlock)
+          }
+        }
+
+        After saving, tell me to quit and reopen Claude Desktop so it picks up the change.
+        """
     }
 
     private func testNowPane(transport: Platform) -> some View {
@@ -359,28 +478,11 @@ struct SetupWalkthroughView: View {
             rows.append(ProgrammaticCheck(label: "WhatsApp paired (Baileys connected)", passing: paired))
         }
 
-        // Claude Desktop config — only surface the case, never raw strings.
-        let configState = checks.claudeDesktopConfigState()
-        let configLabel: String
-        let configPass: Bool?
-        switch configState {
-        case .found:
-            configLabel = "Claude Desktop config references this app"
-            configPass = true
-        case .notFound:
-            configLabel = "Claude Desktop config doesn't reference this app yet"
-            configPass = false
-        case .fileAbsent:
-            // Not a failure — Claude Desktop may simply not be installed.
-            configLabel = "Claude Desktop not detected (Claude Code-only setup is fine)"
-            configPass = nil
-        case .parseError:
-            configLabel = "Claude Desktop config exists but can't be parsed"
-            configPass = false
-        }
-        rows.append(ProgrammaticCheck(label: configLabel, passing: configPass))
-
         programmaticChecks = rows
+        // Claude Desktop config state is rendered by `claudeConfigRow`
+        // (not appended to programmaticChecks) so the row can carry an
+        // inline help block when remediation is needed.
+        claudeConfigState = checks.claudeDesktopConfigState()
     }
 }
 
