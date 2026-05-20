@@ -16,7 +16,7 @@ import { registerDraftTools } from "./tools/drafts.ts";
 
 async function main() {
   const server = new McpServer(
-    { name: "whatsapp-mcp", version: "0.1.0-pre" },
+    { name: "whatsapp-mcp", version: "0.3.2" },
     {
       instructions:
         "WhatsApp access via a local Baileys-backed daemon: read threads, " +
