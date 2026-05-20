@@ -306,8 +306,8 @@ struct SettingsView: View {
     HStack(spacing: 8) {
       let (symbol, color): (String, Color) = {
         switch passing {
-        case true: return ("checkmark.circle.fill", .green)
-        case false: return ("xmark.circle.fill", .red)
+        case true?: return ("checkmark.circle.fill", .green)
+        case false?: return ("xmark.circle.fill", .red)
         case nil: return ("circle.dotted", .secondary)
         }
       }()
@@ -341,8 +341,8 @@ struct SettingsView: View {
   /// Status word used inside combined accessibility labels.
   private static func statusWord(for value: Bool?) -> String {
     switch value {
-    case true: return "passed"
-    case false: return "failed"
+    case true?: return "passed"
+    case false?: return "failed"
     case nil: return "not yet checked"
     }
   }

@@ -223,8 +223,8 @@ struct SetupWalkthroughView: View {
     private func statusBadge(for value: Bool?) -> some View {
         let (symbol, color): (String, Color) = {
             switch value {
-            case true: return ("checkmark.circle.fill", .green)
-            case false: return ("xmark.circle.fill", .red)
+            case true?: return ("checkmark.circle.fill", .green)
+            case false?: return ("xmark.circle.fill", .red)
             case nil: return ("circle.dotted", .secondary)
             }
         }()
@@ -241,24 +241,24 @@ struct SetupWalkthroughView: View {
     /// Status word used inside combined accessibility labels.
     private static func statusWord(for value: Bool?) -> String {
         switch value {
-        case true: return "passed"
-        case false: return "failed"
+        case true?: return "passed"
+        case false?: return "failed"
         case nil: return "not yet checked"
         }
     }
 
     private func statusText(for verified: Bool?, transport: Platform) -> String {
         switch verified {
-        case true: return "Claude reached \(transport.displayName) ✓"
-        case false: return "Didn't see Claude reach \(transport.displayName)"
+        case true?: return "Claude reached \(transport.displayName) ✓"
+        case false?: return "Didn't see Claude reach \(transport.displayName)"
         case nil: return "Waiting for Claude to call \(transport.displayName)…"
         }
     }
 
     private func statusSubtitle(for verified: Bool?) -> String {
         switch verified {
-        case true: return "Setup verified. You can close this window."
-        case false: return "Try running the prompt again. If it keeps failing, check Settings → Status."
+        case true?: return "Setup verified. You can close this window."
+        case false?: return "Try running the prompt again. If it keeps failing, check Settings → Status."
         case nil: return "Paste the prompt into Claude. We'll know when the MCP is called."
         }
     }
