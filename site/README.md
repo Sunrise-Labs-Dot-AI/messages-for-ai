@@ -39,15 +39,13 @@ above.)
 ## Release-time checklist
 
 The Download button points at
-`/releases/latest/download/messages-for-ai-v0.3.2.dmg`. GitHub resolves
-the `latest` segment to the most recent release, but the `.dmg` asset
-must be uploaded under the EXACT same filename or the URL 404s. Two
-options each release:
+`/releases/latest/download/Messages-for-AI.dmg`. GitHub resolves the
+`latest` segment to the most recent release, and `scripts/build-dmg.sh`
+always outputs the .dmg under that stable filename — so `index.html`
+never needs touching across releases. As long as every release uploads
+a `Messages-for-AI.dmg` asset, the marketing site stays current
+automatically.
 
-1. **Re-upload under the same versioned name (current pattern).** Bump
-   the filename in `index.html`'s `<a class="cta" href=...>` whenever
-   the version changes.
-2. **Switch to a stable name (e.g. `Messages-for-AI.dmg`) on the
-   release.** Then `index.html` never needs touching for future
-   releases. Cleaner but requires renaming the asset in
-   `scripts/build-release.sh` (or adding a parallel upload step).
+(History: through v0.3.2 the asset was versioned, e.g.
+`messages-for-ai-v0.3.2.dmg`, which required bumping the link on every
+release. Switched to the stable name starting v0.3.2.1.)
