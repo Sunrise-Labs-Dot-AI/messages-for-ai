@@ -56,12 +56,15 @@ final class SettingsStore: ObservableObject {
   private let file: URL
   private let whatsappMcpFile: URL
 
-  init() {
-    let dir = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".messages-mcp")
+  init(homeOverride: URL? = nil) {
+    // homeOverride is the test seam — points at a tmpdir that mimics the
+    // real $HOME structure (./.messages-mcp/, ./.whatsapp-mcp/). Production
+    // callers omit it and get the real home directory.
+    let home = homeOverride ?? FileManager.default.homeDirectoryForCurrentUser
+    let dir = home.appendingPathComponent(".messages-mcp")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     self.file = dir.appendingPathComponent("settings.json")
-    self.whatsappMcpFile = FileManager.default.homeDirectoryForCurrentUser
+    self.whatsappMcpFile = home
       .appendingPathComponent(".whatsapp-mcp")
       .appendingPathComponent("settings.json")
 
