@@ -1,0 +1,111 @@
+// MIRROR: keep in sync with ../../imessage-drafts/src/witness.ts.
+// Transport string is per-file (WhatsApp here). CI lint to enforce drift
+// detection is deferred to v0.3.3.
+//
+// Writes ~/.messages-mcp/last_invocation_whatsapp.json atomically (temp+rename)
+// after every successful tool call so the menubar app can witness Claude
+// reaching this MCP. DispatchSourceFileSystemObject on a directory only fires
+// on structural events (add/remove/rename), so atomic rename — not in-place
+// write — is what makes the watcher reliable.
+
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type {
+  McpServer,
+  RegisteredTool,
+  ToolCallback,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
+import type {
+  AnySchema,
+  ZodRawShapeCompat,
+} from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+
+const TRANSPORT = "whatsapp" as const;
+const FILENAME = `last_invocation_${TRANSPORT}.json`;
+
+let testHomeOverride: string | null = null;
+
+/** Test seam: route writes to a tempdir during unit tests. Pass null to reset. */
+export function _setHomeForTesting(path: string | null): void {
+  testHomeOverride = path;
+}
+
+function homeDir(): string {
+  if (testHomeOverride !== null) return testHomeOverride;
+  return process.env.MESSAGES_MCP_HOME ?? join(homedir(), ".messages-mcp");
+}
+
+export interface WitnessRecord {
+  tool: string;
+  ts: string;
+  pid: number;
+  writer_path: string;
+}
+
+/**
+ * Best-effort: write the witness record. Swallows all errors so a witness
+ * failure (disk full, EACCES, transient FS issue) never propagates back to
+ * the MCP caller. The MCP must never crash because we couldn't write a
+ * diagnostic timestamp.
+ */
+export function writeLastInvocation(toolName: string): void {
+  try {
+    const dir = homeDir();
+    mkdirSync(dir, { recursive: true });
+    const record: WitnessRecord = {
+      tool: toolName,
+      ts: new Date().toISOString(),
+      pid: process.pid,
+      writer_path: process.argv[0] ?? "",
+    };
+    const finalPath = join(dir, FILENAME);
+    const tmpPath = `${finalPath}.tmp.${process.pid}`;
+    writeFileSync(tmpPath, JSON.stringify(record));
+    renameSync(tmpPath, finalPath);
+  } catch {
+    // swallow — see function doc
+  }
+}
+
+/**
+ * Wraps server.registerTool, emitting a witness write after the handler
+ * resolves. Errors thrown by the handler propagate unchanged; witness errors
+ * are absorbed at two layers (writeLastInvocation's own try/catch and this
+ * outer try/catch — defense in depth).
+ *
+ * The generic mirrors the SDK's `registerTool<InputArgs, OutputArgs>` signature
+ * so callers see the same `args` typing they'd get calling `server.registerTool`
+ * directly. `Parameters<McpServer["registerTool"]>` collapses to `never` because
+ * of the overload, so we replicate the signature manually.
+ */
+export function registerWithWitness<
+  InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined,
+  OutputArgs extends ZodRawShapeCompat | AnySchema = ZodRawShapeCompat | AnySchema,
+>(
+  server: McpServer,
+  name: string,
+  config: {
+    title?: string;
+    description?: string;
+    inputSchema?: InputArgs;
+    outputSchema?: OutputArgs;
+    annotations?: ToolAnnotations;
+    _meta?: Record<string, unknown>;
+  },
+  cb: ToolCallback<InputArgs>,
+): RegisteredTool {
+  const wrapped = (async (...args: Parameters<ToolCallback<InputArgs>>) => {
+    const result = await (
+      cb as (...a: Parameters<ToolCallback<InputArgs>>) => Promise<unknown>
+    )(...args);
+    try {
+      writeLastInvocation(name);
+    } catch {
+      // swallow — never propagate witness errors to MCP callers
+    }
+    return result;
+  }) as ToolCallback<InputArgs>;
+  return server.registerTool(name, config, wrapped);
+}
