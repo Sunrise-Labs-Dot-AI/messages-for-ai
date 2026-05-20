@@ -105,17 +105,95 @@ echo "=== Signing .dmg ==="
 "$CODESIGN" --sign "$SIGN_IDENTITY" --options runtime --timestamp "$DMG"
 
 echo
-echo "=== Notarizing .dmg (Apple round-trip, ~2-3 min) ==="
+echo "=== Notarizing .dmg (Apple round-trip, ~2-15 min depending on queue) ==="
+# Same notarytool 1.1.0 SIGBUS-survival flow as scripts/build-release.sh:
+# wrap submit in `set +e`, recover UUID from history if the local crash
+# blanks the JSON, poll via `info` instead of relying on `--wait`.
 NOTARIZE_DMG_JSON="$DIST/notarize-dmg.json"
+set +e
 xcrun notarytool submit "$DMG" \
   --keychain-profile "$NOTARY_PROFILE" \
-  --wait \
-  --output-format json > "$NOTARIZE_DMG_JSON"
+  --output-format json \
+  --no-wait > "$NOTARIZE_DMG_JSON" 2>&1
+SUBMIT_RC=$?
+set -e
 
-DMG_STATUS=$(/usr/bin/python3 -c "import json; print(json.load(open('$NOTARIZE_DMG_JSON'))['status'])")
-if [[ "$DMG_STATUS" != "Accepted" ]]; then
-  echo "✗ DMG notarization failed: $DMG_STATUS" >&2
+DMG_UUID=""
+if [[ -s "$NOTARIZE_DMG_JSON" ]]; then
+  DMG_UUID=$(/usr/bin/python3 - "$NOTARIZE_DMG_JSON" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f).get("id", ""))
+except Exception:
+    pass
+PY
+)
+fi
+
+if [[ -z "$DMG_UUID" ]]; then
+  echo "  ⚠ notarytool submit didn't return a parseable UUID (rc=$SUBMIT_RC)." >&2
+  echo "  ⚠ Querying notarytool history (notarytool 1.1.0 SIGBUS workaround)." >&2
+  DMG_UUID=$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" --output-format json 2>/dev/null \
+    | /usr/bin/python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    history = data.get("history", [])
+    if history:
+        print(history[0].get("id", ""))
+except Exception:
+    pass
+')
+fi
+
+if [[ -z "$DMG_UUID" ]]; then
+  echo "✗ could not obtain DMG submission UUID. submit rc=$SUBMIT_RC." >&2
   cat "$NOTARIZE_DMG_JSON" >&2
+  exit 1
+fi
+echo "$DMG_UUID" > "$DIST/notarize-dmg.uuid"
+echo "› submission uuid: $DMG_UUID"
+
+# Poll for completion via `info --output-format json` (short response,
+# sidesteps the SIGBUS that hits `--wait`).
+echo "› polling for DMG notarization completion (timeout: 60 min)..."
+DMG_STATUS=""
+for i in $(seq 1 180); do
+  set +e
+  INFO_JSON=$(xcrun notarytool info "$DMG_UUID" --keychain-profile "$NOTARY_PROFILE" --output-format json 2>/dev/null)
+  set -e
+  DMG_STATUS=$(echo "$INFO_JSON" | /usr/bin/python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("status", "Unknown"))
+except Exception:
+    print("ParseError")
+' 2>/dev/null)
+  case "$DMG_STATUS" in
+    Accepted)
+      echo "  ✓ Accepted (poll $i, ~$((i*20))s)"
+      break
+      ;;
+    "In Progress")
+      printf "  · in progress (poll %d, ~%ds)\n" "$i" "$((i*20))"
+      sleep 20
+      ;;
+    Rejected|Invalid)
+      echo "✗ DMG notarization $DMG_STATUS for $DMG_UUID" >&2
+      xcrun notarytool log "$DMG_UUID" --keychain-profile "$NOTARY_PROFILE" >&2 || true
+      exit 1
+      ;;
+    *)
+      echo "  ? unrecognized status='$DMG_STATUS' (poll $i)" >&2
+      sleep 20
+      ;;
+  esac
+done
+
+if [[ "$DMG_STATUS" != "Accepted" ]]; then
+  echo "✗ DMG notarization didn't complete within poll timeout. Last status: $DMG_STATUS" >&2
+  echo "  Resume manually: xcrun notarytool info $DMG_UUID --keychain-profile $NOTARY_PROFILE" >&2
   exit 1
 fi
 
