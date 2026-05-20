@@ -27,7 +27,7 @@
 set -euo pipefail
 
 VERSION="${1:?usage: build-dmg.sh <version>, e.g. v0.3.2.1}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-imessage-drafts-mcp-notary}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-imessage-mcp-notary}"
 EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-LQ93LRM9QU}"
 
 SECURITY=/usr/bin/security

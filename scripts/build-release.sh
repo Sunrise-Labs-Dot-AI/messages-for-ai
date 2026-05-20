@@ -38,9 +38,11 @@
 # Required environment:
 #   - Developer ID Application cert in keychain (auto-detected)
 #   - Notarytool credentials stored in keychain as profile
-#     "imessage-drafts-mcp-notary" (override via NOTARY_PROFILE env var).
-#     One-time setup:
-#       xcrun notarytool store-credentials imessage-drafts-mcp-notary \
+#     "imessage-mcp-notary" (legacy name from the imessage-mcp era; kept
+#     to avoid re-storing credentials on every maintainer's machine).
+#     Override via NOTARY_PROFILE env var if your keychain uses a
+#     different name. One-time setup:
+#       xcrun notarytool store-credentials imessage-mcp-notary \
 #         --apple-id <your-apple-id-email> \
 #         --team-id <your-team-id> \
 #         --password <app-specific-password-from-appleid.apple.com>
@@ -58,7 +60,7 @@
 set -euo pipefail
 
 VERSION="${1:?usage: build-release.sh <version>, e.g. v0.1.1}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-imessage-drafts-mcp-notary}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-imessage-mcp-notary}"
 
 # The only Apple Developer Team ID this build accepts. Auto-detected
 # certs from a different Team ID will be REJECTED rather than silently
