@@ -439,9 +439,9 @@ echo "› (resumable via: xcrun notarytool info $APP_UUID --keychain-profile $NO
 # `notarytool wait` because it hits the same response-formatting SIGBUS
 # on long responses; `info` returns a short JSON object that the
 # formatter handles reliably.
-echo "› polling for notarization completion (timeout: 20 min)..."
+echo "› polling for notarization completion (timeout: 60 min; Apple's queue can backlog)..."
 NOTARIZE_STATUS=""
-for i in $(seq 1 60); do
+for i in $(seq 1 180); do
   set +e
   INFO_JSON=$(xcrun notarytool info "$APP_UUID" --keychain-profile "$NOTARY_PROFILE" --output-format json 2>/dev/null)
   INFO_RC=$?
