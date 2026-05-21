@@ -44,6 +44,10 @@ struct SetupWalkthroughView: View {
     @State private var imessageVerified: Bool? = nil
     @State private var whatsappVerified: Bool? = nil
 
+    // Full Disk Access state for the iMessage transport. Recomputed in
+    // refreshProgrammaticChecks (on appear, every 5s, and on focus return).
+    @State private var chatDbAccess: ChatDbAccessState = .ok
+
     @State private var claudeDesktopBundleURL: URL? = nil
     /// Result of the most recent "Add to Claude Desktop config" click.
     /// Drives the inline outcome view; nil means the button hasn't been
@@ -123,6 +127,12 @@ struct SetupWalkthroughView: View {
         .onChange(of: invocations.whatsapp) { _, new in
             evaluateInvocation(.whatsapp, record: new)
         }
+        // Re-probe the moment the app regains focus — e.g. the user
+        // switched to System Settings to grant Full Disk Access and came
+        // back. Flips the FDA row green without a manual re-check button.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshProgrammaticChecks()
+        }
     }
 
     // MARK: - Subviews
@@ -145,12 +155,82 @@ struct SetupWalkthroughView: View {
                 ForEach(programmaticChecks) { check in
                     checkRow(check)
                 }
+                if settings.imessageEnabled {
+                    fdaRow
+                }
                 claudeConfigRow
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
+    }
+
+    /// Full Disk Access row. This is the gap that made fresh-install users
+    /// finish the walkthrough thinking everything worked: every other row
+    /// goes green (the MCP binary IS present, signed, and reachable) but
+    /// the iMessage MCP can't read chat.db without FDA, so the first real
+    /// tool call returns permission_denied. Rendered only when iMessage is
+    /// enabled — WhatsApp reads its own files under ~/.whatsapp-mcp, none
+    /// of which are TCC-protected.
+    @ViewBuilder
+    private var fdaRow: some View {
+        let passing: Bool? = {
+            switch chatDbAccess {
+            case .ok: return true
+            case .permissionDenied: return false
+            // notFound (Messages never used on this Mac) and unknown are
+            // not FDA denials — show neutral and don't block completion.
+            case .notFound, .unknown: return nil
+            }
+        }()
+        let label: String = {
+            switch chatDbAccess {
+            case .ok: return "Full Disk Access granted (Claude can read Messages)"
+            case .permissionDenied: return "Full Disk Access needed to read Messages"
+            case .notFound: return "No Messages database found on this Mac yet"
+            case .unknown: return "Couldn't check Messages access"
+            }
+        }()
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                statusBadge(for: passing)
+                Text(label).font(.callout)
+                Spacer()
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(label), \(Self.statusWord(for: passing))")
+
+            if chatDbAccess == .permissionDenied {
+                fdaHelp
+            }
+        }
+    }
+
+    /// Inline remediation for missing Full Disk Access: plain-language
+    /// instructions + a one-click deeplink straight to the FDA pane. The
+    /// row re-checks automatically on focus return (see the
+    /// didBecomeActive observer), so there's no manual re-check button.
+    private var fdaHelp: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Grant Full Disk Access to Messages for AI in System Settings → Privacy & Security → Full Disk Access, then switch back here — this updates on its own. If it stays red right after granting, quit and reopen Messages for AI.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("Open Full Disk Access settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+            }
+        }
+        .padding(.leading, 32)
+        .padding(.top, 4)
     }
 
     /// The Claude Desktop config check — rendered separately from the
@@ -469,7 +549,11 @@ struct SetupWalkthroughView: View {
     private var allVerifiedOrSkipped: Bool {
         let imsOK = !settings.imessageEnabled || imessageVerified == true
         let waOK = !settings.whatsappEnabled || whatsappVerified == true
-        return imsOK && waOK
+        // Block completion while iMessage is enabled but FDA is denied, so
+        // a user can't mark setup "done" with the one permission that makes
+        // every iMessage tool call fail still missing.
+        let fdaOK = !settings.imessageEnabled || chatDbAccess != .permissionDenied
+        return imsOK && waOK && fdaOK
     }
 
     private static func testPrompt(for transport: Platform) -> String {
@@ -597,6 +681,11 @@ struct SetupWalkthroughView: View {
         // (not appended to programmaticChecks) so the row can carry an
         // inline help block when remediation is needed.
         claudeConfigState = checks.claudeDesktopConfigState()
+        // FDA only gates the iMessage transport; skip the probe entirely
+        // for WhatsApp-only setups.
+        if settings.imessageEnabled {
+            chatDbAccess = checks.chatDbAccessState()
+        }
     }
 }
 

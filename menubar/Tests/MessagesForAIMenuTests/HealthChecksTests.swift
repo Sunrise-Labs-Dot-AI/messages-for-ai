@@ -105,6 +105,26 @@ final class HealthChecksTests: XCTestCase {
         XCTAssertNil(checks.codesignIdentifier(of: file.path))
     }
 
+    // MARK: - chatDbAccessState
+
+    func test_chatDbAccessState_okWhenFileIsReadable() throws {
+        // A readable tmp file stands in for chat.db. open(O_RDONLY)
+        // succeeds → .ok. (The permission_denied branch is a TCC outcome
+        // that can't be synthesized without Full Disk Access semantics;
+        // it's exercised by manual QA against the dev-installed .app.)
+        let file = tmpDir.appendingPathComponent("chat.db")
+        FileManager.default.createFile(atPath: file.path, contents: Data([0x53, 0x51, 0x4C]))
+
+        let checks = HealthChecks(chatDbPath: file.path)
+        XCTAssertEqual(checks.chatDbAccessState(), .ok)
+    }
+
+    func test_chatDbAccessState_notFoundWhenFileMissing() {
+        let missing = tmpDir.appendingPathComponent("nope/chat.db").path
+        let checks = HealthChecks(chatDbPath: missing)
+        XCTAssertEqual(checks.chatDbAccessState(), .notFound)
+    }
+
     // MARK: - claudeDesktopConfigState
 
     func test_claudeDesktopConfigState_fileAbsent() {
