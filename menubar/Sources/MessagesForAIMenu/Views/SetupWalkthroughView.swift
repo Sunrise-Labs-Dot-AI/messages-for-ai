@@ -48,6 +48,11 @@ struct SetupWalkthroughView: View {
     // refreshProgrammaticChecks (on appear, every 5s, and on focus return).
     @State private var chatDbAccess: ChatDbAccessState = .ok
 
+    // Stepper position. The walkthrough is presented one step at a time
+    // (install checks → test each enabled transport) rather than as one
+    // long scroll, so a fresh user has a single clear action per screen.
+    @State private var currentStepIndex: Int = 0
+
     @State private var claudeDesktopBundleURL: URL? = nil
     /// Result of the most recent "Add to Claude Desktop config" click.
     /// Drives the inline outcome view; nil means the button hasn't been
@@ -62,24 +67,29 @@ struct SetupWalkthroughView: View {
     private static let timeoutSeconds: TimeInterval = 60
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                header
+        VStack(alignment: .leading, spacing: 0) {
+            stepHeader
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+                .padding(.bottom, 16)
 
-                programmaticPane
+            Divider()
 
-                if settings.imessageEnabled {
-                    testNowPane(transport: .imessage)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    stepContent
                 }
-                if settings.whatsappEnabled {
-                    testNowPane(transport: .whatsapp)
-                }
-
-                completionFooter
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(24)
+
+            Divider()
+
+            navigationFooter
+                .padding(.horizontal, 24)
+                .padding(.vertical, 16)
         }
-        .frame(minWidth: 520, idealWidth: 560)
+        .frame(minWidth: 520, idealWidth: 560, minHeight: 460)
         .onAppear {
             refreshProgrammaticChecks()
             claudeDesktopBundleURL = NSWorkspace.shared.urlForApplication(
@@ -135,22 +145,86 @@ struct SetupWalkthroughView: View {
         }
     }
 
+    // MARK: - Stepper model
+
+    /// One screen of the walkthrough. Built dynamically from the enabled
+    /// transports so an iMessage-only user never sees a WhatsApp step.
+    private enum WalkStep: Equatable {
+        case installHealth
+        case test(Platform)
+    }
+
+    private var steps: [WalkStep] {
+        var result: [WalkStep] = [.installHealth]
+        if settings.imessageEnabled { result.append(.test(.imessage)) }
+        if settings.whatsappEnabled { result.append(.test(.whatsapp)) }
+        return result
+    }
+
+    /// `currentStepIndex` is free @State; clamp on read so a settings
+    /// change that shrinks `steps` mid-walkthrough can't index past the end.
+    private var clampedIndex: Int { min(max(currentStepIndex, 0), steps.count - 1) }
+    private var currentStep: WalkStep { steps[clampedIndex] }
+    private var isLastStep: Bool { clampedIndex >= steps.count - 1 }
+
     // MARK: - Subviews
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Let's make sure Claude can see this app")
-                .font(.title2.weight(.semibold))
-            Text("Two quick steps. The first runs automatically. The second sends a test prompt to Claude and watches for the response.")
+    private var stepHeader: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                ForEach(0..<steps.count, id: \.self) { i in
+                    Capsule()
+                        .fill(i <= clampedIndex ? Color.accentColor : Color.secondary.opacity(0.25))
+                        .frame(height: 4)
+                }
+            }
+            .accessibilityHidden(true)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(stepTitle(currentStep))
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Text("Step \(clampedIndex + 1) of \(steps.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Text(stepSubtitle(currentStep))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var stepContent: some View {
+        switch currentStep {
+        case .installHealth:
+            programmaticPane
+        case .test(let transport):
+            testNowPane(transport: transport)
+        }
+    }
+
+    private func stepTitle(_ step: WalkStep) -> String {
+        switch step {
+        case .installHealth: return "Check the install"
+        case .test(let transport): return "Test \(transport.displayName)"
+        }
+    }
+
+    private func stepSubtitle(_ step: WalkStep) -> String {
+        switch step {
+        case .installHealth:
+            return "These run automatically. If Full Disk Access is flagged below, grant it before continuing."
+        case .test:
+            return "Send a test prompt to Claude — we'll watch for the MCP call and confirm it landed."
         }
     }
 
     private var programmaticPane: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Install health")
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(programmaticChecks) { check in
                     checkRow(check)
@@ -412,8 +486,6 @@ struct SetupWalkthroughView: View {
         let prompt = Self.testPrompt(for: transport)
 
         return VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Test \(transport.displayName)")
-
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 12) {
                     statusBadge(for: verified)
@@ -463,32 +535,63 @@ struct SetupWalkthroughView: View {
         }
     }
 
-    private var completionFooter: some View {
-        HStack {
+    private var navigationFooter: some View {
+        HStack(spacing: 12) {
             Button("Skip for now") {
                 settings.walkthroughSkipped = true
                 settings.walkthroughComplete = false
                 dismissWindow(id: WindowID.setupWalkthrough)
             }
             Spacer()
-            Button("All set") {
-                settings.walkthroughComplete = true
-                settings.walkthroughSkipped = false
-                dismissWindow(id: WindowID.setupWalkthrough)
+            if clampedIndex > 0 {
+                Button("Back") { goBack() }
             }
-            .keyboardShortcut(.defaultAction)
-            .disabled(!allVerifiedOrSkipped)
-            .accessibilityHint(allVerifiedOrSkipped
-                ? "Marks setup complete and closes the window."
-                : "Disabled. Run the test prompt for each enabled transport above to enable this button.")
+            if isLastStep {
+                Button("All set") {
+                    settings.walkthroughComplete = true
+                    settings.walkthroughSkipped = false
+                    dismissWindow(id: WindowID.setupWalkthrough)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(!allVerifiedOrSkipped)
+                .accessibilityHint(allVerifiedOrSkipped
+                    ? "Marks setup complete and closes the window."
+                    : "Disabled. Run the test prompt for each enabled transport to enable this button.")
+            } else {
+                Button("Next") { goNext() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canAdvance)
+                    .accessibilityHint(canAdvance
+                        ? "Go to the next step."
+                        : "Disabled. Grant Full Disk Access above before continuing.")
+            }
         }
     }
 
-    // MARK: - Helpers
-
-    private func sectionTitle(_ s: String) -> some View {
-        Text(s).font(.callout.weight(.semibold))
+    /// Whether the user may leave the current step. The install-health step
+    /// holds the user until Full Disk Access is granted (the gap #17
+    /// closes); test steps are advisory, so the final "All set" — not Next —
+    /// carries the verification gate.
+    private var canAdvance: Bool {
+        switch currentStep {
+        case .installHealth:
+            return !(settings.imessageEnabled && chatDbAccess == .permissionDenied)
+        case .test:
+            return true
+        }
     }
+
+    private func goNext() {
+        if clampedIndex < steps.count - 1 { currentStepIndex = clampedIndex + 1 }
+    }
+
+    private func goBack() {
+        if clampedIndex > 0 { currentStepIndex = clampedIndex - 1 }
+    }
+
+    // MARK: - Helpers
 
     private func checkRow(_ check: ProgrammaticCheck) -> some View {
         HStack(spacing: 10) {
