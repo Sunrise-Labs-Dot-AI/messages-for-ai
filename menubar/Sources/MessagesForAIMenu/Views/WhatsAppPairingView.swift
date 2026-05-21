@@ -52,6 +52,12 @@ struct WhatsAppPairingView: View {
   enum Phase: Equatable {
     case checkingSentinel
     case loggedOutRecovery
+    /// Pre-pairing gate. We show the user how to reach Link a Device on
+    /// their phone and wait for an explicit "Ready to scan" tap before
+    /// touching the daemon — so the ~20s QR-rotation clock (enforced by
+    /// WhatsApp's protocol, not us) only starts once the phone camera is
+    /// already aimed at the screen.
+    case awaitingUserReady
     /// Daemon isn't running yet; we kicked .start() and are waiting for
     /// the controller to flip to .running before subscribing.
     case startingDaemon
@@ -75,14 +81,15 @@ struct WhatsAppPairingView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .onAppear {
       if WhatsAppQRSession.loggedOutSentinelExists {
+        // Remote logout recovery is its own flow (wipe + re-pair) and
+        // keeps its existing UX — no Ready gate.
         phase = .loggedOutRecovery
-      } else if isDaemonAlreadyRunning {
-        phase = .subscribing
       } else {
-        // The .app bundles the WhatsApp service. Start it; we'll
-        // auto-advance to .subscribing as soon as it reports ready.
-        whatsappDaemon.start()
-        phase = .startingDaemon
+        // Don't start the daemon or request a QR yet. Show the Ready gate
+        // first so the user has time to open Link a Device on their phone
+        // before the QR-rotation clock starts. Closing the window from
+        // here leaves no daemon started by this view.
+        phase = .awaitingUserReady
       }
     }
     .onChange(of: whatsappDaemon.status) { status in
@@ -141,6 +148,8 @@ struct WhatsAppPairingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     case .loggedOutRecovery:
       loggedOutView
+    case .awaitingUserReady:
+      awaitingUserReadyView
     case .startingDaemon:
       startingDaemonView
     case .subscribing, .awaitingFirstQR:
@@ -153,6 +162,51 @@ struct WhatsAppPairingView: View {
       connectedView
     case .error(let message):
       errorView(message)
+    }
+  }
+
+  /// Pre-pairing instructions + the "Ready to scan" gate. Nothing here
+  /// touches the daemon — see `beginPairing()`.
+  private var awaitingUserReadyView: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Link WhatsApp to this Mac")
+          .font(.title3.weight(.semibold))
+        Text("You'll scan a QR code with your phone. It refreshes about every 20 seconds, so get your phone ready first — then tap Ready to scan.")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        readyStep(1, "Open **WhatsApp** on your phone")
+        readyStep(2, "Tap **Settings** (bottom-right on iPhone, or the **⋮** menu on Android)")
+        readyStep(3, "Tap **Linked Devices**")
+        readyStep(4, "Tap **Link a Device** and authenticate")
+        readyStep(5, "Point your phone's camera at this window")
+      }
+
+      Button("Ready to scan") {
+        beginPairing()
+      }
+      .controlSize(.large)
+      .buttonStyle(.borderedProminent)
+      .tint(Platform.whatsapp.accentColor)
+      .frame(maxWidth: .infinity)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func readyStep(_ number: Int, _ text: LocalizedStringKey) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
+      Text("\(number).")
+        .font(.callout.weight(.semibold).monospacedDigit())
+        .foregroundStyle(Platform.whatsapp.accentColor)
+        .frame(width: 20, alignment: .trailing)
+      Text(text)
+        .font(.callout)
+        .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 0)
     }
   }
 
@@ -172,6 +226,19 @@ struct WhatsAppPairingView: View {
   private var isDaemonAlreadyRunning: Bool {
     if case .running = whatsappDaemon.status { return true }
     return false
+  }
+
+  /// Leave the Ready gate and enter the existing pairing flow. Mirrors the
+  /// pre-#18 onAppear logic exactly, so tapping Ready quickly hits the same
+  /// code path it always did (.subscribing if the daemon is already up,
+  /// otherwise start it and wait in .startingDaemon).
+  private func beginPairing() {
+    if isDaemonAlreadyRunning {
+      phase = .subscribing
+    } else {
+      whatsappDaemon.start()
+      phase = .startingDaemon
+    }
   }
 
   @ViewBuilder
