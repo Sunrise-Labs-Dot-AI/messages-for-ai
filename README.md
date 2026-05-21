@@ -112,6 +112,16 @@ Hard guardrails:
 
 ---
 
+# Skills
+
+Optional Claude skills that build on the MCP, bundled in this repo under [`skills/`](skills/):
+
+- [`texting-analytics`](skills/texting-analytics/) — a personal "Texting Wrapped" report (reply latency, ball-in-court rate, group contribution) rendered as four charts. Read-only; runs against your iMessage history via the MCP. Needs Python with `matplotlib`.
+
+More skills (voice-cloned drafting, birthday texts) are in progress.
+
+---
+
 # Install
 
 Two paths. Pick A unless you're contributing code.
