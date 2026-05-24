@@ -14,3 +14,13 @@ menubar/Package.resolved
 # Release artifacts produced by scripts/build-release.sh.
 # Built locally + uploaded to GitHub Releases — never committed.
 dist/
+
+# Python bytecode (analytics scripts)
+__pycache__/
+*.pyc
+
+# Vercel local config (site/)
+.vercel/
+
+# Codex creative parked on the creative-wrapped-directions branch
+skills/texting-analytics/creative-directions/
