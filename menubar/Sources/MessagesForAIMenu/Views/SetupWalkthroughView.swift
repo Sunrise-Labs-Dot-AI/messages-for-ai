@@ -46,12 +46,25 @@ struct SetupWalkthroughView: View {
 
     // Full Disk Access state for the iMessage transport. Recomputed in
     // refreshProgrammaticChecks (on appear, every 5s, and on focus return).
-    @State private var chatDbAccess: ChatDbAccessState = .ok
+    // Seeded to .unknown (not .ok) so the gate fails closed until the first
+    // probe runs — a permission gate must never default to "granted".
+    @State private var chatDbAccess: ChatDbAccessState = .unknown
 
     // Stepper position. The walkthrough is presented one step at a time
     // (install checks → test each enabled transport) rather than as one
     // long scroll, so a fresh user has a single clear action per screen.
     @State private var currentStepIndex: Int = 0
+
+    // Memoized codesign-identity lookups, keyed by binary path. The installed
+    // inner Mach-Os are immutable for the app's lifetime, but
+    // codesignIdentifier(of:) runs a full SecStaticCodeCheckValidity
+    // (all-architectures) costing tens-to-hundreds of ms per binary.
+    // refreshProgrammaticChecks() runs on appear, on a 5s tick, and on every
+    // daemon-status change, so without this cache we'd re-validate every
+    // binary on the main thread repeatedly. Caching is safe: the freshness
+    // gate in evaluateInvocation (record.ts > walkthroughStartedAt) — not
+    // codesign recency — is the temporal security control.
+    @State private var codesignCache: [String: String?] = [:]
 
     @State private var claudeDesktopBundleURL: URL? = nil
     /// Result of the most recent "Add to Claude Desktop config" click.
@@ -115,6 +128,13 @@ struct SetupWalkthroughView: View {
         .onChange(of: whatsappDaemon.baileysState) { _, _ in
             refreshProgrammaticChecks()
         }
+        // If a transport is toggled in Settings while the walkthrough is open,
+        // `steps` grows/shrinks. clampedIndex protects reads, but re-anchor the
+        // stored index too so the user can't land on a stale "All set" for a
+        // step that no longer exists.
+        .onChange(of: steps) { _, newSteps in
+            currentStepIndex = min(max(currentStepIndex, 0), newSteps.count - 1)
+        }
         .onReceive(tick) { _ in
             elapsed = Date().timeIntervalSince(walkthroughStartedAt)
             // Refresh programmatic checks every 5s while the view is up.
@@ -147,34 +167,39 @@ struct SetupWalkthroughView: View {
 
     // MARK: - Stepper model
 
-    /// One screen of the walkthrough. Built dynamically from the enabled
-    /// transports so an iMessage-only user never sees a WhatsApp step.
-    private enum WalkStep: Equatable {
-        case installHealth
-        case test(Platform)
+    /// Pure, testable model of the step sequence + gating predicates, rebuilt
+    /// each render from live settings + @State. The logic lives in
+    /// `WalkthroughStepper` (bottom of file) so the FDA gate and index math
+    /// have regression coverage independent of SwiftUI.
+    private var stepper: WalkthroughStepper {
+        WalkthroughStepper(
+            imessageEnabled: settings.imessageEnabled,
+            whatsappEnabled: settings.whatsappEnabled,
+            currentStepIndex: currentStepIndex,
+            chatDbAccess: chatDbAccess,
+            imessageVerified: imessageVerified,
+            whatsappVerified: whatsappVerified
+        )
     }
 
-    private var steps: [WalkStep] {
-        var result: [WalkStep] = [.installHealth]
-        if settings.imessageEnabled { result.append(.test(.imessage)) }
-        if settings.whatsappEnabled { result.append(.test(.whatsapp)) }
-        return result
-    }
-
-    /// `currentStepIndex` is free @State; clamp on read so a settings
-    /// change that shrinks `steps` mid-walkthrough can't index past the end.
-    private var clampedIndex: Int { min(max(currentStepIndex, 0), steps.count - 1) }
-    private var currentStep: WalkStep { steps[clampedIndex] }
-    private var isLastStep: Bool { clampedIndex >= steps.count - 1 }
+    private var steps: [WalkthroughStepper.Step] { stepper.steps }
+    private var clampedIndex: Int { stepper.clampedIndex }
+    private var currentStep: WalkthroughStepper.Step { stepper.currentStep }
+    private var isLastStep: Bool { stepper.isLastStep }
 
     // MARK: - Subviews
 
     private var stepHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
-                ForEach(0..<steps.count, id: \.self) { i in
+                // Iterate the steps array (not a 0..<count integer range):
+                // `steps` is dynamic (transports can toggle), and
+                // ForEach(0..<count) treats its range as constant data — a
+                // mid-walkthrough count change trips SwiftUI's "constant data"
+                // runtime warning and can mis-render the dots.
+                ForEach(Array(steps.enumerated()), id: \.offset) { index, _ in
                     Capsule()
-                        .fill(i <= clampedIndex ? Color.accentColor : Color.secondary.opacity(0.25))
+                        .fill(index <= clampedIndex ? Color.accentColor : Color.secondary.opacity(0.25))
                         .frame(height: 4)
                 }
             }
@@ -189,6 +214,9 @@ struct SetupWalkthroughView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
+            // Combine title + counter so VoiceOver reads "Check the install,
+            // Step 1 of 3" as one element instead of two separate stops.
+            .accessibilityElement(children: .combine)
             Text(stepSubtitle(currentStep))
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -207,14 +235,14 @@ struct SetupWalkthroughView: View {
         }
     }
 
-    private func stepTitle(_ step: WalkStep) -> String {
+    private func stepTitle(_ step: WalkthroughStepper.Step) -> String {
         switch step {
         case .installHealth: return "Check the install"
         case .test(let transport): return "Test \(transport.displayName)"
         }
     }
 
-    private func stepSubtitle(_ step: WalkStep) -> String {
+    private func stepSubtitle(_ step: WalkthroughStepper.Step) -> String {
         switch step {
         case .installHealth:
             return "These run automatically. If Full Disk Access is flagged below, grant it before continuing."
@@ -570,25 +598,38 @@ struct SetupWalkthroughView: View {
         }
     }
 
-    /// Whether the user may leave the current step. The install-health step
-    /// holds the user until Full Disk Access is granted (the gap #17
-    /// closes); test steps are advisory, so the final "All set" — not Next —
-    /// carries the verification gate.
-    private var canAdvance: Bool {
-        switch currentStep {
-        case .installHealth:
-            return !(settings.imessageEnabled && chatDbAccess == .permissionDenied)
-        case .test:
-            return true
+    /// Whether the user may leave the current step — see
+    /// `WalkthroughStepper.canAdvance`.
+    private var canAdvance: Bool { stepper.canAdvance }
+
+    private func goNext() {
+        if clampedIndex < steps.count - 1 {
+            currentStepIndex = clampedIndex + 1
+            announceStep()
         }
     }
 
-    private func goNext() {
-        if clampedIndex < steps.count - 1 { currentStepIndex = clampedIndex + 1 }
+    private func goBack() {
+        if clampedIndex > 0 {
+            currentStepIndex = clampedIndex - 1
+            announceStep()
+        }
     }
 
-    private func goBack() {
-        if clampedIndex > 0 { currentStepIndex = clampedIndex - 1 }
+    /// Announce the new step to VoiceOver after a stepper transition. Without
+    /// this, VoiceOver's cursor stays on the Next/Back button and a
+    /// screen-reader user gets no signal that the whole content region
+    /// changed under them.
+    private func announceStep() {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        NSAccessibility.post(
+            element: window,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: "Step \(clampedIndex + 1) of \(steps.count): \(stepTitle(currentStep))",
+                .priority: NSAccessibilityPriorityLevel.high.rawValue,
+            ]
+        )
     }
 
     // MARK: - Helpers
@@ -649,15 +690,9 @@ struct SetupWalkthroughView: View {
         }
     }
 
-    private var allVerifiedOrSkipped: Bool {
-        let imsOK = !settings.imessageEnabled || imessageVerified == true
-        let waOK = !settings.whatsappEnabled || whatsappVerified == true
-        // Block completion while iMessage is enabled but FDA is denied, so
-        // a user can't mark setup "done" with the one permission that makes
-        // every iMessage tool call fail still missing.
-        let fdaOK = !settings.imessageEnabled || chatDbAccess != .permissionDenied
-        return imsOK && waOK && fdaOK
-    }
+    /// Whether "All set" may complete the walkthrough — see
+    /// `WalkthroughStepper.allVerifiedOrSkipped`.
+    private var allVerifiedOrSkipped: Bool { stepper.allVerifiedOrSkipped }
 
     private static func testPrompt(for transport: Platform) -> String {
         switch transport {
@@ -703,7 +738,7 @@ struct SetupWalkthroughView: View {
         // with our expected identifier.
         guard !record.writerPath.isEmpty,
               checks.binaryExists(at: record.writerPath),
-              checks.codesignIdentifier(of: record.writerPath)
+              cachedCodesignIdentifier(record.writerPath)
                 == HealthChecks.expectedSigningIdentifier
         else { return }
 
@@ -711,6 +746,16 @@ struct SetupWalkthroughView: View {
         case .imessage: imessageVerified = true
         case .whatsapp: whatsappVerified = true
         }
+    }
+
+    /// Memoized wrapper over `HealthChecks.codesignIdentifier(of:)`. Negative
+    /// (nil) results are cached too — a missing/invalid binary won't appear
+    /// mid-session. See `codesignCache` for why this is both needed and safe.
+    private func cachedCodesignIdentifier(_ path: String) -> String? {
+        if let cached = codesignCache[path] { return cached }
+        let identifier = checks.codesignIdentifier(of: path)
+        codesignCache[path] = identifier
+        return identifier
     }
 
     private func refreshProgrammaticChecks() {
@@ -734,7 +779,7 @@ struct SetupWalkthroughView: View {
             let path = Self.bundlePrefix + name
             let exists = checks.binaryExists(at: path)
             rows.append(ProgrammaticCheck(label: "\(label) present", passing: exists))
-            let identifier = checks.codesignIdentifier(of: path)
+            let identifier = cachedCodesignIdentifier(path)
             let signed = identifier == HealthChecks.expectedSigningIdentifier
             rows.append(ProgrammaticCheck(label: "\(label) signature valid", passing: signed))
         }
@@ -797,6 +842,65 @@ private struct ProgrammaticCheck: Identifiable {
     let label: String
     /// nil = neutral / informational; true = green; false = red.
     let passing: Bool?
+}
+
+/// Pure, value-type model of the setup walkthrough's step sequence and the
+/// gating predicates that decide when the user may advance / finish. Extracted
+/// from `SetupWalkthroughView` so the FDA gate (the whole point of #17) and the
+/// stepper index math have regression coverage that doesn't require driving
+/// SwiftUI. Holds no state of its own — construct one per render from the
+/// view's live settings + @State. Covered by `WalkthroughStepperTests`.
+struct WalkthroughStepper: Equatable {
+    var imessageEnabled: Bool
+    var whatsappEnabled: Bool
+    /// Free index from the view's @State; always read via `clampedIndex`.
+    var currentStepIndex: Int
+    var chatDbAccess: ChatDbAccessState
+    var imessageVerified: Bool?
+    var whatsappVerified: Bool?
+
+    /// One screen of the walkthrough. Built dynamically from the enabled
+    /// transports so an iMessage-only user never sees a WhatsApp step.
+    enum Step: Equatable {
+        case installHealth
+        case test(Platform)
+    }
+
+    var steps: [Step] {
+        var result: [Step] = [.installHealth]
+        if imessageEnabled { result.append(.test(.imessage)) }
+        if whatsappEnabled { result.append(.test(.whatsapp)) }
+        return result
+    }
+
+    /// `steps` always has ≥1 element, so clamping is total. Guards against a
+    /// settings change that shrinks `steps` mid-walkthrough indexing past end.
+    var clampedIndex: Int { min(max(currentStepIndex, 0), steps.count - 1) }
+    var currentStep: Step { steps[clampedIndex] }
+    var isLastStep: Bool { clampedIndex >= steps.count - 1 }
+
+    /// Whether the user may leave the current step. The install-health step
+    /// holds the user until Full Disk Access is granted (the gap #17 closes);
+    /// test steps are advisory, so the final "All set" — not Next — carries
+    /// the verification gate.
+    var canAdvance: Bool {
+        switch currentStep {
+        case .installHealth:
+            return !(imessageEnabled && chatDbAccess == .permissionDenied)
+        case .test:
+            return true
+        }
+    }
+
+    /// Whether "All set" may complete the walkthrough. Blocks while iMessage
+    /// is enabled but FDA is denied, so a user can't mark setup "done" with the
+    /// one permission that makes every iMessage tool call fail still missing.
+    var allVerifiedOrSkipped: Bool {
+        let imsOK = !imessageEnabled || imessageVerified == true
+        let waOK = !whatsappEnabled || whatsappVerified == true
+        let fdaOK = !imessageEnabled || chatDbAccess != .permissionDenied
+        return imsOK && waOK && fdaOK
+    }
 }
 
 // Platform.displayName is defined in Views/PlatformStyling.swift and reused here.

@@ -14,6 +14,10 @@ import AppKit
 /// .checkingSentinel  ─── if LOGGED_OUT sentinel exists ──→ .loggedOutRecovery
 ///         │
 ///         ↓ (no sentinel)
+///   .awaitingUserReady  ── user taps "Ready to scan" ──→ .startingDaemon
+///         │                              (or straight to .subscribing if the
+///         │                               daemon is already running)
+///         ↓
 ///   .subscribing  ── daemon error / not running ──→ .error(...)
 ///         │
 ///         ↓ (subscribed)
@@ -48,6 +52,10 @@ struct WhatsAppPairingView: View {
   /// timer publisher — see `body`.
   @State private var now: Date = Date()
   private let timer = Timer.publish(every: 0.2, on: .main, in: .common).autoconnect()
+  /// Rendered QR image, cached so the 0.2s countdown re-render doesn't re-run
+  /// the CIFilter + rasterize pipeline 5×/sec for an unchanged code. Set only
+  /// when the daemon pushes a new QR (the `.qrUpdate` event).
+  @State private var qrImage: Image?
 
   enum Phase: Equatable {
     case checkingSentinel
@@ -92,7 +100,7 @@ struct WhatsAppPairingView: View {
         phase = .awaitingUserReady
       }
     }
-    .onChange(of: whatsappDaemon.status) { status in
+    .onChange(of: whatsappDaemon.status) { _, status in
       // While we're waiting for the service to come up, watch the
       // controller's status. The .startingDaemon → .subscribing
       // transition fires once on the first .running observation.
@@ -208,6 +216,9 @@ struct WhatsAppPairingView: View {
         .fixedSize(horizontal: false, vertical: true)
       Spacer(minLength: 0)
     }
+    // Combine the number and instruction so VoiceOver reads "Open WhatsApp on
+    // your phone" as one element, not a bare "1." followed by the text.
+    .accessibilityElement(children: .combine)
   }
 
   private var startingDaemonView: some View {
@@ -273,7 +284,8 @@ struct WhatsAppPairingView: View {
 
   private func qrCodeView(qr: String) -> some View {
     VStack(spacing: 12) {
-      if let image = Self.renderQR(qr) {
+      // Use the cached image; fall back to an inline render if somehow unset.
+      if let image = qrImage ?? Self.renderQR(qr) {
         image
           .interpolation(.none)  // crisp pixel edges, no blur
           .resizable()
@@ -291,6 +303,10 @@ struct WhatsAppPairingView: View {
         .progressViewStyle(.linear)
         .frame(width: 220)
         .tint(Platform.whatsapp.accentColor)
+        // Unlabeled, the countdown bar is silent (or a bare "%") to VoiceOver;
+        // a screen-reader user has no idea the code is about to expire.
+        .accessibilityLabel("Pairing code expires in")
+        .accessibilityValue("\(Int((countdownProgress * 20).rounded())) seconds")
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
@@ -389,6 +405,9 @@ struct WhatsAppPairingView: View {
           phase = .awaitingFirstQR
         }
       case .qrUpdate(let qr):
+        // Render once here — off the 0.2s countdown re-render path — so the
+        // expensive CIFilter pipeline runs per new QR, not 5×/sec.
+        qrImage = Self.renderQR(qr)
         phase = .awaitingScan(qr: qr)
         // WhatsApp QRs are valid for ~20 s. The daemon will push a
         // fresh one before this expires; we reset the bar on each
@@ -435,8 +454,12 @@ struct WhatsAppPairingView: View {
   /// renderable SwiftUI `Image`. Uses Core Image's
   /// `CIQRCodeGenerator`, rendered at native scale and then upscaled
   /// with `.none` interpolation in the view for crisp pixels.
+  /// Shared CIContext — constructing one allocates a CPU/GPU render pipeline,
+  /// so reuse a single instance rather than building one on every call.
+  private static let ciContext = CIContext()
+
   private static func renderQR(_ payload: String) -> Image? {
-    let ctx = CIContext()
+    let ctx = Self.ciContext
     guard let data = payload.data(using: .utf8),
           let filter = CIFilter(name: "CIQRCodeGenerator")
     else { return nil }
