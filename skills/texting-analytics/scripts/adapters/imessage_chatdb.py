@@ -46,17 +46,48 @@ def kind_for(assoc, item_type, has_attach, tlen, has_body):
     return "other"
 
 
+def decode_attributed_body(blob):
+    """Plain text from chat.db's `attributedBody` (streamtyped NSAttributedString).
+    ~99% of message bodies live here, not in `text`, so this is how text_len gets a value."""
+    if not blob:
+        return None
+    try:
+        i = blob.find(b"NSString")
+        if i == -1:
+            return None
+        s = blob[i + 8:]
+        p = s.find(b"+")
+        if p == -1:
+            return None
+        s = s[p + 1:]
+        n = s[0]
+        if n == 0x81:
+            n = int.from_bytes(s[1:3], "little"); s = s[3:]
+        elif n == 0x82:
+            n = int.from_bytes(s[1:5], "little"); s = s[5:]
+        else:
+            s = s[1:]
+        return s[:n].decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--db", default=DEFAULT_DB)
     ap.add_argument("--since-days", type=int, default=730)
+    ap.add_argument("--all-time", action="store_true",
+                    help="ignore the 2yr ceiling; full history (for relationship analysis, not behavior)")
     ap.add_argument("--output", default="-")
     a = ap.parse_args()
 
-    since_days = min(a.since_days, 730)
     until_ms = int(time.time() * 1000)
-    since_ms = until_ms - since_days * 86400 * 1000
-    since_ns = int((since_ms / 1000.0 - APPLE_EPOCH) * 1e9)
+    if a.all_time:
+        since_ms, since_ns = 0, 0
+    else:
+        since_days = min(a.since_days, 730)  # 2-year ceiling for behavior analytics
+        since_ms = until_ms - since_days * 86400 * 1000
+        since_ns = int((since_ms / 1000.0 - APPLE_EPOCH) * 1e9)
 
     con = sqlite3.connect(f"file:{a.db}?mode=ro&immutable=1", uri=True)
     con.row_factory = sqlite3.Row
@@ -85,7 +116,7 @@ def main():
         SELECT m.guid AS guid, m.handle_id AS handle_id, m.date AS date,
                m.is_from_me AS is_from_me, m.item_type AS item_type,
                m.associated_message_type AS assoc, m.cache_has_attachments AS att,
-               LENGTH(m.text) AS tlen, (m.attributedBody IS NOT NULL) AS has_body,
+               LENGTH(m.text) AS tlen, m.attributedBody AS ab,
                h.id AS sender, cmj.chat_id AS chat_id
         FROM message m
         JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
@@ -99,6 +130,11 @@ def main():
         tid, is_group, _ = sess
         from_me = bool(r["is_from_me"])
         sender = None if from_me else norm_handle(r["sender"])
+        ab = r["ab"]
+        tlen = r["tlen"]
+        if not tlen and ab is not None:           # body is in attributedBody, not text
+            dec = decode_attributed_body(ab)
+            tlen = len(dec) if dec else None
         events.append({
             "platform": "imessage",
             "thread_id": tid,
@@ -106,8 +142,8 @@ def main():
             "sender_key": sender,
             "from_me": from_me,
             "ts_ms": apple_to_ms(r["date"]),
-            "kind": kind_for(r["assoc"], r["item_type"], r["att"], r["tlen"], r["has_body"]),
-            "text_len": r["tlen"],
+            "kind": kind_for(r["assoc"], r["item_type"], r["att"], tlen, ab is not None),
+            "text_len": tlen,
         })
     con.close()
 

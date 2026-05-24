@@ -201,11 +201,11 @@ def chart_ball(data, theme, out_path, branded=True):
     pct = int(round(d["pct_ball_in_court"]))
     fig.text(0.5, 0.52, f"{pct}%", ha="center", va="center", fontsize=200, color=theme["ACCENT"], fontweight="800")
 
-    fig.text(0.5, 0.34, "of my active threads", ha="center", fontsize=30, color=theme["INK"], fontweight="500")
-    fig.text(0.5, 0.295, "are waiting on me right now", ha="center", fontsize=30, color=theme["INK"], fontweight="500")
+    fig.text(0.5, 0.34, "of my recent threads,", ha="center", fontsize=30, color=theme["INK"], fontweight="500")
+    fig.text(0.5, 0.295, "they got the last word", ha="center", fontsize=30, color=theme["INK"], fontweight="500")
 
-    fig.text(0.5, 0.82, "The ball-in-court rate", ha="center", fontsize=34, color=theme["INK"], fontweight="700")
-    fig.text(0.5, 0.76, "How many threads have me on the hook at any given moment", ha="center", fontsize=18, color=theme["MUTED"])
+    fig.text(0.5, 0.82, "The last word", ha="center", fontsize=34, color=theme["INK"], fontweight="700")
+    fig.text(0.5, 0.76, "How often the other person spoke last", ha="center", fontsize=18, color=theme["MUTED"])
 
     fig.text(
         0.5,
@@ -219,12 +219,12 @@ def chart_ball(data, theme, out_path, branded=True):
     fig.text(
         0.5,
         0.13,
-        f"Of the {d['live_conversations_estimate']} that are actually live conversations,",
+        "Not every one is waiting on a reply,",
         ha="center",
         fontsize=16,
         color=theme["MUTED"],
     )
-    fig.text(0.5, 0.10, "most have me on the hook.", ha="center", fontsize=16, color=theme["MUTED"])
+    fig.text(0.5, 0.10, "it just means they texted last.", ha="center", fontsize=16, color=theme["MUTED"])
     if branded:
         fig.text(0.5, 0.04, BRAND_STAMP, ha="center", fontsize=14, color=theme["MUTED"])
 
