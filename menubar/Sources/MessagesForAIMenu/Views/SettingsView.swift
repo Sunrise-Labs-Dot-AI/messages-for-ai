@@ -29,6 +29,7 @@ struct SettingsView: View {
         whatsappSection
         loginItemRow
         statusSection
+        versionFooter
       }
       .padding(.horizontal, 16)
       .padding(.top, 24)
@@ -406,6 +407,42 @@ struct SettingsView: View {
       Spacer()
       SwitchButton(isOn: isOn, enabled: enabled)
     }
+  }
+
+  // MARK: - Version footer
+
+  // Bottom-of-page build stamp so a dev install (or a release) can be
+  // identified at a glance. Values come from the bundle Info.plist:
+  // CFBundleShortVersionString + CFBundleVersion are written by
+  // dev-install.sh (git short SHA, "-dirty" if the tree had uncommitted
+  // changes) / build-release.sh (release version). MFABuildTime is the
+  // dev-install build timestamp. Falls back gracefully when run outside a
+  // packaged .app (e.g. `swift run` / tests), where the keys are absent.
+  private var versionFooter: some View {
+    VStack(spacing: 2) {
+      Divider().padding(.bottom, 2)
+      Text("Messages for AI \(Self.appVersion)")
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+      Text(Self.buildStamp)
+        .font(.caption2.monospaced())
+        .foregroundStyle(.tertiary)
+        .textSelection(.enabled)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.top, 2)
+  }
+
+  static var appVersion: String {
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "dev"
+  }
+
+  static var buildStamp: String {
+    let sha = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "—"
+    if let t = Bundle.main.object(forInfoDictionaryKey: "MFABuildTime") as? String, !t.isEmpty {
+      return "build \(sha) · \(t)"
+    }
+    return "build \(sha)"
   }
 
   private func infoRow(label: String, value: String) -> some View {
