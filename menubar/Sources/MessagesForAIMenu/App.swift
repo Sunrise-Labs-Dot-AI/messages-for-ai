@@ -10,6 +10,34 @@ enum WindowID {
   static let setupWalkthrough = "setup-walkthrough"
 }
 
+/// Window titles, hoisted so the focus helper can match a window by title
+/// without drifting from the scene definitions below.
+enum WindowTitle {
+  static let settings = "Messages for AI Settings"
+}
+
+/// Reliably bring a SwiftUI `Window(id:)` to the foreground from a menu-bar
+/// (.accessory) app. `openWindow` alone does NOT refocus a window that's
+/// already open on another Space/display — the app may not be frontmost and
+/// the window stays where it was, so the user has to hunt it down. This
+/// activates the app and pulls the window to the *active* Space instead.
+enum WindowFocus {
+  static func bringToFront(id: String, title: String) {
+    NSApp.activate(ignoringOtherApps: true)
+    // Defer one runloop tick so this runs after openWindow has surfaced
+    // (or created) the window.
+    DispatchQueue.main.async {
+      guard let window = NSApp.windows.first(where: {
+        $0.identifier?.rawValue == id || $0.title == title
+      }) else { return }
+      // Let the window come to whatever Space the user is on now, rather
+      // than yanking the user across Spaces to where it last lived.
+      window.collectionBehavior.insert(.moveToActiveSpace)
+      window.makeKeyAndOrderFront(nil)
+    }
+  }
+}
+
 @main
 struct MessagesForAIMenuApp: App {
   @StateObject private var store = DraftStore()
@@ -64,7 +92,7 @@ struct MessagesForAIMenuApp: App {
     }
     .windowResizability(.contentSize)
 
-    Window("Messages for AI Settings", id: WindowID.settings) {
+    Window(WindowTitle.settings, id: WindowID.settings) {
       SettingsView()
         .environmentObject(settings)
         .environmentObject(loginItem)
