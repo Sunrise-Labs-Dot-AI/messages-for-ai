@@ -32,7 +32,7 @@ import {
 type BoomLike = Error & { output?: { statusCode?: number } };
 
 import { PATHS } from "../paths.ts";
-import { insertMessage, upsertThread, upsertContact, type IngestMessage, type MessageType } from "../storage/messages.ts";
+import { insertMessage, upsertThread, upsertContact, type IngestMessage, type MessageType, type QuotedReconstruction } from "../storage/messages.ts";
 import { useSqliteAuthState } from "../storage/session.ts";
 
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "logged_out";
@@ -237,12 +237,29 @@ export class WhatsAppConnection extends EventEmitter {
     }
   }
 
-  /** Send a message via Baileys. Used by daemon's sendDraft handler. */
-  async sendText(jid: string, body: string): Promise<{ message_id: string }> {
+  /** Send a message via Baileys. Used by daemon's sendDraft handler.
+   *  When `quoted` is provided the message is sent as a quoted reply
+   *  (Baileys threads it via `quoted.key.id`). */
+  async sendText(
+    jid: string,
+    body: string,
+    quoted?: QuotedReconstruction | null,
+  ): Promise<{ message_id: string }> {
     if (this.socket == null || this.state !== "connected") {
       throw new Error("Not connected to WhatsApp");
     }
-    const result = await this.socket.sendMessage(jid, { text: body });
+    let opts: { quoted: WAMessage } | undefined;
+    if (quoted != null) {
+      // Self-quotes stored `participant` as the thread JID; substitute the
+      // real self-JID so the quote attributes correctly. Incoming quotes
+      // already carry the right sender.
+      const fixed =
+        quoted.key.fromMe && this.meJid != null
+          ? { ...quoted, key: { ...quoted.key, participant: this.meJid } }
+          : quoted;
+      opts = { quoted: fixed as unknown as WAMessage };
+    }
+    const result = await this.socket.sendMessage(jid, { text: body }, opts);
     return { message_id: result?.key.id ?? "" };
   }
 }
@@ -268,9 +285,26 @@ function toIngestMessage(msg: WAMessage, source: "live" | "history-sync"): Inges
     body,
     message_type: type,
     attachment_meta,
-    reply_to_id: msg.message?.extendedTextMessage?.contextInfo?.stanzaId ?? null,
+    reply_to_id: extractReplyToId(msg),
     source,
   };
+}
+
+// A quoted reply's `contextInfo.stanzaId` hangs off whichever sub-message the
+// reply itself is — a text reply on `extendedTextMessage`, a photo reply on
+// `imageMessage`, etc. Check the common carriers so media replies surface a
+// reply pointer too, not just text replies.
+function extractReplyToId(msg: WAMessage): string | null {
+  const m = msg.message;
+  if (m == null) return null;
+  const ctx =
+    m.extendedTextMessage?.contextInfo ??
+    m.imageMessage?.contextInfo ??
+    m.videoMessage?.contextInfo ??
+    m.documentMessage?.contextInfo ??
+    m.audioMessage?.contextInfo ??
+    null;
+  return ctx?.stanzaId ?? null;
 }
 
 function extractMessageContent(msg: WAMessage): {

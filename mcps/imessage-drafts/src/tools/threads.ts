@@ -84,6 +84,18 @@ export function registerThreadTools(server: McpServer): void {
         const wrapped: ThreadMessage[] = rows.map((m) => ({
           ...wrapBodyInPlace(m),
           sender: { handle: m.sender.handle, name: wrapUntrusted(m.sender.name) },
+          // reply_to carries a peer-typed body + sidecar-sourced sender name —
+          // wrap both, same as the top-level fields.
+          reply_to: m.reply_to
+            ? {
+                ...m.reply_to,
+                body: wrapUntrusted(m.reply_to.body),
+                sender: {
+                  handle: m.reply_to.sender.handle,
+                  name: wrapUntrusted(m.reply_to.sender.name),
+                },
+              }
+            : null,
         }));
         return jsonResult({ thread_id: args.thread_id, messages: wrapped });
       } catch (e) {

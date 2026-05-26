@@ -123,7 +123,19 @@ export interface MessageRow {
   body_sha256: string | null;
   message_type: MessageType;
   attachment_meta: { caption?: string; filename?: string; mime?: string } | null;
+  /** stanzaId of the message this one quotes/replies to, or null. */
   reply_to_id: string | null;
+  /** The quoted message resolved from the cache. Present when reply_to_id is
+   *  set; `body` is null when the quoted message isn't in the cache (older
+   *  than retention / never synced) — the caller still learns it's a reply.
+   *  `body` / `sender_name` are peer-/sidecar-sourced; wrap as untrusted at
+   *  the tool boundary. */
+  reply_to: {
+    message_id: string;
+    body: string | null;
+    from_me: boolean;
+    sender_name: string | null;
+  } | null;
 }
 
 let _db: Database | null = null;
@@ -427,6 +439,24 @@ export function listThreads(opts: {
   }));
 }
 
+// Assemble the `reply_to` object from the self-join columns. Null when the
+// row isn't a reply; `body` null when the quoted message isn't in the cache.
+function buildReplyTo(r: {
+  reply_to_id: string | null;
+  reply_to_body: string | null;
+  reply_to_from_me: number | null;
+  reply_to_sender_name: string | null;
+}): MessageRow["reply_to"] {
+  if (r.reply_to_id == null) return null;
+  const fromMe = r.reply_to_from_me === 1;
+  return {
+    message_id: r.reply_to_id,
+    body: r.reply_to_body,
+    from_me: fromMe,
+    sender_name: fromMe ? null : r.reply_to_sender_name,
+  };
+}
+
 export function getThreadMessages(opts: {
   thread_jid: string;
   before_ts?: number;
@@ -446,6 +476,10 @@ export function getThreadMessages(opts: {
   // Direct match wins; @lid indirection fills in the ~30% of senders that
   // Baileys exposes only in privacy-id form (the lid_pn_map populator
   // lands daemon-side in a follow-up; this read path is forward-compat).
+  // Self-join `messages q` on (thread_jid, reply_to_id) to resolve the quoted
+  // message's body + sender for replies. Same two-leg contacts/@lid join for
+  // the quoted sender's name as for the main sender. q.* is all-null when the
+  // quoted message isn't cached — buildReplyTo handles that.
   const rows = db.prepare(`
     SELECT m.message_id, m.thread_jid, m.sender_jid, m.from_me, m.ts,
            m.body, m.body_sha256, m.message_type, m.attachment_meta,
@@ -453,11 +487,21 @@ export function getThreadMessages(opts: {
            COALESCE(
              c_direct.display_name, c_direct.push_name,
              c_via_lid.display_name, c_via_lid.push_name
-           ) AS sender_name
+           ) AS sender_name,
+           q.body AS reply_to_body,
+           q.from_me AS reply_to_from_me,
+           COALESCE(
+             qc_direct.display_name, qc_direct.push_name,
+             qc_via_lid.display_name, qc_via_lid.push_name
+           ) AS reply_to_sender_name
     FROM messages m
     LEFT JOIN contacts  c_direct  ON c_direct.jid  = m.sender_jid
     LEFT JOIN lid_pn_map l        ON l.lid         = m.sender_jid
     LEFT JOIN contacts  c_via_lid ON c_via_lid.jid = l.pn
+    LEFT JOIN messages  q         ON q.thread_jid  = m.thread_jid AND q.message_id = m.reply_to_id
+    LEFT JOIN contacts  qc_direct ON qc_direct.jid = q.sender_jid
+    LEFT JOIN lid_pn_map ql       ON ql.lid        = q.sender_jid
+    LEFT JOIN contacts  qc_via_lid ON qc_via_lid.jid = ql.pn
     WHERE m.thread_jid = ? AND m.ts < ?
     ORDER BY m.ts DESC
     LIMIT ?
@@ -473,6 +517,9 @@ export function getThreadMessages(opts: {
     message_type: MessageType;
     attachment_meta: string | null;
     reply_to_id: string | null;
+    reply_to_body: string | null;
+    reply_to_from_me: number | null;
+    reply_to_sender_name: string | null;
   }>;
   return rows.map((r) => ({
     message_id: r.message_id,
@@ -486,6 +533,7 @@ export function getThreadMessages(opts: {
     message_type: r.message_type,
     attachment_meta: r.attachment_meta ? JSON.parse(r.attachment_meta) : null,
     reply_to_id: r.reply_to_id,
+    reply_to: buildReplyTo(r),
   }));
 }
 
@@ -498,6 +546,93 @@ export function getMessageFull(thread_jid: string, message_id: string): string |
   if (row == null) return null;
   if (row.body_full != null) return Buffer.from(row.body_full).toString("utf8");
   return row.body;
+}
+
+/** Minimal Baileys-shaped `quoted` argument. Cast to WAMessage at the
+ *  sendMessage call site — Baileys only reads `key` (for the stanzaId
+ *  linkage) and `message` (for the rendered quote preview). */
+export interface QuotedReconstruction {
+  key: { id: string; remoteJid: string; fromMe: boolean; participant: string };
+  message: { conversation: string };
+}
+
+/**
+ * Rebuild the `quoted` argument for a stored message so the daemon can send a
+ * WhatsApp quoted reply WITHOUT retaining raw Baileys WAMessage objects — every
+ * field comes from the messages.db row. Returns null when the quoted message
+ * isn't cached (older than retention / never synced), in which case the caller
+ * sends a normal (un-quoted) message.
+ *
+ * Note: `participant` is the stored sender_jid. For incoming messages (the
+ * common reply case) that's correct. For from_me quotes it's the thread JID;
+ * the daemon overrides it with the real self-JID where known. Linkage is by
+ * `key.id` (stanzaId) regardless.
+ */
+export function getQuotedReconstruction(
+  thread_jid: string,
+  message_id: string,
+): QuotedReconstruction | null {
+  const db = getMessagesDb();
+  const row = db.prepare(`
+    SELECT sender_jid, from_me, body, body_full FROM messages
+    WHERE thread_jid = ? AND message_id = ?
+  `).get(thread_jid, message_id) as {
+    sender_jid: string;
+    from_me: number;
+    body: string | null;
+    body_full: Buffer | null;
+  } | null;
+  if (row == null) return null;
+  const previewBody = row.body_full != null
+    ? Buffer.from(row.body_full).toString("utf8")
+    : row.body;
+  return {
+    key: {
+      id: message_id,
+      remoteJid: thread_jid,
+      fromMe: row.from_me === 1,
+      participant: row.sender_jid,
+    },
+    message: { conversation: previewBody ?? "" },
+  };
+}
+
+/** Stage-time snapshot of a single message, for embedding in a reply-draft's
+ *  `quoted_preview`. Resolves sender_name via the same contacts/@lid join as
+ *  the read path. Returns null when the message isn't cached. */
+export interface QuotedPreviewRow {
+  message_id: string;
+  body: string | null;
+  from_me: boolean;
+  sender_name: string | null;
+}
+
+export function getQuotedPreview(thread_jid: string, message_id: string): QuotedPreviewRow | null {
+  const db = getMessagesDb();
+  const row = db.prepare(`
+    SELECT m.body, m.from_me,
+           COALESCE(
+             c_direct.display_name, c_direct.push_name,
+             c_via_lid.display_name, c_via_lid.push_name
+           ) AS sender_name
+    FROM messages m
+    LEFT JOIN contacts  c_direct  ON c_direct.jid  = m.sender_jid
+    LEFT JOIN lid_pn_map l        ON l.lid         = m.sender_jid
+    LEFT JOIN contacts  c_via_lid ON c_via_lid.jid = l.pn
+    WHERE m.thread_jid = ? AND m.message_id = ?
+  `).get(thread_jid, message_id) as {
+    body: string | null;
+    from_me: number;
+    sender_name: string | null;
+  } | null;
+  if (row == null) return null;
+  const fromMe = row.from_me === 1;
+  return {
+    message_id,
+    body: row.body,
+    from_me: fromMe,
+    sender_name: fromMe ? null : row.sender_name,
+  };
 }
 
 export function searchMessages(opts: {
@@ -525,11 +660,16 @@ export function searchMessages(opts: {
   const rows = db.prepare(`
     SELECT m.message_id, m.thread_jid, m.sender_jid, m.from_me, m.ts, m.body,
            m.body_sha256, m.message_type, m.attachment_meta, m.reply_to_id,
-           COALESCE(cs.display_name, cs.push_name) AS sender_name
+           COALESCE(cs.display_name, cs.push_name) AS sender_name,
+           q.body AS reply_to_body,
+           q.from_me AS reply_to_from_me,
+           COALESCE(qcs.display_name, qcs.push_name) AS reply_to_sender_name
     FROM messages m
     LEFT JOIN threads t ON t.thread_jid = m.thread_jid
     LEFT JOIN contacts ct ON ct.jid = m.thread_jid
     LEFT JOIN contacts cs ON cs.jid = m.sender_jid
+    LEFT JOIN messages q ON q.thread_jid = m.thread_jid AND q.message_id = m.reply_to_id
+    LEFT JOIN contacts qcs ON qcs.jid = q.sender_jid
     WHERE ${where.join(" AND ")}
     ORDER BY m.ts DESC
     LIMIT ?
@@ -545,6 +685,9 @@ export function searchMessages(opts: {
     message_type: MessageType;
     attachment_meta: string | null;
     reply_to_id: string | null;
+    reply_to_body: string | null;
+    reply_to_from_me: number | null;
+    reply_to_sender_name: string | null;
   }>;
   return rows.map((r) => ({
     message_id: r.message_id,
@@ -558,6 +701,7 @@ export function searchMessages(opts: {
     message_type: r.message_type,
     attachment_meta: r.attachment_meta ? JSON.parse(r.attachment_meta) : null,
     reply_to_id: r.reply_to_id,
+    reply_to: buildReplyTo(r),
   }));
 }
 

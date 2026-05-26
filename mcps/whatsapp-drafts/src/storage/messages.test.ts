@@ -19,6 +19,8 @@ const {
   getThreadMessages,
   searchMessages,
   getMessageFull,
+  getQuotedReconstruction,
+  getQuotedPreview,
   sweepOldMessages,
   getMessagesDb,
   _resetForTesting,
@@ -250,6 +252,106 @@ describe("messages.db", () => {
       });
       const msgs = getThreadMessages({ thread_jid: "t-unmatched@g.us" });
       expect(msgs[0]!.sender_name).toBeNull();
+    });
+  });
+
+  // ---- reply_to resolution (read side) -------------------------------
+
+  describe("reply_to resolution", () => {
+    test("getThreadMessages resolves reply_to from the quoted message", () => {
+      upsertContact({ jid: "12025550001@s.whatsapp.net", display_name: "Alice", push_name: null });
+      insertMessage({
+        message_id: "orig-1", thread_jid: "t-reply", sender_jid: "12025550001@s.whatsapp.net",
+        from_me: false, ts: 100, body: "are we still on for 3?", message_type: "text", source: "live",
+      });
+      insertMessage({
+        message_id: "reply-1", thread_jid: "t-reply", sender_jid: "t-reply",
+        from_me: true, ts: 200, body: "yes!", message_type: "text", source: "live",
+        reply_to_id: "orig-1",
+      });
+      const msgs = getThreadMessages({ thread_jid: "t-reply" }); // newest-first
+      expect(msgs[0]!.body).toBe("yes!");
+      expect(msgs[0]!.reply_to).not.toBeNull();
+      expect(msgs[0]!.reply_to!.message_id).toBe("orig-1");
+      expect(msgs[0]!.reply_to!.body).toBe("are we still on for 3?");
+      expect(msgs[0]!.reply_to!.from_me).toBe(false);
+      expect(msgs[0]!.reply_to!.sender_name).toBe("Alice");
+      expect(msgs[1]!.reply_to).toBeNull();
+    });
+
+    test("reply_to.body is null when the quoted message isn't cached", () => {
+      insertMessage({
+        message_id: "reply-orphan", thread_jid: "t-orphan", sender_jid: "x@s.whatsapp.net",
+        from_me: false, ts: 100, body: "replying to something old", message_type: "text",
+        source: "live", reply_to_id: "not-in-cache",
+      });
+      const msgs = getThreadMessages({ thread_jid: "t-orphan" });
+      expect(msgs[0]!.reply_to).not.toBeNull();
+      expect(msgs[0]!.reply_to!.message_id).toBe("not-in-cache");
+      expect(msgs[0]!.reply_to!.body).toBeNull();
+    });
+
+    test("searchMessages carries reply_to on hits", () => {
+      insertMessage({
+        message_id: "s-orig", thread_jid: "t-s", sender_jid: "p@s.whatsapp.net",
+        from_me: false, ts: 100, body: "lunch plan", message_type: "text", source: "live",
+      });
+      insertMessage({
+        message_id: "s-reply", thread_jid: "t-s", sender_jid: "t-s",
+        from_me: true, ts: 200, body: "lunch sounds perfect", message_type: "text",
+        source: "live", reply_to_id: "s-orig",
+      });
+      const hits = searchMessages({ query: "sounds perfect", since: 0 });
+      expect(hits).toHaveLength(1);
+      expect(hits[0]!.reply_to!.message_id).toBe("s-orig");
+      expect(hits[0]!.reply_to!.body).toBe("lunch plan");
+    });
+  });
+
+  // ---- quoted reconstruction + preview (write side) ------------------
+
+  describe("quoted reconstruction", () => {
+    test("getQuotedReconstruction builds a Baileys-shaped quoted from a stored row", () => {
+      insertMessage({
+        message_id: "q-1", thread_jid: "12025550001@s.whatsapp.net",
+        sender_jid: "12025550001@s.whatsapp.net", from_me: false, ts: 100,
+        body: "ping", message_type: "text", source: "live",
+      });
+      const recon = getQuotedReconstruction("12025550001@s.whatsapp.net", "q-1");
+      expect(recon).not.toBeNull();
+      expect(recon!.key.id).toBe("q-1");
+      expect(recon!.key.remoteJid).toBe("12025550001@s.whatsapp.net");
+      expect(recon!.key.fromMe).toBe(false);
+      expect(recon!.key.participant).toBe("12025550001@s.whatsapp.net");
+      expect(recon!.message.conversation).toBe("ping");
+    });
+
+    test("getQuotedReconstruction returns null for an uncached message", () => {
+      expect(getQuotedReconstruction("t", "missing")).toBeNull();
+    });
+
+    test("getQuotedReconstruction uses the full body when the stored body was truncated", () => {
+      const big = "y".repeat(5000);
+      insertMessage({
+        message_id: "q-big", thread_jid: "t-q", sender_jid: "s@s.whatsapp.net",
+        from_me: false, ts: 1, body: big, message_type: "text", source: "live",
+      });
+      const recon = getQuotedReconstruction("t-q", "q-big");
+      expect(recon!.message.conversation.length).toBe(5000);
+    });
+
+    test("getQuotedPreview resolves body + sender_name and is null for an uncached message", () => {
+      upsertContact({ jid: "12025550009@s.whatsapp.net", display_name: "Erin", push_name: null });
+      insertMessage({
+        message_id: "qp-1", thread_jid: "t-qp", sender_jid: "12025550009@s.whatsapp.net",
+        from_me: false, ts: 1, body: "preview me", message_type: "text", source: "live",
+      });
+      const p = getQuotedPreview("t-qp", "qp-1");
+      expect(p).not.toBeNull();
+      expect(p!.body).toBe("preview me");
+      expect(p!.from_me).toBe(false);
+      expect(p!.sender_name).toBe("Erin");
+      expect(getQuotedPreview("t-qp", "nope")).toBeNull();
     });
   });
 

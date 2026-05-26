@@ -102,7 +102,11 @@ final class DraftStore: ObservableObject {
       // that might read this file before they're upgraded.
       platform: nil,
       approval_state: existing.approval_state,
-      induced_by_unknown_contact: existing.induced_by_unknown_contact
+      induced_by_unknown_contact: existing.induced_by_unknown_contact,
+      // iMessage-only path (guarded above) — these are always nil here,
+      // but carry them through so the round-trip stays lossless.
+      quoted_message_id: existing.quoted_message_id,
+      quoted_preview: existing.quoted_preview
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted]
