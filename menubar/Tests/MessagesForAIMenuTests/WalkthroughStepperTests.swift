@@ -13,6 +13,7 @@ final class WalkthroughStepperTests: XCTestCase {
         whatsapp: Bool = true,
         index: Int = 0,
         fda: ChatDbAccessState = .ok,
+        clientFda: ChatDbAccessState? = nil,
         imessageVerified: Bool? = nil,
         whatsappVerified: Bool? = nil
     ) -> WalkthroughStepper {
@@ -21,6 +22,7 @@ final class WalkthroughStepperTests: XCTestCase {
             whatsappEnabled: whatsapp,
             currentStepIndex: index,
             chatDbAccess: fda,
+            clientChatDbAccess: clientFda,
             imessageVerified: imessageVerified,
             whatsappVerified: whatsappVerified
         )
@@ -144,5 +146,35 @@ final class WalkthroughStepperTests: XCTestCase {
 
     func test_allVerified_neitherTransport_trivallyTrue() {
         XCTAssertTrue(makeStepper(imessage: false, whatsapp: false).allVerifiedOrSkipped)
+    }
+
+    // MARK: - client-reported FDA precedence (issue #17)
+
+    func test_clientDeniedOverridesMenuBarOk_blocksAdvance() {
+        // Menu-bar app can read chat.db (.ok) but the Claude-launched MCP
+        // reported permission_denied — the client signal must win and hold
+        // the user on the install step.
+        let s = makeStepper(imessage: true, index: 0, fda: .ok, clientFda: .permissionDenied)
+        XCTAssertFalse(s.canAdvance)
+    }
+
+    func test_clientDeniedOverridesMenuBarOk_blocksCompletion() {
+        // whatsapp: false isolates the iMessage FDA gate as the sole blocker.
+        let s = makeStepper(imessage: true, whatsapp: false, fda: .ok, clientFda: .permissionDenied, imessageVerified: true)
+        XCTAssertFalse(s.allVerifiedOrSkipped, "client-reported FDA denial must block completion")
+    }
+
+    func test_clientOkOverridesMenuBarDenied_allowsCompletion() {
+        // The client MCP can read chat.db even though the menu-bar probe came
+        // back denied — the authoritative client signal unblocks.
+        let s = makeStepper(imessage: true, whatsapp: false, fda: .permissionDenied, clientFda: .ok, imessageVerified: true)
+        XCTAssertTrue(s.canAdvance)
+        XCTAssertTrue(s.allVerifiedOrSkipped)
+    }
+
+    func test_clientNil_fallsBackToMenuBarProbe() {
+        // No witness yet → fall back to the menu-bar probe (prior behavior).
+        XCTAssertFalse(makeStepper(imessage: true, index: 0, fda: .permissionDenied, clientFda: nil).canAdvance)
+        XCTAssertTrue(makeStepper(imessage: true, index: 0, fda: .ok, clientFda: nil).canAdvance)
     }
 }

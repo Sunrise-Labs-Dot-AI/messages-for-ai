@@ -8,6 +8,8 @@ import { registerDraftTools } from "./tools/drafts.ts";
 import { registerTimeTool } from "./tools/time.ts";
 import { registerHealthTools } from "./tools/health.ts";
 import { migrateLegacyDir } from "./storage/migrate.ts";
+import { setChatDbAccessProbe } from "./witness.ts";
+import { getChatDbDiagnostic } from "./chatdb/open.ts";
 
 async function main() {
   // One-shot migration from the v0.1.x on-disk root (`~/.imessage-mcp/`)
@@ -15,6 +17,11 @@ async function main() {
   // logs to stderr on success or failure. Runs before any storage
   // subsystem touches the new directory.
   migrateLegacyDir();
+
+  // Stamp each witness with THIS process's live chat.db access, so the
+  // menubar can distinguish "Claude's MCP can read chat.db" from the
+  // menubar app's own (differently-attributed) FDA grant — see issue #17.
+  setChatDbAccessProbe(() => getChatDbDiagnostic().open_status);
 
   const server = new McpServer(
     { name: "imessage-drafts-mcp", version: "0.3.3" },

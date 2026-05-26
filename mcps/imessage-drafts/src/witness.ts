@@ -43,6 +43,28 @@ export interface WitnessRecord {
   ts: string;
   pid: number;
   writer_path: string;
+  /** Live chat.db access of THIS (client-launched) MCP process at write
+   *  time. The menubar reads this to learn whether *Claude's* MCP can read
+   *  chat.db — which differs from the menubar app's own access, because
+   *  macOS TCC attributes Full Disk Access to the launching app, not the
+   *  binary's identity (see issue #17). iMessage-specific: populated only
+   *  when a probe is wired via `setChatDbAccessProbe` (the WhatsApp mirror
+   *  never sets one, so the field stays absent there). */
+  chatdb_access?: "ok" | "permission_denied" | "not_found" | "error";
+}
+
+// Injectable chat.db access probe. Kept as a hook (rather than importing the
+// chatdb module here) so this witness module stays generic/mirror-clean and
+// unit tests stay pure — only the iMessage server entry point wires a real
+// probe. Returns undefined to omit the field.
+let chatDbAccessProbe: (() => WitnessRecord["chatdb_access"]) | null = null;
+
+/** Wire the chat.db access probe (iMessage server entry point only). Pass
+ *  null to reset (tests). */
+export function setChatDbAccessProbe(
+  fn: (() => WitnessRecord["chatdb_access"]) | null,
+): void {
+  chatDbAccessProbe = fn;
 }
 
 /**
@@ -62,11 +84,19 @@ export function writeLastInvocation(toolName: string): void {
     // image), which makes the menubar's writer_path codesign check
     // useless. The walkthrough relies on this path to verify the writer's
     // identity — keep it accurate.
+    // Probe THIS process's live chat.db access so the menubar can tell
+    // whether Claude's MCP (not just the menubar app) has Full Disk Access.
+    // Best-effort: a probe throw must never block the witness write.
+    let chatdb_access: WitnessRecord["chatdb_access"];
+    if (chatDbAccessProbe !== null) {
+      try { chatdb_access = chatDbAccessProbe(); } catch { /* omit on failure */ }
+    }
     const record: WitnessRecord = {
       tool: toolName,
       ts: new Date().toISOString(),
       pid: process.pid,
       writer_path: process.execPath,
+      ...(chatdb_access !== undefined ? { chatdb_access } : {}),
     };
     const finalPath = join(dir, FILENAME);
     // Random suffix on the tmp path prevents a local attacker from

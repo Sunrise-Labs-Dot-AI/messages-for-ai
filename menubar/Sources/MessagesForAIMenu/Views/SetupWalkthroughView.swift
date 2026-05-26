@@ -50,6 +50,14 @@ struct SetupWalkthroughView: View {
     // probe runs — a permission gate must never default to "granted".
     @State private var chatDbAccess: ChatDbAccessState = .unknown
 
+    // chat.db access as reported by the *Claude-launched* MCP itself (via the
+    // witness record's chatdb_access), set in evaluateInvocation. This is the
+    // authoritative client-FDA signal — `chatDbAccess` above is the menu-bar
+    // app's own probe, which can read green while Claude's MCP is denied,
+    // because macOS attributes Full Disk Access to the launching app, not the
+    // binary's identity (issue #17). Prefer this when present.
+    @State private var clientChatDbAccess: ChatDbAccessState? = nil
+
     // Stepper position. The walkthrough is presented one step at a time
     // (install checks → test each enabled transport) rather than as one
     // long scroll, so a fresh user has a single clear action per screen.
@@ -177,6 +185,7 @@ struct SetupWalkthroughView: View {
             whatsappEnabled: settings.whatsappEnabled,
             currentStepIndex: currentStepIndex,
             chatDbAccess: chatDbAccess,
+            clientChatDbAccess: clientChatDbAccess,
             imessageVerified: imessageVerified,
             whatsappVerified: whatsappVerified
         )
@@ -277,8 +286,11 @@ struct SetupWalkthroughView: View {
     /// of which are TCC-protected.
     @ViewBuilder
     private var fdaRow: some View {
+        // Prefer the Claude-launched MCP's own report when we have one; fall
+        // back to the menu-bar app's probe until the first witness lands.
+        let access = clientChatDbAccess ?? chatDbAccess
         let passing: Bool? = {
-            switch chatDbAccess {
+            switch access {
             case .ok: return true
             case .permissionDenied: return false
             // notFound (Messages never used on this Mac) and unknown are
@@ -287,7 +299,7 @@ struct SetupWalkthroughView: View {
             }
         }()
         let label: String = {
-            switch chatDbAccess {
+            switch access {
             case .ok: return "Full Disk Access granted (Claude can read Messages)"
             case .permissionDenied: return "Full Disk Access needed to read Messages"
             case .notFound: return "No Messages database found on this Mac yet"
@@ -304,7 +316,7 @@ struct SetupWalkthroughView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(label), \(Self.statusWord(for: passing))")
 
-            if chatDbAccess == .permissionDenied {
+            if access == .permissionDenied {
                 fdaHelp
             }
         }
@@ -743,8 +755,23 @@ struct SetupWalkthroughView: View {
         else { return }
 
         switch transport {
-        case .imessage: imessageVerified = true
-        case .whatsapp: whatsappVerified = true
+        case .imessage:
+            // The witness now reports the MCP's OWN chat.db access. A
+            // permission_denied witness means Claude reached the MCP but
+            // can't read Messages — record it (drives the FDA row) and do NOT
+            // mark iMessage verified, so the walkthrough can't complete on a
+            // half-working setup. This also closes a latent false-green:
+            // health_check succeeds under FDA denial and would otherwise green
+            // verification. Older MCPs omit the field (nil) → reachability
+            // alone verifies, preserving prior behavior.
+            if let access = record.chatDbAccess {
+                clientChatDbAccess = access
+                imessageVerified = (access != .permissionDenied)
+            } else {
+                imessageVerified = true
+            }
+        case .whatsapp:
+            whatsappVerified = true
         }
     }
 
@@ -855,9 +882,18 @@ struct WalkthroughStepper: Equatable {
     var whatsappEnabled: Bool
     /// Free index from the view's @State; always read via `clampedIndex`.
     var currentStepIndex: Int
+    /// Menu-bar app's own chat.db probe (fallback signal).
     var chatDbAccess: ChatDbAccessState
+    /// chat.db access reported by the Claude-launched MCP itself (issue #17).
+    /// Authoritative when present; nil until the first witness lands.
+    var clientChatDbAccess: ChatDbAccessState? = nil
     var imessageVerified: Bool?
     var whatsappVerified: Bool?
+
+    /// FDA signal the gates use: the client MCP's own report wins over the
+    /// menu-bar app's probe, because the two can disagree (TCC attributes Full
+    /// Disk Access to the launching app, not the binary's identity).
+    var effectiveChatDbAccess: ChatDbAccessState { clientChatDbAccess ?? chatDbAccess }
 
     /// One screen of the walkthrough. Built dynamically from the enabled
     /// transports so an iMessage-only user never sees a WhatsApp step.
@@ -886,7 +922,7 @@ struct WalkthroughStepper: Equatable {
     var canAdvance: Bool {
         switch currentStep {
         case .installHealth:
-            return !(imessageEnabled && chatDbAccess == .permissionDenied)
+            return !(imessageEnabled && effectiveChatDbAccess == .permissionDenied)
         case .test:
             return true
         }
@@ -898,7 +934,7 @@ struct WalkthroughStepper: Equatable {
     var allVerifiedOrSkipped: Bool {
         let imsOK = !imessageEnabled || imessageVerified == true
         let waOK = !whatsappEnabled || whatsappVerified == true
-        let fdaOK = !imessageEnabled || chatDbAccess != .permissionDenied
+        let fdaOK = !imessageEnabled || effectiveChatDbAccess != .permissionDenied
         return imsOK && waOK && fdaOK
     }
 }

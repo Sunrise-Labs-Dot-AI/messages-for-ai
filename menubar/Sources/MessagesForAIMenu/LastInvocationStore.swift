@@ -12,6 +12,12 @@ struct WitnessRecord: Equatable {
     let ts: Date
     let pid: Int32
     let writerPath: String
+    /// Live chat.db access of the *Claude-launched* MCP process at write time.
+    /// nil when the writing MCP predates this field (no `chatdb_access` key).
+    /// This is the authoritative client-FDA signal — distinct from the menu-bar
+    /// app's own probe, which can differ because macOS attributes Full Disk
+    /// Access to the launching app, not the binary's identity (issue #17).
+    let chatDbAccess: ChatDbAccessState?
 }
 
 private struct RawWitnessRecord: Decodable {
@@ -19,6 +25,7 @@ private struct RawWitnessRecord: Decodable {
     let ts: String
     let pid: Int32
     let writer_path: String
+    let chatdb_access: String?
 }
 
 /// Watches `~/.messages-mcp/` for atomic-renames of the per-transport
@@ -137,11 +144,24 @@ final class LastInvocationStore: ObservableObject {
         // last-seen time instead of "no record yet."
         if applyStalenessGate && parsed < now.addingTimeInterval(-Self.maxStaleness) { return nil }
 
+        // Map the MCP's chat.db open_status string onto the Swift enum.
+        // "error" (rare non-permission failure) → .unknown; absent → nil.
+        let chatDbAccess: ChatDbAccessState?
+        switch raw.chatdb_access {
+        case "ok": chatDbAccess = .ok
+        case "permission_denied": chatDbAccess = .permissionDenied
+        case "not_found": chatDbAccess = .notFound
+        case "error": chatDbAccess = .unknown
+        case nil: chatDbAccess = nil
+        default: chatDbAccess = .unknown
+        }
+
         return WitnessRecord(
             tool: raw.tool,
             ts: parsed,
             pid: raw.pid,
-            writerPath: raw.writer_path
+            writerPath: raw.writer_path,
+            chatDbAccess: chatDbAccess
         )
     }
 

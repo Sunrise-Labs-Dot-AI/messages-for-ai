@@ -281,6 +281,14 @@ struct SettingsView: View {
       }
 
       lastInvocationRow(label: "Last iMessage call from Claude", record: invocations.imessage)
+      if settings.imessageEnabled {
+        // The Claude-launched MCP's OWN chat.db access, reported by the witness
+        // it writes. This can differ from the binary/health rows above: macOS
+        // attributes Full Disk Access to the launching app (Claude), not the
+        // binary's identity, so Claude's MCP can be denied while the menu-bar
+        // app reads fine (issue #17).
+        clientFdaRow(record: invocations.imessage)
+      }
       if settings.whatsappEnabled {
         lastInvocationRow(label: "Last WhatsApp call from Claude", record: invocations.whatsapp)
       }
@@ -341,6 +349,38 @@ struct SettingsView: View {
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(label): \(record.map { Self.relative($0.ts) } ?? "no record yet")")
+  }
+
+  /// Surfaces the Claude-launched iMessage MCP's own chat.db access, read from
+  /// the witness record it writes (issue #17). nil record / nil access → we
+  /// haven't heard from a witness that reports it yet.
+  private func clientFdaRow(record: WitnessRecord?) -> some View {
+    let access = record?.chatDbAccess
+    let (passing, value): (Bool?, String) = {
+      switch access {
+      case .ok: return (true, "granted")
+      case .permissionDenied: return (false, "denied — grant FDA to Claude, then restart Claude")
+      case .notFound: return (nil, "no Messages DB")
+      case .unknown: return (nil, "unknown")
+      case .none: return (nil, "no record yet")
+      }
+    }()
+    let symbol = passing == true ? "checkmark.circle.fill"
+      : (passing == false ? "xmark.circle.fill" : "circle.dotted")
+    let color: Color = passing == true ? .green : (passing == false ? .red : .secondary)
+    return HStack(spacing: 8) {
+      Image(systemName: symbol)
+        .foregroundStyle(color)
+        .accessibilityHidden(true)
+      Text("Claude's iMessage Full Disk Access").font(.caption)
+      Spacer()
+      Text(value)
+        .font(.caption.monospaced())
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.trailing)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Claude's iMessage Full Disk Access: \(value)")
   }
 
   /// Status word used inside combined accessibility labels.
