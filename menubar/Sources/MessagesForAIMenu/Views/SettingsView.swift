@@ -10,7 +10,11 @@ struct SettingsView: View {
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
 
   @Environment(\.openWindow) private var openWindow
-  @StateObject private var invocations = LastInvocationStore()
+  // Ungated: the Status pane reports the real last-seen call time even when
+  // it's older than the walkthrough's 10-minute freshness window, so prior
+  // history (which persists in ~/.messages-mcp/ across reinstalls) doesn't
+  // read as "never."
+  @StateObject private var invocations = LastInvocationStore(applyStalenessGate: false)
 
   private let checks = HealthChecks()
 
@@ -331,12 +335,12 @@ struct SettingsView: View {
         .accessibilityHidden(true)
       Text(label).font(.caption)
       Spacer()
-      Text(record.map { Self.relative($0.ts) } ?? "never")
+      Text(record.map { Self.relative($0.ts) } ?? "no record yet")
         .font(.caption.monospaced())
         .foregroundStyle(.secondary)
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(label): \(record.map { Self.relative($0.ts) } ?? "never")")
+    .accessibilityLabel("\(label): \(record.map { Self.relative($0.ts) } ?? "no record yet")")
   }
 
   /// Status word used inside combined accessibility labels.
