@@ -290,6 +290,7 @@ struct SettingsView: View {
       }
 
       let imessageBinPath = HealthChecks.defaultBundleBinaryPrefix + "imessage-drafts-mcp"
+      let imessageDaemonBinPath = HealthChecks.defaultBundleBinaryPrefix + "imessage-drafts-daemon"
       let whatsappBinPath = HealthChecks.defaultBundleBinaryPrefix + "whatsapp-drafts-mcp"
       let daemonBinPath = HealthChecks.defaultBundleBinaryPrefix + "whatsapp-drafts-daemon"
       let configState = checks.claudeDesktopConfigState()
@@ -298,6 +299,15 @@ struct SettingsView: View {
         label: "iMessage MCP binary",
         passing: checks.binaryExists(at: imessageBinPath)
           && checks.codesignIdentifier(of: imessageBinPath) == HealthChecks.expectedSigningIdentifier
+      )
+      // The daemon binary — not the thin MCP client — is what reads chat.db
+      // post-#17. Check it here too, in parity with the WhatsApp daemon row
+      // below and the setup walkthrough, so this pane can't read all-green
+      // while the reader binary is missing/unsigned.
+      statusRow(
+        label: "iMessage daemon binary",
+        passing: checks.binaryExists(at: imessageDaemonBinPath)
+          && checks.codesignIdentifier(of: imessageDaemonBinPath) == HealthChecks.expectedSigningIdentifier
       )
       if settings.whatsappEnabled {
         statusRow(
