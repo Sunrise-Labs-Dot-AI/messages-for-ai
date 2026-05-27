@@ -3,7 +3,7 @@
 // and for accidental unbounded scans.
 
 import { openChatDb, appleDateToIsoUtc, isoUtcToAppleDateNs } from "./open.ts";
-import { bestMessageBody, truncateBody, decodeAttributedBody } from "./decode.ts";
+import { bestMessageBody, truncateBody, decodeAttributedBody, isOverBudget } from "./decode.ts";
 import { resolveHandle, resolveMany, findHandlesByContactName } from "./contacts.ts";
 
 export interface ThreadSummary {
@@ -37,6 +37,9 @@ export interface ThreadMessage {
   from_me: boolean;
   sender: { handle: string | null; name: string | null };
   body: string | null;
+  // True when `body` was clipped to the byte budget (truncateBody) — the
+  // returned text is intentionally shortened, not the complete message.
+  body_truncated: boolean;
   is_read: boolean;
   has_attachments: boolean;
   // The message this one is an inline reply to, or null if it's not a reply.
@@ -370,20 +373,24 @@ export function getThreadMessages(args: GetThreadArgs): ThreadMessage[] {
     rows.map((r) => r.thread_originator_guid).filter((g): g is string => !!g),
   );
 
-  return rows.map((r) => ({
-    message_id: r.ROWID,
-    thread_id: r.thread_id,
-    sent_at: appleDateToIsoUtc(r.date),
-    from_me: r.is_from_me === 1,
-    sender: {
-      handle: r.is_from_me ? null : r.sender_handle,
-      name: r.is_from_me ? null : r.sender_handle ? resolveHandle(r.sender_handle) : null,
-    },
-    body: truncateBody(bestMessageBody(r.text, r.attributedBody)),
-    is_read: r.is_read === 1,
-    has_attachments: r.cache_has_attachments === 1,
-    reply_to: replyToFor(r.thread_originator_guid, originators),
-  }));
+  return rows.map((r) => {
+    const raw = bestMessageBody(r.text, r.attributedBody);
+    return {
+      message_id: r.ROWID,
+      thread_id: r.thread_id,
+      sent_at: appleDateToIsoUtc(r.date),
+      from_me: r.is_from_me === 1,
+      sender: {
+        handle: r.is_from_me ? null : r.sender_handle,
+        name: r.is_from_me ? null : r.sender_handle ? resolveHandle(r.sender_handle) : null,
+      },
+      body: truncateBody(raw),
+      body_truncated: isOverBudget(raw),
+      is_read: r.is_read === 1,
+      has_attachments: r.cache_has_attachments === 1,
+      reply_to: replyToFor(r.thread_originator_guid, originators),
+    };
+  });
 }
 
 // Embedded in staged drafts so the menu bar app can render thread context
@@ -665,6 +672,7 @@ export function searchMessages(args: SearchArgs): ThreadMessage[] {
         name: r.is_from_me ? null : r.sender_handle ? resolveHandle(r.sender_handle) : null,
       },
       body: truncateBody(body),
+      body_truncated: isOverBudget(body),
       is_read: r.is_read === 1,
       has_attachments: r.cache_has_attachments === 1,
       reply_to: null,
