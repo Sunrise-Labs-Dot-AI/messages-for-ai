@@ -9,7 +9,7 @@ import { registerTimeTool } from "./tools/time.ts";
 import { registerHealthTools } from "./tools/health.ts";
 import { migrateLegacyDir } from "./storage/migrate.ts";
 import { setChatDbAccessProbe } from "./witness.ts";
-import { getChatDbDiagnostic } from "./chatdb/open.ts";
+import { callDaemon } from "./daemon/rpc-client.ts";
 
 async function main() {
   // One-shot migration from the v0.1.x on-disk root (`~/.imessage-mcp/`)
@@ -18,10 +18,24 @@ async function main() {
   // subsystem touches the new directory.
   migrateLegacyDir();
 
-  // Stamp each witness with THIS process's live chat.db access, so the
-  // menubar can distinguish "Claude's MCP can read chat.db" from the
-  // menubar app's own (differently-attributed) FDA grant — see issue #17.
-  setChatDbAccessProbe(() => getChatDbDiagnostic().open_status);
+  // The witness records chat.db access for the menubar's #17 detection.
+  // Post-refactor the MCP no longer reads chat.db itself — the daemon does —
+  // so we report the DAEMON's access. callDaemon is async but the witness
+  // probe is synchronous, so cache the daemon's status and refresh on a timer.
+  let cachedChatDbStatus: "ok" | "permission_denied" | "not_found" | "error" | undefined;
+  const refreshChatDbStatus = async () => {
+    try {
+      const d = await callDaemon<{ open_status: "ok" | "permission_denied" | "not_found" | "error" }>(
+        "chatDbDiagnostic",
+      );
+      cachedChatDbStatus = d.open_status;
+    } catch {
+      cachedChatDbStatus = "error"; // daemon unreachable
+    }
+  };
+  setChatDbAccessProbe(() => cachedChatDbStatus);
+  void refreshChatDbStatus();
+  setInterval(() => void refreshChatDbStatus(), 30_000).unref?.();
 
   const server = new McpServer(
     { name: "imessage-drafts-mcp", version: "0.3.3" },

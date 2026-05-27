@@ -8,6 +8,7 @@ struct SettingsView: View {
   @EnvironmentObject var settings: SettingsStore
   @EnvironmentObject var loginItem: LoginItemController
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
+  @EnvironmentObject var imessageDaemon: IMessageDaemonController
 
   @Environment(\.openWindow) private var openWindow
   // Ungated: the Status pane reports the real last-seen call time even when
@@ -50,6 +51,7 @@ struct SettingsView: View {
       enabledBinding: $settings.imessageEnabled
     ) {
       VStack(alignment: .leading, spacing: 10) {
+        imessageDaemonRow
         labeledSwitchRow(
           title: "Require approval to send",
           subtitle: settings.requireApproval
@@ -66,6 +68,47 @@ struct SettingsView: View {
         // "Open drafts in Finder" button is added, it should be a
         // proper button gated behind a power-user toggle.
       }
+    }
+  }
+
+  /// Compact status row for the chat.db reader daemon. The daemon is what
+  /// actually holds Full Disk Access (it's launched by this menu-bar app);
+  /// the Claude-launched MCP is a thin client to it. No remote connection
+  /// like WhatsApp — just process liveness.
+  private var imessageDaemonRow: some View {
+    HStack(spacing: 8) {
+      Circle()
+        .fill(imessageDaemonColor)
+        .frame(width: 8, height: 8)
+      Text(imessageDaemonLabel)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Spacer()
+      if case .crashLooping = imessageDaemon.status {
+        Button("Restart") { imessageDaemon.start() }
+          .buttonStyle(.bordered)
+          .controlSize(.mini)
+      }
+    }
+  }
+
+  private var imessageDaemonColor: Color {
+    switch imessageDaemon.status {
+    case .running: return .green
+    case .starting, .backingOff: return .orange
+    case .crashLooping: return .red
+    case .idle, .stopped: return .gray
+    }
+  }
+
+  private var imessageDaemonLabel: String {
+    switch imessageDaemon.status {
+    case .idle: return "Reader service: idle"
+    case .starting: return "Reader service: starting…"
+    case .running: return "Reader service: running"
+    case .backingOff(let s, _): return "Reader service: restarting in \(Int(s))s"
+    case .crashLooping: return "Reader service: couldn’t start — tap Restart"
+    case .stopped: return "Reader service: stopped"
     }
   }
 
@@ -282,11 +325,10 @@ struct SettingsView: View {
 
       lastInvocationRow(label: "Last iMessage call from Claude", record: invocations.imessage)
       if settings.imessageEnabled {
-        // The Claude-launched MCP's OWN chat.db access, reported by the witness
-        // it writes. This can differ from the binary/health rows above: macOS
-        // attributes Full Disk Access to the launching app (Claude), not the
-        // binary's identity, so Claude's MCP can be denied while the menu-bar
-        // app reads fine (issue #17).
+        // chat.db access as seen by the reader DAEMON. Post-refactor the MCP's
+        // witness reports the daemon's status (the MCP no longer touches
+        // chat.db itself). "denied" means the Messages for AI app lacks Full
+        // Disk Access — Claude does NOT need FDA (issue #17 + daemon refactor).
         clientFdaRow(record: invocations.imessage)
       }
       if settings.whatsappEnabled {
@@ -359,7 +401,7 @@ struct SettingsView: View {
     let (passing, value): (Bool?, String) = {
       switch access {
       case .ok: return (true, "granted")
-      case .permissionDenied: return (false, "denied — grant FDA to Claude, then restart Claude")
+      case .permissionDenied: return (false, "denied — enable ‘Messages for AI’ in Full Disk Access")
       case .notFound: return (nil, "no Messages DB")
       case .unknown: return (nil, "unknown")
       case .none: return (nil, "no record yet")
@@ -372,7 +414,7 @@ struct SettingsView: View {
       Image(systemName: symbol)
         .foregroundStyle(color)
         .accessibilityHidden(true)
-      Text("Claude's iMessage Full Disk Access").font(.caption)
+      Text("iMessage reader Full Disk Access").font(.caption)
       Spacer()
       Text(value)
         .font(.caption.monospaced())
@@ -380,7 +422,7 @@ struct SettingsView: View {
         .multilineTextAlignment(.trailing)
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Claude's iMessage Full Disk Access: \(value)")
+    .accessibilityLabel("iMessage reader Full Disk Access: \(value)")
   }
 
   /// Status word used inside combined accessibility labels.

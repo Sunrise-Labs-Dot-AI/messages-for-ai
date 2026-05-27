@@ -2,29 +2,22 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerWithWitness } from "../witness.ts";
 import { HealthCheckShape } from "../schema.ts";
 import { jsonResult, errorResult } from "./_result.ts";
-import {
-  getAddressBookSqliteDiagnostic,
-  getContactsLoadDiagnostic,
-  canonHandlePublic,
-  resolveHandle,
-} from "../chatdb/contacts.ts";
-import { getChatDbDiagnostic } from "../chatdb/open.ts";
+import { callDaemon, DaemonUnavailableError } from "../daemon/rpc-client.ts";
 import { getContactsSidecarDiagnostic } from "../storage/contacts-cache.ts";
+import type { ChatDbDiagnostic } from "../chatdb/open.ts";
+import type { AddressBookDiagnostic, ContactsLoadDiagnostic } from "../chatdb/contacts.ts";
 
-// `health_check` exists to break a specific debugging
-// deadlock: when `to_handle_name` keeps coming back null for a known
-// contact, the user can't tell whether FDA is missing on the binary,
-// whether the AddressBook DB opened but is empty, whether the contact
-// is genuinely absent, or whether the phone-number canonicalization
-// mismatched. This tool answers all four in one call.
+// `health_check` exists to break a specific debugging deadlock: when
+// `to_handle_name` keeps coming back null for a known contact, the user
+// can't tell whether the daemon is down, whether Full Disk Access is
+// missing on the Messages for AI app, whether the AddressBook DB opened
+// but is empty, whether the contact is genuinely absent, or whether the
+// phone-number canonicalization mismatched. This tool answers all of that.
 //
-// It's intentionally NOT marked destructive / open-world — it's a
-// read-only inspection of the MCP server's own permission state.
-//
-// The `remediation.binary_path` field is `process.execPath`, which on
-// the compiled bun output is the path to `imessage-drafts-mcp` itself — i.e.
-// the exact file the user needs to add to System Settings → Privacy &
-// Security → Full Disk Access.
+// Post-daemon-refactor: chat.db + AddressBook are FDA-gated, so the daemon
+// (which holds FDA, inherited from the menu-bar app) performs them. The MCP
+// reads only the contacts sidecar locally (no FDA). If the daemon is
+// unreachable, the remediation points at launching the menu-bar app.
 export function registerHealthTools(server: McpServer): void {
   registerWithWitness(
     server,
@@ -32,94 +25,105 @@ export function registerHealthTools(server: McpServer): void {
     {
       title: "Diagnose imessage-drafts-mcp permissions and contact lookup",
       description:
-        "Returns the live state of AddressBook and chat.db access (Full Disk Access " +
-        "is required for both). Pass `probe_handle` to also report how a phone/email " +
-        "canonicalizes and whether it resolves to a contact name. Use this when " +
-        "`to_handle_name` keeps coming back null for a known contact, when Send/list " +
-        "tools error with permission-denied messages, or to confirm a fresh FDA grant " +
-        "actually took effect after a binary rebuild.",
+        "Returns the live state of AddressBook and chat.db access (read by the " +
+        "Messages for AI daemon, which holds Full Disk Access). Pass `probe_handle` " +
+        "to also report how a phone/email canonicalizes and whether it resolves to a " +
+        "contact name. Use this when `to_handle_name` keeps coming back null for a " +
+        "known contact, when read tools error, or to confirm the daemon + FDA are healthy.",
       inputSchema: HealthCheckShape,
     },
     async (args) => {
       try {
         const sidecar = getContactsSidecarDiagnostic();
-        // SQLite-only diagnostic — `contacts_loaded` reflects strictly
-        // the AddressBook SQLite layer, NOT whichever layer happened to
-        // serve the data. The function encapsulates its own cache reset
-        // (PR 11 review finding #2), so we don't need to clean up after
-        // it ourselves.
-        const addressbook = getAddressBookSqliteDiagnostic();
-        // Layer-of-record diagnostic — answers "where did the contact
-        // names actually come from in production load()?". Re-runs
-        // load() through the normal sidecar-first path.
-        const contacts_load = getContactsLoadDiagnostic();
-        const chatdb = getChatDbDiagnostic();
 
-        // FDA matters only for the SQLite fallback. When the sidecar is
-        // serving fresh data with granted permission, FDA is irrelevant
-        // for contact resolution — but still required for chat.db
-        // (thread context lookup). So we keep reporting fda_likely_missing
-        // based on chat.db state, and separately note whether contacts
-        // were served by the sidecar or fell back to SQLite.
+        // chat.db + AddressBook are FDA-gated → the daemon performs them.
+        let chatdb: ChatDbDiagnostic;
+        let addressbook: AddressBookDiagnostic;
+        let contacts_load: ContactsLoadDiagnostic;
+        let daemon_reachable = true;
+        try {
+          const h = await callDaemon<{
+            chatdb: ChatDbDiagnostic;
+            addressbook: AddressBookDiagnostic;
+            contacts_load: ContactsLoadDiagnostic;
+          }>("health");
+          chatdb = h.chatdb;
+          addressbook = h.addressbook;
+          contacts_load = h.contacts_load;
+        } catch (e) {
+          daemon_reachable = false;
+          const reason =
+            e instanceof DaemonUnavailableError ? "daemon_unreachable" : (e as Error).message;
+          chatdb = {
+            db_path: "~/Library/Messages/chat.db",
+            db_path_exists: false,
+            open_status: "error",
+            open_error: reason,
+          };
+          addressbook = {
+            db_path: null,
+            db_path_exists: false,
+            db_paths: [],
+            open_status: "error",
+            open_error: reason,
+            contacts_loaded: 0,
+            per_db: [],
+          };
+          contacts_load = {
+            source: "none",
+            count: 0,
+            sidecar_present: sidecar.read_status === "ok",
+          };
+        }
+
         const contacts_source = contacts_load.source;
         const fda_likely_missing =
           chatdb.open_status === "permission_denied" ||
           (contacts_source !== "sidecar" && addressbook.open_status === "permission_denied");
 
         const probe = args.probe_handle
-          ? {
-              input: args.probe_handle,
-              canonical: canonHandlePublic(args.probe_handle),
-              resolved_name: resolveHandle(args.probe_handle),
-            }
+          ? await callDaemon<{ input: string; canonical: string; resolved_name: string | null }>(
+              "probeHandle",
+              { handle: args.probe_handle },
+            ).catch(() => undefined)
           : undefined;
 
-        // Pick the most actionable remediation message based on what's
-        // wrong. Order matters: contacts-sidecar-missing is friendlier
-        // than FDA-missing, and we should nudge users toward the menu
-        // bar app's CNContactStore path before asking them to drag
-        // binaries around.
+        // Pick the most actionable remediation. Order: daemon down (launch
+        // the app) → contacts-sidecar issues → FDA missing → all good.
         const instructions = (() => {
+          if (!daemon_reachable) {
+            return "The Messages for AI menu bar app isn't running — it hosts the daemon " +
+              "that reads chat.db and AddressBook on this MCP's behalf. Launch " +
+              "/Applications/Messages for AI.app (it starts the daemon automatically). " +
+              "If it's already open, the daemon may still be starting; retry shortly.";
+          }
           if (sidecar.read_status === "missing") {
-            return "Install the menu bar app: `cd menubar && bash scripts/dev-install.sh`, " +
-              "then launch /Applications/Messages for AI.app and grant Contacts permission " +
-              "when prompted. The app writes ~/.messages-mcp/contacts-cache.json which this " +
-              "MCP reads instead of needing Full Disk Access for AddressBook.";
+            return "Install/launch the menu bar app and grant Contacts permission when " +
+              "prompted. It writes ~/.messages-mcp/contacts-cache.json, which this MCP reads " +
+              "for contact names without needing Full Disk Access.";
           }
           if (sidecar.permission_status === "denied" || sidecar.permission_status === "restricted") {
-            return "The menu bar app is installed but doesn't have Contacts permission. " +
-              "Open System Settings → Privacy & Security → Contacts and enable 'Messages for AI', " +
-              "then click 'Refresh contacts' in the menu bar popover.";
+            return "The menu bar app is installed but lacks Contacts permission. Open System " +
+              "Settings → Privacy & Security → Contacts and enable 'Messages for AI', then click " +
+              "'Refresh contacts' in the menu bar popover.";
           }
           if (fda_likely_missing) {
-            return "Open System Settings → Privacy & Security → Full Disk Access. " +
-              "If `binary_path` is already in the list, toggle it OFF then ON " +
-              "(macOS sometimes retains a stale grant after a rebuild). If it's " +
-              "not in the list, drag the file at `binary_path` into the list. " +
-              "Then quit and reopen Claude Desktop so the MCP child process " +
-              "re-spawns and picks up the new grant. (FDA is needed for chat.db " +
-              "thread-context lookup even when the sidecar handles contact names.)";
+            return "The daemon is running but can't read chat.db — Full Disk Access is missing " +
+              "for the Messages for AI app. Open System Settings → Privacy & Security → Full Disk " +
+              "Access and ensure 'Messages for AI' is enabled (remove + re-add it if it was just " +
+              "rebuilt), then quit and reopen the menu bar app so the daemon re-spawns with the grant. " +
+              "(Claude itself does NOT need Full Disk Access.)";
           }
-          return "Permissions look good. If contact resolution still fails, the " +
-            "issue is likely canonicalization — call this tool again with " +
-            "`probe_handle` set to the recipient's number to see exactly what " +
-            "key the lookup uses.";
+          return "Permissions look good. If contact resolution still fails, the issue is likely " +
+            "canonicalization — call this tool again with `probe_handle` set to the recipient's " +
+            "number to see exactly what key the lookup uses.";
         })();
 
         return jsonResult({
-          // `contacts_source` is the back-compat single-value field
-          // (string union: sidecar | sidecar_granted_empty |
-          // sqlite_fallback | none | test_seam). `contacts_load`
-          // provides the structured equivalent — prefer that for new
-          // callers. They will always agree on the `.source` value.
+          daemon_reachable,
           contacts_source,
           contacts_load,
           contacts_sidecar: sidecar,
-          // STRICTLY the AddressBook SQLite layer's state. The
-          // `contacts_loaded` field here is the SQLite-sourced count
-          // and may differ from `contacts_load.count` when the sidecar
-          // is winning the resolution race. This separation is the
-          // PR 5b fix for code-review finding #7.
           addressbook,
           chatdb,
           fda_likely_missing,
@@ -128,7 +132,9 @@ export function registerHealthTools(server: McpServer): void {
               "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
             contacts_settings_url:
               "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
-            binary_path: process.execPath,
+            // FDA is granted to the Messages for AI .app bundle (the daemon
+            // inherits it), not to this MCP binary or to Claude.
+            app_path: "/Applications/Messages for AI.app",
             instructions,
           },
           probe,

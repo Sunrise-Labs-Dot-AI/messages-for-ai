@@ -1,10 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerWithWitness } from "../witness.ts";
 import { ListThreadsShape, GetThreadShape, requireSinceOrContactFilter } from "../schema.ts";
-import { listThreads, getThreadMessages } from "../chatdb/queries.ts";
+import { callDaemon } from "../daemon/rpc-client.ts";
 import { errorResult, jsonResult } from "./_result.ts";
 import { wrapUntrusted, wrapBodyInPlace } from "./_untrusted.ts";
-import type { ThreadMessage } from "../chatdb/queries.ts";
+import type { ThreadMessage, ListThreadsResult } from "../chatdb/queries.ts";
 
 export function registerThreadTools(server: McpServer): void {
   registerWithWitness(
@@ -20,7 +20,7 @@ export function registerThreadTools(server: McpServer): void {
       const err = requireSinceOrContactFilter(args);
       if (err) return errorResult(err);
       try {
-        const result = listThreads({
+        const result = await callDaemon<ListThreadsResult>("listThreads", {
           limit: args.limit,
           sinceIso: args.since,
           beforeIso: args.before,
@@ -73,7 +73,7 @@ export function registerThreadTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const rows = getThreadMessages({
+        const rows = await callDaemon<ThreadMessage[]>("getThread", {
           threadId: args.thread_id,
           limit: args.limit,
           beforeIso: args.before,

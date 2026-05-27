@@ -45,6 +45,7 @@ struct MessagesForAIMenuApp: App {
   @StateObject private var settings = SettingsStore()
   @StateObject private var contactsExporter = ContactsExporter()
   @StateObject private var whatsappDaemon = WhatsAppDaemonController()
+  @StateObject private var imessageDaemon = IMessageDaemonController()
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
   var body: some Scene {
@@ -60,6 +61,10 @@ struct MessagesForAIMenuApp: App {
         .environmentObject(whatsappDaemon)
         .task {
           await contactsExporter.bootstrap()
+          // iMessage is the core feature — always run its FDA-holding daemon
+          // (it does the chat.db reads the Claude-launched MCP can't).
+          imessageDaemon.start()
+          appDelegate.imessageDaemon = imessageDaemon
           if settings.whatsappEnabled {
             whatsappDaemon.start()
           }
@@ -67,6 +72,15 @@ struct MessagesForAIMenuApp: App {
         }
     } label: {
       MenuBarLabel(pending: store.drafts.filter { !$0.isSent }.count)
+        .onAppear {
+          // The label renders at app launch (the icon is always shown),
+          // unlike the popover content's `.task` which only fires when the
+          // popover is first opened. iMessage is the core feature, so its
+          // FDA-holding daemon must come up on launch regardless. start()
+          // is idempotent, so the .task call below is a harmless backstop.
+          imessageDaemon.start()
+          appDelegate.imessageDaemon = imessageDaemon
+        }
     }
     .menuBarExtraStyle(.window)
 
@@ -97,6 +111,7 @@ struct MessagesForAIMenuApp: App {
         .environmentObject(settings)
         .environmentObject(loginItem)
         .environmentObject(whatsappDaemon)
+        .environmentObject(imessageDaemon)
         .frame(width: 480)
         .frame(minHeight: 360)
         .trackWindowLifecycle(appDelegate: appDelegate)
@@ -163,6 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// from `applicationWillTerminate` without having to walk SwiftUI
   /// state from AppKit.
   var whatsappDaemon: WhatsAppDaemonController?
+  var imessageDaemon: IMessageDaemonController?
 
   /// Number of secondary SwiftUI Windows currently visible. When
   /// non-zero we flip to `.regular` (Dock icon + ⌘Tab presence);
@@ -174,6 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    imessageDaemon?.stopBlocking()
     whatsappDaemon?.stopBlocking()
   }
 

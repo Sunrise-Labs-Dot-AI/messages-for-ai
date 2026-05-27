@@ -8,9 +8,8 @@ import {
   SendDraftShape,
 } from "../schema.ts";
 import { stageDraft, listDrafts, getDraft, discardDraft, markDraftSent, draftsDir } from "../storage/drafts.ts";
-import { recentContextForRecipient } from "../chatdb/queries.ts";
-import { resolveHandle } from "../chatdb/contacts.ts";
-import type { DraftContextMessage, ContextLookupDiagnostic } from "../chatdb/queries.ts";
+import { callDaemon } from "../daemon/rpc-client.ts";
+import type { DraftContextMessage, ContextLookupDiagnostic, ContextLookupResult } from "../chatdb/queries.ts";
 import { sendIMessage } from "../imessage/send.ts";
 import { appendAudit, checkDailyCap, wasSentInAudit } from "../imessage/audit.ts";
 import { requireApproval } from "../storage/settings.ts";
@@ -80,7 +79,7 @@ export function registerDraftTools(server: McpServer): void {
         let context: DraftContextMessage[] | null = null;
         let diagnostic: ContextLookupDiagnostic | null = null;
         try {
-          const result = recentContextForRecipient({
+          const result = await callDaemon<ContextLookupResult>("recentContext", {
             recipientHandle: args.to_handle,
             threadId: args.in_reply_to_thread_id,
             limit: 5,
@@ -101,9 +100,12 @@ export function registerDraftTools(server: McpServer): void {
 
         let to_handle_name: string | null = null;
         try {
-          to_handle_name = resolveHandle(args.to_handle);
+          const probe = await callDaemon<{ resolved_name: string | null }>("probeHandle", {
+            handle: args.to_handle,
+          });
+          to_handle_name = probe.resolved_name;
         } catch {
-          to_handle_name = null; // graceful fallback if AddressBook unreadable
+          to_handle_name = null; // graceful fallback if daemon unavailable
         }
 
         const result = stageDraft({
