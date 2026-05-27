@@ -9,8 +9,11 @@ the approval gate, not protocol features.
 
 - `menubar/` — SwiftUI menu bar app (SwiftPM, macOS 14+). The UI + the
   draft-approval surface + all health/walkthrough logic.
-- `mcps/imessage-drafts/` — iMessage stdio MCP (Bun/TypeScript). Reads
-  `~/Library/Messages/chat.db`.
+- `mcps/imessage-drafts/` — iMessage stdio MCP **+ chat.db daemon**
+  (Bun/TypeScript). The MCP is a thin socket client; the daemon (`src/daemon/`)
+  performs all `~/Library/Messages/chat.db` + AddressBook reads because it's
+  launched by the menu-bar app (which holds Full Disk Access) — see "FDA is
+  launcher-attributed" below.
 - `mcps/whatsapp-drafts/` — WhatsApp stdio MCP + Baileys-backed daemon
   (Bun/TypeScript).
 - `site/` — marketing site (Vercel project `messages-for-ai-marketing-site`,
@@ -49,20 +52,39 @@ bash scripts/build-dmg.sh vX.Y.Z       # → polished .dmg (stable name Messages
 
 ## Load-bearing conventions
 
+- **FDA is launcher-attributed, NOT codesign-identifier-keyed.** macOS
+  attributes a process's Full Disk Access to its *responsible process* (the app
+  that launched it), not to the binary's codesign `Identifier=`. So a
+  Claude-launched MCP (Claude Desktop, or the `com.anthropic.claude-code` CLI)
+  only gets FDA if **Claude** has FDA — the `Messages for AI` grant on the
+  bundle does NOT reach it. (This corrects the earlier assumption; see the #17
+  saga. Verified: two sibling MCPs under one FDA-holding Claude Desktop — the
+  one Desktop launched directly reads chat.db; the one `claude-code` launched is
+  denied. Same binary, same grant.) **Architecture consequence:** all FDA-gated
+  reads live in `imessage-drafts-daemon`, which the **menu-bar app launches** —
+  so the daemon's responsible process is the menu-bar (which the user grants
+  `Messages for AI` FDA). The iMessage MCP is a thin client over
+  `~/.messages-mcp/daemon.sock`, peer-authed by codesign Identifier+Team (MCP
+  and daemon share `com.sunriselabs.messages-for-ai`). **Claude never needs
+  FDA.** The WhatsApp daemon already worked this way; the iMessage daemon
+  mirrors it (`mcps/imessage-drafts/src/daemon/` reuses peer-auth/peer-pid/
+  codesign/rpc-client from the WhatsApp daemon).
 - **One codesign identifier across every inner Mach-O.**
-  `com.sunriselabs.messages-for-ai` is signed onto the menu bar binary, the
-  iMessage MCP, the WhatsApp MCP, and the WhatsApp daemon. macOS TCC keys Full
-  Disk Access by the running process's codesign `Identifier=`, so a single FDA
-  grant on the `.app` covers every binary. **Sign each inner Mach-O explicitly
-  with `--identifier` before sealing; `codesign --deep` clobbers `--identifier`,
-  so the bundle seal uses NO `--deep`.** This is also why the menu bar can probe
-  its own `chat.db` access as a proxy for the iMessage MCP's FDA state.
+  `com.sunriselabs.messages-for-ai` is signed onto the menu bar binary and all
+  four backends (imessage MCP + daemon, whatsapp MCP + daemon). It's what makes
+  peer-auth's same-identity check work and keeps the bundle seal coherent.
+  **Sign each inner Mach-O explicitly with `--identifier` before sealing;
+  `codesign --deep` clobbers `--identifier`, so the bundle seal uses NO
+  `--deep`.** A Developer-ID re-sign *preserves* the menu-bar's FDA grant (it's
+  keyed to the signing identity, cdhash-tolerant), so dev-install cycles don't
+  require re-granting FDA.
 - **State/config locations.** Settings: `~/.messages-mcp/settings.json` (v2
   schema, nested `transports.{imessage,whatsapp}`; flat `require_approval`
   mirrored at root for older MCP processes). Drafts:
-  `~/.messages-mcp/drafts/`. WhatsApp daemon state: `~/.whatsapp-mcp/`
-  (session.db, daemon.sock, daemon.pid, messages.db, audit.db, drafts/). Daemon
-  logs: `~/.messages-mcp/logs/whatsapp-daemon.log`.
+  `~/.messages-mcp/drafts/`. iMessage daemon: `~/.messages-mcp/daemon.sock` +
+  `daemon.pid`; log `~/.messages-mcp/logs/imessage-daemon.log`. WhatsApp daemon
+  state: `~/.whatsapp-mcp/` (session.db, daemon.sock, daemon.pid, messages.db,
+  audit.db, drafts/); log `~/.messages-mcp/logs/whatsapp-daemon.log`.
 - **Non-popover UI uses real `Window` scenes** (`Window(id:)` +
   `openWindow`/`dismissWindow`), not `MenuBarExtra(.window)` sheets (focus-bleed
   dismisses the popover). `applicationShouldTerminateAfterLastWindowClosed =

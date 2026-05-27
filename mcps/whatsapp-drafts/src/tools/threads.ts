@@ -12,7 +12,7 @@ import {
   isoToMs,
 } from "../schema.ts";
 import { errorResult, jsonResult } from "./_result.ts";
-import { wrapBodyInPlace } from "./_untrusted.ts";
+import { wrapBodyInPlace, wrapUntrusted } from "./_untrusted.ts";
 
 interface DaemonThread {
   thread_jid: string;
@@ -20,6 +20,13 @@ interface DaemonThread {
   is_group: boolean;
   last_message_ts: number;
   last_seen_at: number | null;
+}
+
+interface ReplyTo {
+  message_id: string;
+  body: string | null;
+  from_me: boolean;
+  sender_name: string | null;
 }
 
 interface DaemonMessage {
@@ -36,6 +43,19 @@ interface DaemonMessage {
   message_type: string;
   attachment_meta: { caption?: string; filename?: string; mime?: string } | null;
   reply_to_id: string | null;
+  reply_to: ReplyTo | null;
+}
+
+// Wrap message body AND the quoted reply_to.body in <untrusted_content> —
+// both are peer-typed. (Matches the body-only wrapping convention: sender
+// names are left as-is here, same as the top-level sender_name.)
+function wrapMessage(m: DaemonMessage): DaemonMessage {
+  const wrapped = wrapBodyInPlace(m);
+  if (wrapped.reply_to == null) return wrapped;
+  return {
+    ...wrapped,
+    reply_to: { ...wrapped.reply_to, body: wrapUntrusted(wrapped.reply_to.body) },
+  };
 }
 
 export function registerThreadTools(server: McpServer) {
@@ -80,7 +100,7 @@ export function registerThreadTools(server: McpServer) {
       if (!parsed.success) return errorResult(parsed.error.errors.map((e) => e.message).join("; "));
       try {
         const { messages } = await callDaemon<{ messages: DaemonMessage[] }>("getThread", parsed.data);
-        return jsonResult({ ok: true, messages: messages.map(wrapBodyInPlace) });
+        return jsonResult({ ok: true, messages: messages.map(wrapMessage) });
       } catch (e) {
         return mapDaemonError(e);
       }

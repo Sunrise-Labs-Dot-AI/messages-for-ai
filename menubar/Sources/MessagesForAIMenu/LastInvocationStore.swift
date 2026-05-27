@@ -12,6 +12,12 @@ struct WitnessRecord: Equatable {
     let ts: Date
     let pid: Int32
     let writerPath: String
+    /// Live chat.db access of the *Claude-launched* MCP process at write time.
+    /// nil when the writing MCP predates this field (no `chatdb_access` key).
+    /// This is the authoritative client-FDA signal — distinct from the menu-bar
+    /// app's own probe, which can differ because macOS attributes Full Disk
+    /// Access to the launching app, not the binary's identity (issue #17).
+    let chatDbAccess: ChatDbAccessState?
 }
 
 private struct RawWitnessRecord: Decodable {
@@ -19,6 +25,7 @@ private struct RawWitnessRecord: Decodable {
     let ts: String
     let pid: Int32
     let writer_path: String
+    let chatdb_access: String?
 }
 
 /// Watches `~/.messages-mcp/` for atomic-renames of the per-transport
@@ -58,16 +65,26 @@ final class LastInvocationStore: ObservableObject {
     private let imessagePath: URL
     private let whatsappPath: URL
 
+    /// When true (default), records older than `maxStaleness` are dropped to
+    /// nil — the freshness gate the SetupWalkthroughView relies on to prove a
+    /// *live* connection during setup. The Settings status pane opts OUT
+    /// (`false`) so it reports the real last-seen time ("3 days ago") rather
+    /// than collapsing every not-recent call to "no record" — the witness
+    /// file persists across reinstalls, so that history shouldn't read as
+    /// "never."
+    private let applyStalenessGate: Bool
+
     private var source: DispatchSourceFileSystemObject?
     private var handle: Int32 = -1
 
-    init(homeOverride: URL? = nil) {
+    init(homeOverride: URL? = nil, applyStalenessGate: Bool = true) {
         let base = homeOverride
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".messages-mcp")
         self.dir = base
         self.imessagePath = base.appendingPathComponent("last_invocation_imessage.json")
         self.whatsappPath = base.appendingPathComponent("last_invocation_whatsapp.json")
+        self.applyStalenessGate = applyStalenessGate
         // Ensure the dir exists so open(O_EVTONLY) succeeds on a fresh install.
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         refresh()
@@ -119,16 +136,32 @@ final class LastInvocationStore: ObservableObject {
         }
         guard let parsed = Self.parseTimestamp(raw.ts) else { return nil }
 
-        // Input validation: drop future-skewed and stale records.
+        // Always reject future-skewed / garbage timestamps.
         let now = Date()
         if parsed > now.addingTimeInterval(Self.futureSkewTolerance) { return nil }
-        if parsed < now.addingTimeInterval(-Self.maxStaleness) { return nil }
+        // Staleness drop is opt-in (see `applyStalenessGate`): the walkthrough
+        // needs it; the Settings pane keeps old records so it can show a real
+        // last-seen time instead of "no record yet."
+        if applyStalenessGate && parsed < now.addingTimeInterval(-Self.maxStaleness) { return nil }
+
+        // Map the MCP's chat.db open_status string onto the Swift enum.
+        // "error" (rare non-permission failure) → .unknown; absent → nil.
+        let chatDbAccess: ChatDbAccessState?
+        switch raw.chatdb_access {
+        case "ok": chatDbAccess = .ok
+        case "permission_denied": chatDbAccess = .permissionDenied
+        case "not_found": chatDbAccess = .notFound
+        case "error": chatDbAccess = .unknown
+        case nil: chatDbAccess = nil
+        default: chatDbAccess = .unknown
+        }
 
         return WitnessRecord(
             tool: raw.tool,
             ts: parsed,
             pid: raw.pid,
-            writerPath: raw.writer_path
+            writerPath: raw.writer_path,
+            chatDbAccess: chatDbAccess
         )
     }
 

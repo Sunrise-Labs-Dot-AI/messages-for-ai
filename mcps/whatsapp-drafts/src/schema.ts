@@ -70,6 +70,9 @@ const StageDraftObj = z.object({
   to_handle: WhatsAppJid,
   body: z.string().min(1, "body must not be empty").max(60_000, "body too long"),
   source: z.string().optional(),
+  // When set, the draft sends as a quoted reply to this message id (the
+  // `message_id` / stanzaId from get_whatsapp_thread) in to_handle's thread.
+  quoted_message_id: z.string().min(1).optional(),
 });
 export const StageDraftShape = StageDraftObj.shape;
 export const StageDraftInput = StageDraftObj;

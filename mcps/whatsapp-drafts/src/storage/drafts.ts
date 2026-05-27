@@ -53,6 +53,17 @@ export interface DraftContext {
   context_diagnostic: null | "no_thread_match" | "thread_empty" | "error";
 }
 
+/** Snapshot of the message a reply-draft quotes, resolved at stage time so
+ *  the menubar can render a "Replying to …" callout without a daemon lookup.
+ *  Mirrors the read-side reply_to shape. `body`/`sender_name` are peer-/
+ *  sidecar-sourced; the menubar wraps untrusted content for display. */
+export interface QuotedPreview {
+  message_id: string;
+  body: string | null;
+  from_me: boolean;
+  sender_name: string | null;
+}
+
 export interface Draft extends DraftContext {
   id: string;
   schema_version: number;
@@ -68,6 +79,14 @@ export interface Draft extends DraftContext {
   sent_at: string | null;
   source: string;          // e.g. "claude-desktop" — informational only
   induced_by_unknown_contact: boolean;
+  /** When set, this draft sends as a quoted reply to this message id
+   *  (stanzaId) in `to_handle`'s thread. null = ordinary message.
+   *  Additive optional field — schema_version stays 1; older readers
+   *  ignore it and the strict version gate still matches. */
+  quoted_message_id: string | null;
+  /** Stage-time snapshot of the quoted message for UI. null when the draft
+   *  isn't a reply or the quoted message couldn't be resolved. */
+  quoted_preview: QuotedPreview | null;
 }
 
 export class DraftSchemaError extends Error {
@@ -99,6 +118,8 @@ export interface StageInput {
   context_messages?: DraftContext["context_messages"];
   context_diagnostic?: DraftContext["context_diagnostic"];
   induced_by_unknown_contact?: boolean;
+  quoted_message_id?: string | null;
+  quoted_preview?: QuotedPreview | null;
 }
 
 /** Stage a new draft. Returns the full draft object as written. */
@@ -119,6 +140,8 @@ export function stageDraft(input: StageInput): Draft {
     context_messages: input.context_messages ?? [],
     context_diagnostic: input.context_diagnostic ?? null,
     induced_by_unknown_contact: input.induced_by_unknown_contact ?? false,
+    quoted_message_id: input.quoted_message_id ?? null,
+    quoted_preview: input.quoted_preview ?? null,
   };
   writeFileSync(draftPath(id), JSON.stringify(draft, null, 2), { mode: 0o600 });
   return draft;

@@ -64,6 +64,13 @@ interface DraftRpc {
   }>;
   context_diagnostic: null | "no_thread_match" | "thread_empty" | "error";
   induced_by_unknown_contact: boolean;
+  quoted_message_id: string | null;
+  quoted_preview: {
+    message_id: string;
+    body: string | null;
+    from_me: boolean;
+    sender_name: string | null;
+  } | null;
 }
 
 /** Wrap untrusted fields (peer-authored context messages) but leave
@@ -86,6 +93,16 @@ function maskDraft(d: DraftRpc): DraftRpc {
       body: m.body == null ? null : wrapBodyInPlace({ body: m.body }).body,
       sender_name: m.sender_name == null ? null : wrapUntrusted(m.sender_name),
     })),
+    // quoted_preview mirrors a peer message — wrap body + sender_name too.
+    quoted_preview:
+      d.quoted_preview == null
+        ? null
+        : {
+            ...d.quoted_preview,
+            body: d.quoted_preview.body == null ? null : wrapUntrusted(d.quoted_preview.body),
+            sender_name:
+              d.quoted_preview.sender_name == null ? null : wrapUntrusted(d.quoted_preview.sender_name),
+          },
   };
 }
 

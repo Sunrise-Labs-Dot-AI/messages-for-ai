@@ -29,13 +29,15 @@ function buildChatDb(): Database {
     );
     CREATE TABLE message (
       ROWID INTEGER PRIMARY KEY AUTOINCREMENT,
+      guid TEXT,
       text TEXT,
       attributedBody BLOB,
       date INTEGER,
       is_from_me INTEGER DEFAULT 0,
       is_read INTEGER DEFAULT 0,
       cache_has_attachments INTEGER DEFAULT 0,
-      handle_id INTEGER
+      handle_id INTEGER,
+      thread_originator_guid TEXT
     );
     CREATE TABLE chat_message_join (
       chat_id INTEGER,
@@ -72,6 +74,8 @@ function linkChatHandle(db: Database, chat_id: number, handle_id: number): void 
   db.run(`INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)`, [chat_id, handle_id]);
 }
 
+let guidCounter = 0;
+
 function insertMessage(
   db: Database,
   opts: {
@@ -81,16 +85,24 @@ function insertMessage(
     date_iso: string;
     is_from_me?: boolean;
     handle_id?: number | null;
+    // Real chat.db rows always carry a `guid`; auto-generated here when the
+    // test doesn't care. Pass an explicit `guid` to make a message a reply
+    // target, and `thread_originator_guid` to mark a message as a reply.
+    guid?: string;
+    thread_originator_guid?: string | null;
   }
 ): number {
+  const guid = opts.guid ?? `fixture-guid-${++guidCounter}`;
   db.run(
-    `INSERT INTO message (text, attributedBody, date, is_from_me, handle_id) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO message (guid, text, attributedBody, date, is_from_me, handle_id, thread_originator_guid) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
+      guid,
       opts.text,
       opts.attributedBody ?? null,
       nsAt(opts.date_iso),
       opts.is_from_me ? 1 : 0,
       opts.handle_id ?? null,
+      opts.thread_originator_guid ?? null,
     ]
   );
   const msg_id = Number(db.query<{ id: number }, []>(`SELECT last_insert_rowid() AS id`).get()!.id);
@@ -223,6 +235,54 @@ describe("getThreadMessages", () => {
     expect(rows[0]!.body).toBe("from blob");
     expect(rows[1]!.body).toBe("first");
   });
+
+  test("populates reply_to with the originator's body + sender for an inline reply", () => {
+    const them = insertHandle(db, { id: "+14155551111" });
+    const c = insertChat(db, { guid: "c" });
+    linkChatHandle(db, c, them);
+    insertMessage(db, {
+      chat_id: c,
+      text: "what time works?",
+      date_iso: "2026-05-10T12:00:00Z",
+      handle_id: them,
+      guid: "orig-guid-1",
+    });
+    insertMessage(db, {
+      chat_id: c,
+      text: "3pm",
+      date_iso: "2026-05-10T12:05:00Z",
+      is_from_me: true,
+      thread_originator_guid: "orig-guid-1",
+    });
+
+    const rows = getThreadMessages({ threadId: c, limit: 10 });
+    // newest-first → the reply is rows[0], the originator rows[1].
+    expect(rows[0]!.body).toBe("3pm");
+    expect(rows[0]!.reply_to).not.toBeNull();
+    expect(rows[0]!.reply_to!.guid).toBe("orig-guid-1");
+    expect(rows[0]!.reply_to!.body).toBe("what time works?");
+    expect(rows[0]!.reply_to!.from_me).toBe(false);
+    expect(rows[0]!.reply_to!.sender.handle).toBe("+14155551111");
+    expect(rows[1]!.reply_to).toBeNull();
+  });
+
+  test("reply_to is a guid-only stub (body null) when the originator isn't in chat.db", () => {
+    const them = insertHandle(db, { id: "+14155551111" });
+    const c = insertChat(db, { guid: "c" });
+    linkChatHandle(db, c, them);
+    insertMessage(db, {
+      chat_id: c,
+      text: "later reply",
+      date_iso: "2026-05-10T12:05:00Z",
+      handle_id: them,
+      thread_originator_guid: "missing-orig-guid",
+    });
+
+    const rows = getThreadMessages({ threadId: c, limit: 10 });
+    expect(rows[0]!.reply_to).not.toBeNull();
+    expect(rows[0]!.reply_to!.guid).toBe("missing-orig-guid");
+    expect(rows[0]!.reply_to!.body).toBeNull();
+  });
 });
 
 describe("searchMessages — attributedBody decode (Fix 3)", () => {
@@ -276,5 +336,31 @@ describe("searchMessages — attributedBody decode (Fix 3)", () => {
     const hits = searchMessages({ query: "thanks", limit: 10, contactFilter: "Catesby" });
     expect(hits.length).toBe(1);
     expect(hits[0]!.thread_id).toBe(chat_c);
+  });
+
+  test("hits carry reply_to resolved from the originator", () => {
+    const them = insertHandle(db, { id: "+14155551111" });
+    const c = insertChat(db, { guid: "c" });
+    linkChatHandle(db, c, them);
+    insertMessage(db, {
+      chat_id: c,
+      text: "dinner plan question",
+      date_iso: "2026-05-12T12:00:00Z",
+      handle_id: them,
+      guid: "orig-search-1",
+    });
+    insertMessage(db, {
+      chat_id: c,
+      text: "yes dinner sounds great",
+      date_iso: "2026-05-12T12:05:00Z",
+      is_from_me: true,
+      thread_originator_guid: "orig-search-1",
+    });
+
+    const hits = searchMessages({ query: "dinner sounds", limit: 10, sinceIso: "2026-05-01T00:00:00Z" });
+    expect(hits.length).toBe(1);
+    expect(hits[0]!.reply_to).not.toBeNull();
+    expect(hits[0]!.reply_to!.guid).toBe("orig-search-1");
+    expect(hits[0]!.reply_to!.body).toBe("dinner plan question");
   });
 });

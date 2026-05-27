@@ -22,6 +22,7 @@ import SwiftUI
 struct SetupWalkthroughView: View {
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
+    @EnvironmentObject var imessageDaemon: IMessageDaemonController
     @StateObject private var invocations = LastInvocationStore()
     @Environment(\.dismissWindow) private var dismissWindow
 
@@ -49,6 +50,17 @@ struct SetupWalkthroughView: View {
     // Seeded to .unknown (not .ok) so the gate fails closed until the first
     // probe runs — a permission gate must never default to "granted".
     @State private var chatDbAccess: ChatDbAccessState = .unknown
+
+    // chat.db access as reported by the Claude-launched MCP via the witness
+    // record's chatdb_access, set in evaluateInvocation. Post-#17 refactor the
+    // MCP doesn't read chat.db itself — it proxies through the menu-bar-launched
+    // daemon — so this field carries the DAEMON's open_status as observed end to
+    // end across the MCP→daemon socket. That makes it the stronger signal:
+    // `chatDbAccess` above is only the menu-bar app's own probe (proves the app
+    // can read), whereas this proves the actual read path Claude uses works.
+    // Prefer it when present; it stays nil until the first successful call
+    // lands a witness (a down daemon writes none — see imessageDaemonRow).
+    @State private var clientChatDbAccess: ChatDbAccessState? = nil
 
     // Stepper position. The walkthrough is presented one step at a time
     // (install checks → test each enabled transport) rather than as one
@@ -108,13 +120,15 @@ struct SetupWalkthroughView: View {
             claudeDesktopBundleURL = NSWorkspace.shared.urlForApplication(
                 withBundleIdentifier: "com.anthropic.claudefordesktop"
             )
-            // Kick the WhatsApp daemon if the transport is enabled.
-            // start() is idempotent (the controller short-circuits if
-            // already running). Without this call, a user who opens the
-            // walkthrough before clicking the menubar icon (e.g. via the
-            // Dock launch path) sees red rows because DraftListView's
-            // .task — which is the OTHER place the daemon gets kicked —
-            // hasn't fired yet.
+            // Kick both daemons if their transport is enabled. start() is
+            // idempotent (the controllers short-circuit if already running).
+            // Without these, a user who opens the walkthrough before clicking
+            // the menubar icon (e.g. via the Dock launch path) sees red rows
+            // because the OTHER kick points — DraftListView's .task (WhatsApp)
+            // and the menu-bar label's onAppear (iMessage) — haven't fired yet.
+            if settings.imessageEnabled {
+                imessageDaemon.start()
+            }
             if settings.whatsappEnabled {
                 whatsappDaemon.start()
             }
@@ -177,6 +191,8 @@ struct SetupWalkthroughView: View {
             whatsappEnabled: settings.whatsappEnabled,
             currentStepIndex: currentStepIndex,
             chatDbAccess: chatDbAccess,
+            clientChatDbAccess: clientChatDbAccess,
+            imessageDaemonDown: imessageDaemonDown,
             imessageVerified: imessageVerified,
             whatsappVerified: whatsappVerified
         )
@@ -245,7 +261,7 @@ struct SetupWalkthroughView: View {
     private func stepSubtitle(_ step: WalkthroughStepper.Step) -> String {
         switch step {
         case .installHealth:
-            return "These run automatically. If Full Disk Access is flagged below, grant it before continuing."
+            return "These run automatically. If Full Disk Access or the reader service is flagged below, resolve it before continuing."
         case .test:
             return "Send a test prompt to Claude — we'll watch for the MCP call and confirm it landed."
         }
@@ -258,6 +274,7 @@ struct SetupWalkthroughView: View {
                     checkRow(check)
                 }
                 if settings.imessageEnabled {
+                    imessageDaemonRow
                     fdaRow
                 }
                 claudeConfigRow
@@ -268,17 +285,91 @@ struct SetupWalkthroughView: View {
         }
     }
 
+    /// True when the iMessage reader daemon is in a terminal-failure state
+    /// (crash-looping or stopped) that won't recover on its own. Transient
+    /// states (idle/starting/backingOff) are treated as pending, not down, so
+    /// the gate doesn't flicker during the ~1.2s launch window or a backoff
+    /// retry. Feeds both the daemon row's remediation block and the stepper
+    /// gate.
+    private var imessageDaemonDown: Bool {
+        switch imessageDaemon.status {
+        case .crashLooping, .stopped: return true
+        case .idle, .starting, .running, .backingOff: return false
+        }
+    }
+
+    /// iMessage reader-service liveness. Post-#17 refactor, ALL chat.db reads
+    /// run in the menu-bar-launched `imessage-drafts-daemon`; the Claude-side
+    /// MCP is a thin socket client. If that daemon isn't running, the FDA row
+    /// below can still read green (the menu-bar app holds the same grant, and
+    /// the MCP returns "daemon unavailable" — which writes no witness, so the
+    /// client FDA signal never lands), yet every real iMessage tool call
+    /// fails. Surfacing liveness here — and gating advance on it — closes that
+    /// pass-then-fail trap, the exact symptom #17 was opened to kill. Mirrors
+    /// the WhatsApp daemon row.
+    @ViewBuilder
+    private var imessageDaemonRow: some View {
+        let (label, passing): (String, Bool?) = {
+            switch imessageDaemon.status {
+            case .idle, .starting: return ("iMessage reader service starting…", nil)
+            case .running:         return ("iMessage reader service running", true)
+            case .backingOff:      return ("iMessage reader service reconnecting…", nil)
+            case .crashLooping:    return ("iMessage reader service couldn't start", false)
+            case .stopped:         return ("iMessage reader service stopped", false)
+            }
+        }()
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                statusBadge(for: passing)
+                Text(label).font(.callout)
+                Spacer()
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(label), \(Self.statusWord(for: passing))")
+
+            if imessageDaemonDown {
+                imessageDaemonHelp
+            }
+        }
+    }
+
+    /// Inline remediation for a down reader service. start() resets the
+    /// crash-loop counter and relaunches; if it keeps failing the log path
+    /// points the user (or support) at the real error.
+    private var imessageDaemonHelp: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("The reader service handles every Messages read for Claude. Try restarting it; if it keeps failing, quit and reopen Messages for AI, then check ~/.messages-mcp/logs/imessage-daemon.log.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("Restart reader service") {
+                    imessageDaemon.start()
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+            }
+        }
+        .padding(.leading, 32)
+        .padding(.top, 4)
+    }
+
     /// Full Disk Access row. This is the gap that made fresh-install users
     /// finish the walkthrough thinking everything worked: every other row
-    /// goes green (the MCP binary IS present, signed, and reachable) but
-    /// the iMessage MCP can't read chat.db without FDA, so the first real
-    /// tool call returns permission_denied. Rendered only when iMessage is
-    /// enabled — WhatsApp reads its own files under ~/.whatsapp-mcp, none
-    /// of which are TCC-protected.
+    /// goes green (the binaries ARE present, signed, and reachable) but the
+    /// reader daemon can't open chat.db without the Messages-for-AI Full Disk
+    /// Access grant, so the first real tool call returns permission_denied.
+    /// Rendered only when iMessage is enabled — WhatsApp reads its own files
+    /// under ~/.whatsapp-mcp, none of which are TCC-protected.
     @ViewBuilder
     private var fdaRow: some View {
+        // Prefer the Claude-launched MCP's own report when we have one; fall
+        // back to the menu-bar app's probe until the first witness lands.
+        let access = clientChatDbAccess ?? chatDbAccess
         let passing: Bool? = {
-            switch chatDbAccess {
+            switch access {
             case .ok: return true
             case .permissionDenied: return false
             // notFound (Messages never used on this Mac) and unknown are
@@ -287,8 +378,8 @@ struct SetupWalkthroughView: View {
             }
         }()
         let label: String = {
-            switch chatDbAccess {
-            case .ok: return "Full Disk Access granted (Claude can read Messages)"
+            switch access {
+            case .ok: return "Full Disk Access granted (Messages for AI can read Messages)"
             case .permissionDenied: return "Full Disk Access needed to read Messages"
             case .notFound: return "No Messages database found on this Mac yet"
             case .unknown: return "Couldn't check Messages access"
@@ -304,7 +395,7 @@ struct SetupWalkthroughView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(label), \(Self.statusWord(for: passing))")
 
-            if chatDbAccess == .permissionDenied {
+            if access == .permissionDenied {
                 fdaHelp
             }
         }
@@ -593,7 +684,7 @@ struct SetupWalkthroughView: View {
                     .disabled(!canAdvance)
                     .accessibilityHint(canAdvance
                         ? "Go to the next step."
-                        : "Disabled. Grant Full Disk Access above before continuing.")
+                        : "Disabled. Resolve the flagged check above (Full Disk Access or the reader service) before continuing.")
             }
         }
     }
@@ -743,8 +834,24 @@ struct SetupWalkthroughView: View {
         else { return }
 
         switch transport {
-        case .imessage: imessageVerified = true
-        case .whatsapp: whatsappVerified = true
+        case .imessage:
+            // The witness reports the daemon's chat.db access (the MCP proxies
+            // its reads through the daemon and forwards that status). A
+            // permission_denied witness means Claude reached the MCP and the
+            // daemon, but the daemon can't read Messages — record it (drives the
+            // FDA row) and do NOT mark iMessage verified, so the walkthrough
+            // can't complete on a half-working setup. This also closes a latent
+            // false-green: health_check succeeds under FDA denial and would
+            // otherwise green verification. Older MCPs omit the field (nil) →
+            // reachability alone verifies, preserving prior behavior.
+            if let access = record.chatDbAccess {
+                clientChatDbAccess = access
+                imessageVerified = (access != .permissionDenied)
+            } else {
+                imessageVerified = true
+            }
+        case .whatsapp:
+            whatsappVerified = true
         }
     }
 
@@ -768,8 +875,13 @@ struct SetupWalkthroughView: View {
         // didn't opt in. (The WhatsApp daemon binary is included only
         // when the WhatsApp transport is enabled, since its sole
         // purpose is to back the WhatsApp daemon.)
+        // The daemon binary is checked alongside the MCP because, post-#17
+        // refactor, the daemon (not the MCP) is what actually reads chat.db —
+        // a missing/unsigned daemon binary breaks every iMessage read even
+        // though the thin MCP client is present. Mirrors the WhatsApp pair.
         var bins: [(String, String)] = [
             ("iMessage MCP binary", "imessage-drafts-mcp"),
+            ("iMessage daemon binary", "imessage-drafts-daemon"),
         ]
         if settings.whatsappEnabled {
             bins.append(("WhatsApp MCP binary", "whatsapp-drafts-mcp"))
@@ -855,9 +967,26 @@ struct WalkthroughStepper: Equatable {
     var whatsappEnabled: Bool
     /// Free index from the view's @State; always read via `clampedIndex`.
     var currentStepIndex: Int
+    /// Menu-bar app's own chat.db probe (fallback signal).
     var chatDbAccess: ChatDbAccessState
+    /// chat.db access reported by the Claude-launched MCP, which proxies its
+    /// reads through the menu-bar-launched daemon (issue #17). Proves the actual
+    /// MCP→daemon→chat.db path works; stronger than the menu-bar's own probe.
+    /// Nil until the first successful call lands a witness.
+    var clientChatDbAccess: ChatDbAccessState? = nil
+    /// The iMessage reader daemon is in a terminal-failure state (crash-looping
+    /// or stopped). Orthogonal to FDA: the menu-bar's chat.db probe — and thus
+    /// the FDA row — can read green while the daemon is dead, because they
+    /// share the same grant but only the daemon serves the MCP's reads.
+    var imessageDaemonDown: Bool = false
     var imessageVerified: Bool?
     var whatsappVerified: Bool?
+
+    /// FDA signal the gates use: the client MCP's report (which reflects the
+    /// daemon's access, observed end to end across the socket) wins over the
+    /// menu-bar app's own probe, because it proves the path Claude actually
+    /// uses works — not just that the menu-bar process can read.
+    var effectiveChatDbAccess: ChatDbAccessState { clientChatDbAccess ?? chatDbAccess }
 
     /// One screen of the walkthrough. Built dynamically from the enabled
     /// transports so an iMessage-only user never sees a WhatsApp step.
@@ -880,26 +1009,33 @@ struct WalkthroughStepper: Equatable {
     var isLastStep: Bool { clampedIndex >= steps.count - 1 }
 
     /// Whether the user may leave the current step. The install-health step
-    /// holds the user until Full Disk Access is granted (the gap #17 closes);
-    /// test steps are advisory, so the final "All set" — not Next — carries
-    /// the verification gate.
+    /// holds the user until Full Disk Access is granted AND the reader daemon
+    /// is alive (the two ways #17's pass-then-fail can happen); test steps are
+    /// advisory, so the final "All set" — not Next — carries the verification
+    /// gate.
     var canAdvance: Bool {
         switch currentStep {
         case .installHealth:
-            return !(imessageEnabled && chatDbAccess == .permissionDenied)
+            if imessageEnabled && effectiveChatDbAccess == .permissionDenied { return false }
+            if imessageEnabled && imessageDaemonDown { return false }
+            return true
         case .test:
             return true
         }
     }
 
-    /// Whether "All set" may complete the walkthrough. Blocks while iMessage
-    /// is enabled but FDA is denied, so a user can't mark setup "done" with the
-    /// one permission that makes every iMessage tool call fail still missing.
+    /// Whether "All set" may complete the walkthrough. Blocks while iMessage is
+    /// enabled but FDA is denied OR the reader daemon is down, so a user can't
+    /// mark setup "done" with either of the two things that make every iMessage
+    /// tool call fail still broken. (The daemon check is belt-and-suspenders:
+    /// imessageVerified can't be true without a successful call, which a down
+    /// daemon precludes — but stating it keeps the intent explicit.)
     var allVerifiedOrSkipped: Bool {
         let imsOK = !imessageEnabled || imessageVerified == true
         let waOK = !whatsappEnabled || whatsappVerified == true
-        let fdaOK = !imessageEnabled || chatDbAccess != .permissionDenied
-        return imsOK && waOK && fdaOK
+        let fdaOK = !imessageEnabled || effectiveChatDbAccess != .permissionDenied
+        let daemonOK = !imessageEnabled || !imessageDaemonDown
+        return imsOK && waOK && fdaOK && daemonOK
     }
 }
 

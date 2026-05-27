@@ -117,4 +117,27 @@ describe("drafts", () => {
     expect(r.deleted).toBe(0);
     expect(r.kept).toBe(1);
   });
+
+  test("normal draft has null quoted_message_id + quoted_preview", () => {
+    const d = stageDraft({ to_handle: "to", body: "hi" });
+    expect(d.quoted_message_id).toBeNull();
+    expect(d.quoted_preview).toBeNull();
+  });
+
+  test("stage persists quoted_message_id + quoted_preview and round-trips through getDraft", () => {
+    const d = stageDraft({
+      to_handle: "12025550001@s.whatsapp.net",
+      body: "yes!",
+      quoted_message_id: "orig-1",
+      quoted_preview: { message_id: "orig-1", body: "are we still on?", from_me: false, sender_name: "Alice" },
+    });
+    expect(d.quoted_message_id).toBe("orig-1");
+    expect(d.quoted_preview!.sender_name).toBe("Alice");
+    const got = getDraft(d.id)!;
+    expect(got.quoted_message_id).toBe("orig-1");
+    expect(got.quoted_preview!.body).toBe("are we still on?");
+    expect(got.quoted_preview!.from_me).toBe(false);
+    // Additive optional fields — schema_version stays 1, no migration.
+    expect(got.schema_version).toBe(DRAFT_SCHEMA_VERSION);
+  });
 });

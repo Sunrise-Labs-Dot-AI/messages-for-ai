@@ -206,6 +206,9 @@ struct DraftListView: View {
 
         Button {
           openWindow(id: WindowID.settings)
+          // openWindow won't refocus an already-open Settings window on
+          // another Space/display — pull it to the front explicitly.
+          WindowFocus.bringToFront(id: WindowID.settings, title: WindowTitle.settings)
         } label: {
           HStack(spacing: 4) {
             Image(systemName: "gearshape")

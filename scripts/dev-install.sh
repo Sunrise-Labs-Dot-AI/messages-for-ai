@@ -77,6 +77,7 @@ ENTITLEMENTS="$REPO_ROOT/menubar/scripts/messages-for-ai.entitlements"
 # entry here plus a build block below.
 INNER_BINARIES=(
   "imessage-drafts-mcp"
+  "imessage-drafts-daemon"
   "whatsapp-drafts-mcp"
   "whatsapp-drafts-daemon"
 )
@@ -99,11 +100,15 @@ mkdir -p "$REPO_ROOT/bin"
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 
-echo "› building imessage-drafts-mcp"
+echo "› building imessage-drafts-mcp + imessage-drafts-daemon"
 (
   cd "$REPO_ROOT/mcps/imessage-drafts"
   bun install >/dev/null
   bun build src/index.ts --compile --outfile "$REPO_ROOT/bin/imessage-drafts-mcp"
+  # The daemon performs the FDA-gated chat.db reads when launched by the
+  # menu-bar app (which holds the grant). bun:sqlite compiles in natively —
+  # no --external needed (unlike the WhatsApp daemon's native modules).
+  bun build src/daemon/index.ts --compile --outfile "$REPO_ROOT/bin/imessage-drafts-daemon"
 )
 
 echo "› building whatsapp-drafts-mcp + whatsapp-drafts-daemon"

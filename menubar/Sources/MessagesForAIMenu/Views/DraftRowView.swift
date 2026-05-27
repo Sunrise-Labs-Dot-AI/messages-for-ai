@@ -18,6 +18,10 @@ struct DraftRowView: View {
       if draft.induced_by_unknown_contact == true {
         InducedDraftBadge()
       }
+      // For WhatsApp reply-drafts, show which message is being quoted
+      // directly above the body so the reviewer sees the reply target
+      // before approving. No-op (EmptyView) for non-reply drafts.
+      replyingToCallout
       bodyBubble
       if let lastError {
         Text(lastError)
@@ -75,6 +79,45 @@ struct DraftRowView: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .help(absoluteStagedAt)
+    }
+  }
+
+  // "Replying to <sender>: <snippet>" callout for WhatsApp reply-drafts.
+  // Left-accent quote block, muted, snippet capped at 2 lines. EmptyView
+  // when this draft isn't a reply (quoted_preview absent).
+  @ViewBuilder
+  private var replyingToCallout: some View {
+    if let quoted = draft.quoted_preview {
+      HStack(alignment: .top, spacing: 6) {
+        RoundedRectangle(cornerRadius: 1.5)
+          .fill(draft.effectivePlatform.accentColor.opacity(0.6))
+          .frame(width: 3)
+        VStack(alignment: .leading, spacing: 1) {
+          HStack(spacing: 4) {
+            Image(systemName: "arrowshape.turn.up.left.fill")
+              .font(.caption2)
+            Text("Replying to \(quoted.displayName)")
+              .font(.caption.weight(.medium))
+          }
+          .foregroundStyle(.secondary)
+          if let body = quoted.body, !body.isEmpty {
+            Text(body)
+              .font(.caption)
+              .foregroundStyle(.tertiary)
+              .lineLimit(2)
+              .truncationMode(.tail)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        Spacer(minLength: 0)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.vertical, 4)
+      .padding(.horizontal, 8)
+      .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+      .clipShape(RoundedRectangle(cornerRadius: 5))
+      .accessibilityElement(children: .combine)
+      .accessibilityLabel("Replying to \(quoted.displayName): \(quoted.body ?? "")")
     }
   }
 

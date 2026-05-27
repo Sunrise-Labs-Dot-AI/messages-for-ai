@@ -28,6 +28,8 @@ import {
   getMessageFull,
   getContactDisplayName,
   formatJidAsPhone,
+  getQuotedPreview,
+  getQuotedReconstruction,
 } from "../storage/messages.ts";
 import { deleteSession } from "../storage/session.ts";
 import {
@@ -276,6 +278,17 @@ async function handle(
         if (p.body.length === 0) {
           return err(id, RPC_ERR.INVALID_PARAMS, "body must not be empty");
         }
+        if (p.quoted_message_id != null && typeof p.quoted_message_id !== "string") {
+          return err(id, RPC_ERR.INVALID_PARAMS, "quoted_message_id must be a string");
+        }
+        // Resolve the quoted message into a stage-time preview snapshot so the
+        // menubar can render "Replying to …" without its own daemon lookup.
+        // Null when the message isn't cached — the draft still carries
+        // quoted_message_id and the reply is reconstructed at send time.
+        const quotedPreview =
+          p.quoted_message_id != null && p.quoted_message_id.length > 0
+            ? getQuotedPreview(p.to_handle, p.quoted_message_id)
+            : null;
         // Pull last 5 messages from messages.db as the context snapshot.
         let ctx: ReturnType<typeof getThreadMessages> = [];
         let diag: "no_thread_match" | "thread_empty" | "error" | null = null;
@@ -331,6 +344,8 @@ async function handle(
           })),
           context_diagnostic: diag,
           induced_by_unknown_contact: p.induced_by_unknown_contact ?? false,
+          quoted_message_id: p.quoted_message_id ?? null,
+          quoted_preview: quotedPreview,
         });
         return ok(id, { draft });
       }
@@ -463,7 +478,14 @@ async function handleSendDraft(
 
   // 7. Baileys send.
   try {
-    const result = await connection.sendText(draft.to_handle, draft.body);
+    // Reply-draft: reconstruct the quoted message from the cache so Baileys
+    // threads the reply. Null (quoted message no longer cached) degrades
+    // gracefully to a normal message.
+    const quoted =
+      draft.quoted_message_id != null
+        ? getQuotedReconstruction(draft.to_handle, draft.quoted_message_id)
+        : null;
+    const result = await connection.sendText(draft.to_handle, draft.body, quoted);
     reservation.commit("ok");
     const sent_at = new Date().toISOString();
     try { updateDraft(draft.id, { sent_at }); } catch { /* draft sweep handles cleanup */ }

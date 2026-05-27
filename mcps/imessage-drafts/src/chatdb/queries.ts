@@ -3,7 +3,7 @@
 // and for accidental unbounded scans.
 
 import { openChatDb, appleDateToIsoUtc, isoUtcToAppleDateNs } from "./open.ts";
-import { bestMessageBody, truncateBody, decodeAttributedBody } from "./decode.ts";
+import { bestMessageBody, truncateBody, decodeAttributedBody, isOverBudget } from "./decode.ts";
 import { resolveHandle, resolveMany, findHandlesByContactName } from "./contacts.ts";
 
 export interface ThreadSummary {
@@ -17,6 +17,19 @@ export interface ThreadSummary {
   last_message_preview: string | null;
 }
 
+// The message an inline reply points back at. Resolved from chat.db's
+// `message.thread_originator_guid` (the originator's `guid`). `body` is null
+// when the originator isn't in the returned page / was deleted — the caller
+// still learns the message was a reply. `body` and `sender.name` are
+// peer-/sidecar-sourced and MUST be wrapped as untrusted at the tool boundary,
+// same as the top-level fields.
+export interface ReplyTo {
+  guid: string;
+  body: string | null;
+  from_me: boolean;
+  sender: { handle: string | null; name: string | null };
+}
+
 export interface ThreadMessage {
   message_id: number;
   thread_id: number;
@@ -24,8 +37,13 @@ export interface ThreadMessage {
   from_me: boolean;
   sender: { handle: string | null; name: string | null };
   body: string | null;
+  // True when `body` was clipped to the byte budget (truncateBody) — the
+  // returned text is intentionally shortened, not the complete message.
+  body_truncated: boolean;
   is_read: boolean;
   has_attachments: boolean;
+  // The message this one is an inline reply to, or null if it's not a reply.
+  reply_to: ReplyTo | null;
 }
 
 // Lighter-weight shape we embed in staged drafts so the menu bar app can
@@ -247,6 +265,71 @@ interface MessageRowLite {
   handle_id: number | null;
   sender_handle: string | null;
   thread_id: number;
+  // Reply columns — only SELECTed by getThreadMessages / searchMessages
+  // (the recentContext query omits them), hence optional.
+  guid?: string;
+  thread_originator_guid?: string | null;
+}
+
+// Resolve a set of originator message GUIDs to their displayable form
+// (body + sender) in ONE batched query — used to populate
+// `ThreadMessage.reply_to` without an N+1 per reply. GUIDs are globally
+// unique in chat.db, so the lookup isn't thread-scoped.
+function resolveOriginators(guids: readonly string[]): Map<string, ReplyTo> {
+  const out = new Map<string, ReplyTo>();
+  if (guids.length === 0) return out;
+  const db = openChatDb();
+  const placeholders = guids.map(() => "?").join(",");
+  const rows = db.query<{
+    guid: string;
+    text: string | null;
+    attributedBody: Uint8Array | null;
+    is_from_me: number;
+    sender_handle: string | null;
+  }, string[]>(
+    `SELECT m.guid AS guid,
+            m.text AS text,
+            m.attributedBody AS attributedBody,
+            m.is_from_me AS is_from_me,
+            h.id AS sender_handle
+     FROM message m
+     LEFT JOIN handle h ON h.ROWID = m.handle_id
+     WHERE m.guid IN (${placeholders})`
+  ).all(...guids);
+
+  const handles = new Set<string>();
+  for (const r of rows) if (r.sender_handle) handles.add(r.sender_handle);
+  const nameMap = resolveMany([...handles]);
+
+  for (const r of rows) {
+    out.set(r.guid, {
+      guid: r.guid,
+      body: truncateBody(bestMessageBody(r.text, r.attributedBody)),
+      from_me: r.is_from_me === 1,
+      sender: {
+        handle: r.is_from_me ? null : r.sender_handle,
+        name: r.is_from_me ? null : r.sender_handle ? nameMap.get(r.sender_handle) ?? null : null,
+      },
+    });
+  }
+  return out;
+}
+
+// Build a `reply_to` value from a message's thread_originator_guid. Falls back
+// to a guid-only stub (body null) when the originator wasn't resolved.
+function replyToFor(
+  originatorGuid: string | null | undefined,
+  resolved: Map<string, ReplyTo>,
+): ReplyTo | null {
+  if (!originatorGuid) return null;
+  return (
+    resolved.get(originatorGuid) ?? {
+      guid: originatorGuid,
+      body: null,
+      from_me: false,
+      sender: { handle: null, name: null },
+    }
+  );
 }
 
 export interface GetThreadArgs {
@@ -267,6 +350,7 @@ export function getThreadMessages(args: GetThreadArgs): ThreadMessage[] {
   params.push(limit);
   const rows = db.query<MessageRowLite, (string | number | bigint)[]>(
     `SELECT m.ROWID AS ROWID,
+            m.guid AS guid,
             m.text AS text,
             m.attributedBody AS attributedBody,
             m.date AS date,
@@ -274,6 +358,7 @@ export function getThreadMessages(args: GetThreadArgs): ThreadMessage[] {
             m.is_read AS is_read,
             m.cache_has_attachments AS cache_has_attachments,
             m.handle_id AS handle_id,
+            m.thread_originator_guid AS thread_originator_guid,
             h.id AS sender_handle,
             cmj.chat_id AS thread_id
      FROM chat_message_join cmj
@@ -284,19 +369,28 @@ export function getThreadMessages(args: GetThreadArgs): ThreadMessage[] {
      LIMIT ?`
   ).all(...params);
 
-  return rows.map((r) => ({
-    message_id: r.ROWID,
-    thread_id: r.thread_id,
-    sent_at: appleDateToIsoUtc(r.date),
-    from_me: r.is_from_me === 1,
-    sender: {
-      handle: r.is_from_me ? null : r.sender_handle,
-      name: r.is_from_me ? null : r.sender_handle ? resolveHandle(r.sender_handle) : null,
-    },
-    body: truncateBody(bestMessageBody(r.text, r.attributedBody)),
-    is_read: r.is_read === 1,
-    has_attachments: r.cache_has_attachments === 1,
-  }));
+  const originators = resolveOriginators(
+    rows.map((r) => r.thread_originator_guid).filter((g): g is string => !!g),
+  );
+
+  return rows.map((r) => {
+    const raw = bestMessageBody(r.text, r.attributedBody);
+    return {
+      message_id: r.ROWID,
+      thread_id: r.thread_id,
+      sent_at: appleDateToIsoUtc(r.date),
+      from_me: r.is_from_me === 1,
+      sender: {
+        handle: r.is_from_me ? null : r.sender_handle,
+        name: r.is_from_me ? null : r.sender_handle ? resolveHandle(r.sender_handle) : null,
+      },
+      body: truncateBody(raw),
+      body_truncated: isOverBudget(raw),
+      is_read: r.is_read === 1,
+      has_attachments: r.cache_has_attachments === 1,
+      reply_to: replyToFor(r.thread_originator_guid, originators),
+    };
+  });
 }
 
 // Embedded in staged drafts so the menu bar app can render thread context
@@ -536,6 +630,7 @@ export function searchMessages(args: SearchArgs): ThreadMessage[] {
 
   const rows = db.query<MessageRowLite, (string | number | bigint)[]>(
     `SELECT m.ROWID AS ROWID,
+            m.guid AS guid,
             m.text AS text,
             m.attributedBody AS attributedBody,
             m.date AS date,
@@ -543,6 +638,7 @@ export function searchMessages(args: SearchArgs): ThreadMessage[] {
             m.is_read AS is_read,
             m.cache_has_attachments AS cache_has_attachments,
             m.handle_id AS handle_id,
+            m.thread_originator_guid AS thread_originator_guid,
             h.id AS sender_handle,
             cmj.chat_id AS thread_id
      FROM message m
@@ -555,6 +651,9 @@ export function searchMessages(args: SearchArgs): ThreadMessage[] {
 
   const lowerQuery = query.toLowerCase();
   const matches: ThreadMessage[] = [];
+  // Parallel to `matches`: each entry's originator guid (or null). Resolved in
+  // one batch after the scan loop so we only look up originators for the hits.
+  const matchOriginatorGuids: (string | null)[] = [];
   for (const r of rows) {
     // Cheap path first: if `text` exists and matches, we're done with this row.
     let body: string | null = r.text;
@@ -573,10 +672,20 @@ export function searchMessages(args: SearchArgs): ThreadMessage[] {
         name: r.is_from_me ? null : r.sender_handle ? resolveHandle(r.sender_handle) : null,
       },
       body: truncateBody(body),
+      body_truncated: isOverBudget(body),
       is_read: r.is_read === 1,
       has_attachments: r.cache_has_attachments === 1,
+      reply_to: null,
     });
+    matchOriginatorGuids.push(r.thread_originator_guid ?? null);
     if (matches.length >= limit) break;
+  }
+
+  const originators = resolveOriginators(
+    matchOriginatorGuids.filter((g): g is string => !!g),
+  );
+  for (let i = 0; i < matches.length; i++) {
+    matches[i]!.reply_to = replyToFor(matchOriginatorGuids[i], originators);
   }
   return matches;
 }
