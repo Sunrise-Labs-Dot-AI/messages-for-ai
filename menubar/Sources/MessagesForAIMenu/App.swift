@@ -61,10 +61,9 @@ struct MessagesForAIMenuApp: App {
         .environmentObject(whatsappDaemon)
         .task {
           await contactsExporter.bootstrap()
-          // iMessage is the core feature — always run its FDA-holding daemon
-          // (it does the chat.db reads the Claude-launched MCP can't).
-          imessageDaemon.start()
-          appDelegate.imessageDaemon = imessageDaemon
+          // The iMessage daemon is started from the menu-bar label's onAppear
+          // (fires reliably at launch) — no redundant start() here, which would
+          // otherwise reset the crash-loop counter on a second call.
           if settings.whatsappEnabled {
             whatsappDaemon.start()
           }

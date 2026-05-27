@@ -89,6 +89,9 @@ export async function startRpcServer(): Promise<RpcServer> {
     let buf = "";
     sock.on("data", (chunk) => {
       buf += chunk.toString("utf8");
+      // Defense-in-depth: a peer that never sends a newline must not grow buf
+      // unbounded and OOM the FDA-holding daemon. RPC requests are tiny.
+      if (buf.length > 1_000_000) { sock.destroy(); return; }
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, nl);
@@ -154,7 +157,9 @@ export function handle(req: RpcRequest): RpcResponse {
         const p = (req.params ?? {}) as {
           limit?: unknown; sinceIso?: unknown; beforeIso?: unknown; contactFilter?: unknown;
         };
-        if (typeof p.limit !== "number") return err(id, RPC_ERR.INVALID_PARAMS, "limit (number) required");
+        if (!Number.isInteger(p.limit) || (p.limit as number) < 1 || (p.limit as number) > 500) {
+          return err(id, RPC_ERR.INVALID_PARAMS, "limit must be an integer 1..500");
+        }
         return ok(id, listThreads({
           limit: p.limit,
           sinceIso: typeof p.sinceIso === "string" ? p.sinceIso : undefined,
@@ -164,8 +169,10 @@ export function handle(req: RpcRequest): RpcResponse {
       }
       case "getThread": {
         const p = (req.params ?? {}) as { threadId?: unknown; limit?: unknown; beforeIso?: unknown };
-        if (typeof p.threadId !== "number") return err(id, RPC_ERR.INVALID_PARAMS, "threadId (number) required");
-        if (typeof p.limit !== "number") return err(id, RPC_ERR.INVALID_PARAMS, "limit (number) required");
+        if (!Number.isInteger(p.threadId) || (p.threadId as number) < 1) return err(id, RPC_ERR.INVALID_PARAMS, "threadId must be a positive integer");
+        if (!Number.isInteger(p.limit) || (p.limit as number) < 1 || (p.limit as number) > 500) {
+          return err(id, RPC_ERR.INVALID_PARAMS, "limit must be an integer 1..500");
+        }
         return ok(id, getThreadMessages({
           threadId: p.threadId,
           limit: p.limit,
@@ -177,7 +184,9 @@ export function handle(req: RpcRequest): RpcResponse {
           query?: unknown; limit?: unknown; sinceIso?: unknown; contactFilter?: unknown;
         };
         if (typeof p.query !== "string" || p.query.length < 2) return err(id, RPC_ERR.INVALID_PARAMS, "query (>=2 chars) required");
-        if (typeof p.limit !== "number") return err(id, RPC_ERR.INVALID_PARAMS, "limit (number) required");
+        if (!Number.isInteger(p.limit) || (p.limit as number) < 1 || (p.limit as number) > 500) {
+          return err(id, RPC_ERR.INVALID_PARAMS, "limit must be an integer 1..500");
+        }
         return ok(id, searchMessages({
           query: p.query,
           limit: p.limit,
@@ -187,7 +196,9 @@ export function handle(req: RpcRequest): RpcResponse {
       }
       case "recentContext": {
         const p = (req.params ?? {}) as { recipientHandle?: unknown; threadId?: unknown; limit?: unknown };
-        if (typeof p.limit !== "number") return err(id, RPC_ERR.INVALID_PARAMS, "limit (number) required");
+        if (!Number.isInteger(p.limit) || (p.limit as number) < 1 || (p.limit as number) > 500) {
+          return err(id, RPC_ERR.INVALID_PARAMS, "limit must be an integer 1..500");
+        }
         return ok(id, recentContextForRecipient({
           recipientHandle: typeof p.recipientHandle === "string" ? p.recipientHandle : undefined,
           threadId: typeof p.threadId === "number" ? p.threadId : undefined,
