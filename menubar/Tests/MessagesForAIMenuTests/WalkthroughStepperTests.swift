@@ -14,6 +14,7 @@ final class WalkthroughStepperTests: XCTestCase {
         index: Int = 0,
         fda: ChatDbAccessState = .ok,
         clientFda: ChatDbAccessState? = nil,
+        daemonDown: Bool = false,
         imessageVerified: Bool? = nil,
         whatsappVerified: Bool? = nil
     ) -> WalkthroughStepper {
@@ -23,6 +24,7 @@ final class WalkthroughStepperTests: XCTestCase {
             currentStepIndex: index,
             chatDbAccess: fda,
             clientChatDbAccess: clientFda,
+            imessageDaemonDown: daemonDown,
             imessageVerified: imessageVerified,
             whatsappVerified: whatsappVerified
         )
@@ -108,6 +110,29 @@ final class WalkthroughStepperTests: XCTestCase {
         XCTAssertTrue(s.canAdvance)
     }
 
+    // MARK: - canAdvance (the reader-daemon liveness gate, #17 pass-then-fail)
+
+    func test_canAdvance_blockedWhenDaemonDown_evenWithFdaGranted() {
+        // The core daemon-model trap: FDA reads green (menu-bar holds the
+        // grant) but the reader daemon is dead, so every real iMessage call
+        // fails. The install step must hold the user here, not silently pass.
+        let s = makeStepper(imessage: true, index: 0, fda: .ok, daemonDown: true)
+        XCTAssertFalse(s.canAdvance, "a dead reader daemon must hold the user on the install step")
+    }
+
+    func test_canAdvance_allowedWhenDaemonDownButImessageDisabled() {
+        // No iMessage transport → the iMessage daemon is irrelevant.
+        let s = makeStepper(imessage: false, whatsapp: true, index: 0, daemonDown: true)
+        XCTAssertTrue(s.canAdvance)
+    }
+
+    func test_canAdvance_testStep_notBlockedByDaemonDown() {
+        // Test steps stay advisory — completion (All set) carries the gate.
+        let s = makeStepper(imessage: true, whatsapp: false, index: 1, fda: .ok, daemonDown: true)
+        XCTAssertEqual(s.currentStep, .test(.imessage))
+        XCTAssertTrue(s.canAdvance)
+    }
+
     // MARK: - allVerifiedOrSkipped (the "All set" completion gate)
 
     func test_allVerified_trueWhenImessageVerifiedAndFdaOk() {
@@ -135,6 +160,21 @@ final class WalkthroughStepperTests: XCTestCase {
         let both = makeStepper(imessage: true, whatsapp: true, fda: .ok,
                                imessageVerified: true, whatsappVerified: true)
         XCTAssertTrue(both.allVerifiedOrSkipped)
+    }
+
+    func test_allVerified_blockedByDaemonDownEvenIfVerified() {
+        // Belt-and-suspenders: even if a (stale or racing) verified flag is
+        // set, a down reader daemon must keep "All set" disabled.
+        let s = makeStepper(imessage: true, whatsapp: false, fda: .ok,
+                            daemonDown: true, imessageVerified: true)
+        XCTAssertFalse(s.allVerifiedOrSkipped, "a down reader daemon must block completion")
+    }
+
+    func test_allVerified_daemonDown_ignoredWhenImessageDisabled() {
+        // WhatsApp-only setup: the iMessage daemon never gates completion.
+        let s = makeStepper(imessage: false, whatsapp: true, daemonDown: true,
+                            whatsappVerified: true)
+        XCTAssertTrue(s.allVerifiedOrSkipped)
     }
 
     func test_allVerified_whatsappOnly_ignoresFda() {

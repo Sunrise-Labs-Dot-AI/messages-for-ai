@@ -130,6 +130,7 @@ struct MessagesForAIMenuApp: App {
       SetupWalkthroughView()
         .environmentObject(settings)
         .environmentObject(whatsappDaemon)
+        .environmentObject(imessageDaemon)
         .frame(minWidth: 520, idealWidth: 560, minHeight: 540, idealHeight: 640)
         .trackWindowLifecycle(appDelegate: appDelegate)
     }
