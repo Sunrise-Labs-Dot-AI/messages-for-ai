@@ -149,15 +149,21 @@ trap 'rc=$?; trap "" INT TERM; echo; echo "✗ build aborted (exit $rc); wiping 
 mkdir -p "$REPO_ROOT/bin"
 
 echo
-echo "=== Building imessage-drafts-mcp (Bun) ==="
+echo "=== Building imessage-drafts-mcp + imessage-drafts-daemon (Bun) ==="
 (
   cd "$REPO_ROOT/mcps/imessage-drafts"
   echo "› bun install"
   bun install
-  echo "› bun build --compile"
+  echo "› bun build --compile (stdio MCP)"
   bun build src/index.ts --compile --outfile "$REPO_ROOT/bin/imessage-drafts-mcp"
+  echo "› bun build --compile (Unix-socket reader daemon)"
+  # The FDA-holding chat.db reader the menu-bar app launches; the MCP is a
+  # thin socket client to it. No --external needed (unlike the WhatsApp
+  # daemon's native modules). MUST ship — without it the prod bundle has no
+  # iMessage reader and every iMessage call fails (the v0.3.3 regression).
+  bun build src/daemon/index.ts --compile --outfile "$REPO_ROOT/bin/imessage-drafts-daemon"
 )
-xattr -cr "$REPO_ROOT/bin/imessage-drafts-mcp"
+xattr -cr "$REPO_ROOT/bin/imessage-drafts-mcp" "$REPO_ROOT/bin/imessage-drafts-daemon"
 
 echo
 echo "=== Building whatsapp-drafts-mcp + whatsapp-drafts-daemon (Bun) ==="
@@ -195,6 +201,7 @@ EXE_NAME="MessagesForAIMenu"
 INNER_BINARIES=(
   "$EXE_NAME"
   "imessage-drafts-mcp"
+  "imessage-drafts-daemon"
   "whatsapp-drafts-mcp"
   "whatsapp-drafts-daemon"
 )
@@ -203,9 +210,10 @@ ENTITLEMENTS="$REPO_ROOT/menubar/scripts/messages-for-ai.entitlements"
 
 MENUBAR_BIN="$REPO_ROOT/menubar/.build/release/$EXE_NAME"
 IMESSAGE_MCP_BIN="$REPO_ROOT/bin/imessage-drafts-mcp"
+IMESSAGE_DAEMON_BIN="$REPO_ROOT/bin/imessage-drafts-daemon"
 WHATSAPP_MCP_BIN="$REPO_ROOT/bin/whatsapp-drafts-mcp"
 WHATSAPP_DAEMON_BIN="$REPO_ROOT/bin/whatsapp-drafts-daemon"
-for f in "$MENUBAR_BIN" "$IMESSAGE_MCP_BIN" "$WHATSAPP_MCP_BIN" "$WHATSAPP_DAEMON_BIN" "$ENTITLEMENTS"; do
+for f in "$MENUBAR_BIN" "$IMESSAGE_MCP_BIN" "$IMESSAGE_DAEMON_BIN" "$WHATSAPP_MCP_BIN" "$WHATSAPP_DAEMON_BIN" "$ENTITLEMENTS"; do
   if [[ ! -e "$f" ]]; then
     echo "✗ build artifact missing: $f" >&2
     exit 1
@@ -229,6 +237,7 @@ mkdir -p "$APP_PATH/Contents/MacOS"
 mkdir -p "$APP_PATH/Contents/Resources"
 cp "$MENUBAR_BIN"         "$APP_PATH/Contents/MacOS/$EXE_NAME"
 cp "$IMESSAGE_MCP_BIN"    "$APP_PATH/Contents/MacOS/imessage-drafts-mcp"
+cp "$IMESSAGE_DAEMON_BIN" "$APP_PATH/Contents/MacOS/imessage-drafts-daemon"
 cp "$WHATSAPP_MCP_BIN"    "$APP_PATH/Contents/MacOS/whatsapp-drafts-mcp"
 cp "$WHATSAPP_DAEMON_BIN" "$APP_PATH/Contents/MacOS/whatsapp-drafts-daemon"
 
