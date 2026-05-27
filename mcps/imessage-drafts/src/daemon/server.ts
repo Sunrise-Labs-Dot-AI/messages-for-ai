@@ -161,7 +161,7 @@ export function handle(req: RpcRequest): RpcResponse {
           return err(id, RPC_ERR.INVALID_PARAMS, "limit must be an integer 1..500");
         }
         return ok(id, listThreads({
-          limit: p.limit,
+          limit: p.limit as number,
           sinceIso: typeof p.sinceIso === "string" ? p.sinceIso : undefined,
           beforeIso: typeof p.beforeIso === "string" ? p.beforeIso : undefined,
           contactFilter: typeof p.contactFilter === "string" ? p.contactFilter : undefined,
@@ -174,8 +174,8 @@ export function handle(req: RpcRequest): RpcResponse {
           return err(id, RPC_ERR.INVALID_PARAMS, "limit must be an integer 1..500");
         }
         return ok(id, getThreadMessages({
-          threadId: p.threadId,
-          limit: p.limit,
+          threadId: p.threadId as number,
+          limit: p.limit as number,
           beforeIso: typeof p.beforeIso === "string" ? p.beforeIso : undefined,
         }));
       }
@@ -189,7 +189,7 @@ export function handle(req: RpcRequest): RpcResponse {
         }
         return ok(id, searchMessages({
           query: p.query,
-          limit: p.limit,
+          limit: p.limit as number,
           sinceIso: typeof p.sinceIso === "string" ? p.sinceIso : undefined,
           contactFilter: typeof p.contactFilter === "string" ? p.contactFilter : undefined,
         }));
@@ -202,7 +202,7 @@ export function handle(req: RpcRequest): RpcResponse {
         return ok(id, recentContextForRecipient({
           recipientHandle: typeof p.recipientHandle === "string" ? p.recipientHandle : undefined,
           threadId: typeof p.threadId === "number" ? p.threadId : undefined,
-          limit: p.limit,
+          limit: p.limit as number,
         }));
       }
       default:
