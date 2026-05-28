@@ -58,5 +58,18 @@
     "laugh_tokens": {"lol": 240, "haha": 180, "joy": 612},
     "dominant_laugh": "joy",
     "sample_size": 4000
+  },
+  "age": {
+    "band": "gen_z",
+    "label": "Gen Z",
+    "range_label": "Gen Z / Millennial",
+    "approx_age": "13-27",
+    "confidence": "between",
+    "drivers": [
+      "All-lowercase typing",
+      "Uses 😂 for laughter (non-ironic)",
+      "No period even on multi-sentence messages"
+    ],
+    "sample_size": 4000
   }
 }

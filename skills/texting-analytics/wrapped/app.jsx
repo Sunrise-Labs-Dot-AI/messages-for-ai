@@ -39,7 +39,7 @@ const DATA = (typeof window !== 'undefined' && window.WRAPPED_DATA) || {
 
 // Full card arc — used to keep each card's designed palette even when some
 // cards are omitted (build_wrapped drops cards the analysis can't populate).
-const FULL_ARC = ['cover', 'volume', 'people', 'latency', 'ballincourt', 'groups', 'emoji', 'archetype', 'share'];
+const FULL_ARC = ['cover', 'volume', 'people', 'latency', 'ballincourt', 'groups', 'emoji', 'age', 'archetype', 'share'];
 
 // ── Hooks ───────────────────────────────────────────────────
 
@@ -505,7 +505,7 @@ function ArchetypeCard({ tone, treatment, active }) {
   return (
     <CardShell
       tone={tone} treatment={treatment}
-      label="07 · your archetype"
+      label="08 · your archetype"
       footer={`fits ${DATA.archetype.why}`}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft, marginBottom: 14 }}>
@@ -661,20 +661,69 @@ function EmojiCard({ tone, treatment, active, instant }) {
   );
 }
 
+// Card 7: Texting age — playful, probabilistic (from age_estimate.py via the
+// research rubric). Omitted unless analysis.json carries an `age` block.
+function AgeCard({ tone, treatment, active }) {
+  const a = DATA.age || { range_label: '—', approx_age: '', drivers: [] };
+  const isSerif = treatment.titleFont === 'serif';
+  const drivers = (a.drivers || []).slice(0, 3);
+  return (
+    <CardShell
+      tone={tone} treatment={treatment}
+      label="07 · your texting age"
+      footer="probabilistic & for fun — not a background check.">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 16 }}>
+        <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft }}>
+          You text like a
+        </div>
+        <div style={{
+          fontFamily: isSerif ? treatment.serif : treatment.sans,
+          fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 800,
+          fontSize: 60, lineHeight: 0.9, letterSpacing: isSerif ? '-0.03em' : '-0.05em',
+          textWrap: 'balance',
+        }}>{a.range_label}</div>
+        {a.approx_age && (
+          <div style={{ fontFamily: treatment.mono, fontSize: 13, color: tone.soft, letterSpacing: '0.06em' }}>
+            roughly age {a.approx_age}
+          </div>
+        )}
+        {drivers.length > 0 && (
+          <div style={{ marginTop: 8, paddingTop: 16, borderTop: `1px solid ${tone.ink}` }}>
+            <div style={{ fontFamily: treatment.mono, fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: tone.soft, marginBottom: 10 }}>
+              Strongest tells
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {drivers.map((d, i) => (
+                <div key={i} style={{
+                  fontFamily: isSerif ? treatment.serif : treatment.sans,
+                  fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
+                  fontSize: 19, lineHeight: 1.15, letterSpacing: '-0.01em',
+                  opacity: active ? 1 : 0, transform: active ? 'translateX(0)' : 'translateX(-10px)',
+                  transition: `all 500ms cubic-bezier(.2,.7,.2,1) ${200 + i * 90}ms`,
+                }}>{d}</div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </CardShell>
+  );
+}
+
 // ── Carousel ────────────────────────────────────────────────
 
 const CARDS_BY_KEY = {
   cover: CoverCard, volume: VolumeCard, people: PeopleCard, latency: LatencyCard,
   ballincourt: BallInCourtCard, groups: GroupsCard, emoji: EmojiCard,
-  archetype: ArchetypeCard, share: ShareCard,
+  age: AgeCard, archetype: ArchetypeCard, share: ShareCard,
 };
 
 // Palette is decoupled from card order so adding/omitting cards never recolors
 // the others. Each key maps to an index into the treatment's palette array;
-// emoji reuses the (usually-omitted) people slot to avoid a 9th palette.
+// emoji + age reuse earlier slots (people/volume) to avoid extra palettes.
 const PALETTE_OF = {
   cover: 0, volume: 1, people: 2, latency: 3, ballincourt: 4,
-  groups: 5, archetype: 6, share: 7, emoji: 2,
+  groups: 5, archetype: 6, share: 7, emoji: 2, age: 1,
 };
 
 // Active cards: from DATA.cards if provided, else the full arc.

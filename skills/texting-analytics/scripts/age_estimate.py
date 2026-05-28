@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""age_estimate.py — playful "texting age" estimate from style/emoji features.
+
+Consumes the aggregate `style` + `emoji` blocks (from emoji_stats.py) plus
+latency/volume, runs them through the weighted rubric in data/age_rubric.json,
+and emits an `age` block to merge into analysis.json.
+
+PROBABILISTIC, NOT DETERMINISTIC. This is an entertainment prior, not an
+identity claim — frame the card playfully (the rubric's own disclaimer). Reads
+only aggregates; no message bodies involved.
+
+Usage:
+  python3 age_estimate.py --analysis analysis.json [--total-sent N]
+
+Output (stdout): { "age": { band, label, range_label, approx_age, confidence,
+                            drivers, sample_size } }   merge into analysis.json.
+
+Exit codes: 0 ok · 2 input/rubric malformed
+"""
+
+import argparse
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RUBRIC_PATH = os.path.join(HERE, "..", "data", "age_rubric.json")
+
+
+def fired_features(analysis, total_sent):
+    """Map observed aggregates → the rubric feature ids we can actually detect.
+    We only fire features we can observe from style/emoji/latency/volume."""
+    style = analysis.get("style", {})
+    lat = analysis.get("latency", {})
+    fired = []
+
+    # Laughter — fire the single dominant laugh token.
+    dom = (style.get("dominant_laugh") or "").lower()
+    if dom in ("skull", "sob"):
+        fired.append("laugh_skull_or_sob")
+    elif dom == "joy":
+        fired.append("laugh_joy_nonironic")
+    elif dom == "lol":
+        fired.append("laugh_lol_nonironic")
+    elif dom in ("haha", "hehe"):
+        fired.append("laugh_haha")
+
+    # Capitalization.
+    low = style.get("pct_all_lowercase")
+    if low is not None:
+        if low >= 40:
+            fired.append("all_lowercase")
+        elif low <= 12:
+            fired.append("proper_caps")
+
+    # End-of-message period.
+    per = style.get("pct_end_period")
+    if per is not None:
+        if per >= 25:
+            fired.append("period_end_short")
+        elif per <= 12:
+            fired.append("no_period")
+
+    # Reply speed (from latency median minutes).
+    med = lat.get("median_minutes")
+    if med is not None:
+        if med <= 1:
+            fired.append("fast_replies")
+        elif med >= 60:
+            fired.append("slow_replies")
+
+    # Volume (needs a total-sent count, which analysis.json doesn't carry).
+    if total_sent:
+        if total_sent / 365.0 < 10:
+            fired.append("low_volume")
+
+    return fired
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Estimate a playful texting-age band.")
+    ap.add_argument("--analysis", required=True)
+    ap.add_argument("--total-sent", type=int, default=None)
+    args = ap.parse_args()
+
+    try:
+        with open(args.analysis) as f:
+            analysis = json.load(f)
+        with open(RUBRIC_PATH) as f:
+            rubric = json.load(f)
+    except FileNotFoundError as e:
+        print(json.dumps({"error": "file not found", "detail": str(e)}), file=sys.stderr)
+        sys.exit(2)
+    except json.JSONDecodeError as e:
+        print(json.dumps({"error": "invalid JSON", "detail": str(e)}), file=sys.stderr)
+        sys.exit(2)
+
+    weight_values = rubric["scoring_logic"]["weight_values"]
+    by_id = {f["id"]: f for f in rubric["features"]}
+    bands = list(rubric["age_bands"].keys())
+
+    fired = fired_features(analysis, args.total_sent)
+    if not fired:
+        print(json.dumps({"error": "no observable age features", "fired": []}), file=sys.stderr)
+        sys.exit(2)
+
+    totals = {b: 0.0 for b in bands}
+    sum_weights = 0.0
+    for fid in fired:
+        feat = by_id.get(fid)
+        if not feat:
+            continue
+        w = weight_values.get(feat["weight"], 1)
+        sum_weights += w
+        for b in bands:
+            totals[b] += feat["points"].get(b, 0) * w
+
+    scores = {b: (totals[b] / sum_weights if sum_weights else 0) for b in bands}
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    (top_id, top_s), (second_id, second_s) = ranked[0], ranked[1]
+
+    label_of = lambda b: rubric["age_bands"][b]["label"]
+    # Confidence + range per the rubric's scoring_logic.
+    if second_s == 0 or top_s >= 2 * second_s:
+        confidence, range_label = "likely", label_of(top_id)
+    elif (top_s - second_s) / top_s <= 0.20:
+        confidence, range_label = "between", f"{label_of(top_id)} / {label_of(second_id)}"
+    else:
+        confidence, range_label = "leaning", label_of(top_id)
+
+    # Drivers: the fired features, strongest weight first (top 3), human labels.
+    drivers = sorted(
+        (by_id[f] for f in fired if f in by_id),
+        key=lambda f: weight_values.get(f["weight"], 1), reverse=True,
+    )
+    driver_labels = [d["label"] for d in drivers[:3]]
+
+    age = {
+        "band": top_id,
+        "label": label_of(top_id),
+        "range_label": range_label,
+        "approx_age": rubric["age_bands"][top_id]["approx_age_2025"],
+        "confidence": confidence,
+        "drivers": driver_labels,
+        "sample_size": analysis.get("style", {}).get("sample_size"),
+    }
+    print(json.dumps({"age": age}, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

@@ -97,6 +97,16 @@ def main():
         with open(fpath, "w") as f:
             json.dump(a, f, indent=2)
 
+        # Merge a playful texting-age block (age_estimate reads style/latency).
+        age_cmd = [sys.executable, os.path.join(HERE, "..", "scripts", "age_estimate.py"), "--analysis", fpath]
+        if total_sent:
+            age_cmd += ["--total-sent", str(total_sent)]
+        age_out = subprocess.run(age_cmd, capture_output=True, text=True)
+        if age_out.returncode == 0:
+            a["age"] = json.loads(age_out.stdout)["age"]
+            with open(fpath, "w") as f:
+                json.dump(a, f, indent=2)
+
         got = archetype_of(a)
         ok = got == expected
         mismatches += 0 if ok else 1

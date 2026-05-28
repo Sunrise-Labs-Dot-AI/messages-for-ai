@@ -134,6 +134,9 @@ def build_data(analysis, year, total_sent, include_people):
     emoji = analysis.get("emoji")
     if emoji:
         cards.append("emoji")
+    age = analysis.get("age")
+    if age:
+        cards.append("age")
     cards += ["archetype", "share"]
 
     data = {
@@ -157,6 +160,8 @@ def build_data(analysis, year, total_sent, include_people):
         data["emoji"] = emoji
     if analysis.get("style"):
         data["style"] = analysis["style"]
+    if age:
+        data["age"] = age
     return data
 
 

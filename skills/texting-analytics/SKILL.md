@@ -117,6 +117,15 @@ python3 scripts/emoji_stats.py --input messages.json --outbound-only
 
 If `analysis.json` has no `emoji` block, the emoji card is simply omitted (like Volume/People).
 
+**Texting-age card (optional).** A playful, probabilistic age-band estimate from writing style. Once the `style` block exists (from `emoji_stats.py`), run `scripts/age_estimate.py` to add an `age` block:
+
+```bash
+python3 scripts/age_estimate.py --analysis analysis.json [--total-sent N]
+# merge its {age} output into analysis.json, then build_wrapped.py adds the card.
+```
+
+It scores observed style features against `data/age_rubric.json` (from the research package in `research/`). **Frame it as entertainment, never an identity claim** — it's a probabilistic prior with high individual variation, and unreliable on small samples. Omitted if there's no `age` block.
+
 ## Voice and tone for the report
 
 PM-voice with self-aware humor. Lead with the headline. Numbers in the first paragraph. Don't bury the lede. The Bad Texter Analysis example in `examples/example-report.md` is the reference.
