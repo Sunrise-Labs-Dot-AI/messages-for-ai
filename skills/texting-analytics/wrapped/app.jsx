@@ -39,7 +39,7 @@ const DATA = (typeof window !== 'undefined' && window.WRAPPED_DATA) || {
 
 // Full card arc — used to keep each card's designed palette even when some
 // cards are omitted (build_wrapped drops cards the analysis can't populate).
-const FULL_ARC = ['cover', 'volume', 'people', 'latency', 'groups', 'archetype', 'share'];
+const FULL_ARC = ['cover', 'volume', 'people', 'latency', 'ballincourt', 'groups', 'archetype', 'share'];
 
 // ── Hooks ───────────────────────────────────────────────────
 
@@ -283,57 +283,127 @@ function PeopleCard({ tone, treatment, active }) {
   );
 }
 
-// Card 4: Reply behavior
+// Reply-time distribution — a right-skewed (lognormal-ish) curve: a tall spike
+// near the median, a long tail out past the mean. Median + mean drawn as lines.
+function LatencyCurve({ median, mean }) {
+  const W = 320, H = 108, base = H - 2, top = 16;
+  const med = Math.max(median, 0.1);
+  const xmax = Math.max(mean * 1.8, med * 1.6, 10);
+  const xOf = (v) => Math.min(v / xmax, 1) * W;
+  const sigma = 0.9;
+  const f = (v) => Math.exp(-Math.pow(Math.log(v + 1) - Math.log(med + 1), 2) / (2 * sigma * sigma));
+  const N = 80;
+  let peak = 0;
+  const ys = [];
+  for (let i = 0; i <= N; i++) { const y = f((i / N) * xmax); ys.push(y); if (y > peak) peak = y; }
+  const yOf = (y) => base - (y / peak) * (base - top);
+  let d = `M0 ${base}`;
+  for (let i = 0; i <= N; i++) d += ` L${((i / N) * W).toFixed(1)} ${yOf(ys[i]).toFixed(1)}`;
+  d += ` L${W} ${base} Z`;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block', overflow: 'visible' }}>
+      <path d={d} fill="currentColor" fillOpacity="0.16" stroke="currentColor" strokeOpacity="0.5" strokeWidth="1.5" />
+      <line x1={xOf(median)} y1={top - 8} x2={xOf(median)} y2={base} stroke="currentColor" strokeWidth="2.5" />
+      <line x1={xOf(mean)} y1={top - 8} x2={xOf(mean)} y2={base} stroke="currentColor" strokeOpacity="0.65" strokeWidth="1.5" strokeDasharray="3 3" />
+    </svg>
+  );
+}
+
+// Card 4: Reply latency — distribution curve + plain-language mean vs median
 function LatencyCard({ tone, treatment, active }) {
-  const med = useCountUp(DATA.median, 1100, active, 180);
-  const ballPct = useCountUp(DATA.ballInCourt, 1200, active, 500);
   const isSerif = treatment.numberFont === 'serif';
-  const italic = isSerif && treatment.italicNumbers;
+  const med = DATA.median, mean = DATA.mean;
+  const skew = mean > med * 1.5;
   return (
     <CardShell
       tone={tone} treatment={treatment}
       label="03 · the latency"
-      footer="fast on first reply. slow on follow-through.">
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 18 }}>
-        <div>
-          <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft, marginBottom: 8 }}>
-            Your median reply
-          </div>
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 0, flexWrap: 'nowrap' }}>
-            <div style={{
-              fontFamily: isSerif ? treatment.serif : treatment.sans,
-              fontStyle: italic ? 'italic' : 'normal',
-              fontWeight: isSerif ? 400 : 700,
-              fontSize: 116, lineHeight: 0.88,
-              letterSpacing: isSerif ? '-0.045em' : '-0.06em',
-            }}>{fmt(med, 1)}</div>
-          </div>
-          <div style={{
-            marginTop: 10,
-            fontFamily: treatment.mono,
-            fontWeight: 500,
-            fontSize: 13, letterSpacing: '0.14em',
-            textTransform: 'uppercase',
-            color: tone.soft,
-          }}>minutes</div>
+      footer="fast on the first reply. slow on the follow-through.">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 20 }}>
+        <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft }}>
+          How fast you reply
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 6 }}>
-          <Stat treatment={treatment} tone={tone} value={`${fmt(DATA.mean, 1)}m`} label="mean reply" />
-          <Stat treatment={treatment} tone={tone} value={`${DATA.fastPct}%`} label="within 5 min" />
+        <div style={{ opacity: active ? 1 : 0, transform: active ? 'translateY(0)' : 'translateY(10px)', transition: 'all 700ms ease 200ms' }}>
+          <LatencyCurve median={med} mean={mean} />
+          <div style={{ display: 'flex', gap: 20, marginTop: 10, fontFamily: treatment.mono, fontSize: 11, letterSpacing: '0.04em', color: tone.soft }}>
+            <span><b style={{ color: tone.ink }}>│</b> median {fmt(med, 1)} min</span>
+            <span>┊ mean {fmt(mean, 1)} min</span>
+          </div>
         </div>
 
-        <div style={{ marginTop: 18, paddingTop: 18, borderTop: `1px solid ${tone.ink}`, opacity: active ? 1 : 0, transition: 'opacity 700ms ease 600ms' }}>
+        <div style={{
+          fontFamily: isSerif ? treatment.serif : treatment.sans,
+          fontStyle: isSerif ? 'italic' : 'normal',
+          fontWeight: isSerif ? 400 : 600,
+          fontSize: 24, lineHeight: 1.22, letterSpacing: '-0.01em', textWrap: 'balance',
+        }}>
+          {skew
+            ? <>Half your replies land within <span style={{ textDecoration: 'underline', textUnderlineOffset: 5 }}>{fmt(med, 1)} minutes</span>. But your average is {fmt(mean, 1)} — a handful of slow ones drag the tail way out.</>
+            : <>Half your replies land within <span style={{ textDecoration: 'underline', textUnderlineOffset: 5 }}>{fmt(med, 1)} minutes</span>, and your average ({fmt(mean, 1)}) isn't far off. You reply at a steady clip.</>}
+        </div>
+      </div>
+    </CardShell>
+  );
+}
+
+// Card 5: Ball in your court — its own frame. A gauge with a clear midpoint line.
+function BallInCourtCard({ tone, treatment, active }) {
+  const pct = useCountUp(DATA.ballInCourt, 1200, active, 200);
+  const isSerif = treatment.numberFont === 'serif';
+  const italic = isSerif && treatment.italicNumbers;
+  const heavy = DATA.ballInCourt >= 50;
+  return (
+    <CardShell
+      tone={tone} treatment={treatment}
+      label="04 · ball in your court"
+      footer="the ball doesn't move itself.">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 26 }}>
+        <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft }}>
+          Active threads waiting on you
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}>
           <div style={{
             fontFamily: isSerif ? treatment.serif : treatment.sans,
             fontStyle: italic ? 'italic' : 'normal',
             fontWeight: isSerif ? 400 : 700,
-            fontSize: 64, lineHeight: 0.9,
-            letterSpacing: isSerif ? '-0.03em' : '-0.05em',
-          }}>{fmt(ballPct)}%</div>
-          <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.06em', color: tone.soft, marginTop: 4 }}>
-            of active threads waiting on you.
+            fontSize: 132, lineHeight: 0.85,
+            letterSpacing: isSerif ? '-0.045em' : '-0.07em',
+          }}>{fmt(pct)}</div>
+          <div style={{
+            fontFamily: isSerif ? treatment.serif : treatment.sans,
+            fontStyle: italic ? 'italic' : 'normal',
+            fontWeight: isSerif ? 400 : 600, fontSize: 52, letterSpacing: '-0.04em',
+          }}>%</div>
+        </div>
+
+        {/* Gauge: fill to the user's %, with a clear midpoint (50%) reference line. */}
+        <div style={{ position: 'relative', marginTop: 18 }}>
+          <div style={{ position: 'relative', height: 14, borderRadius: 8, background: 'currentColor', opacity: 0.18, overflow: 'hidden' }}>
+            <div style={{
+              position: 'absolute', left: 0, top: 0, bottom: 0,
+              width: active ? `${Math.min(DATA.ballInCourt, 100)}%` : 0,
+              background: 'currentColor', borderRadius: 8,
+              transition: 'width 1000ms cubic-bezier(.2,.7,.2,1) 200ms',
+            }}/>
           </div>
+          <div style={{ position: 'absolute', left: '50%', top: -7, bottom: -7, width: 2, background: tone.ink, opacity: 0.85 }} />
+          <div style={{ position: 'absolute', left: '50%', top: -24, transform: 'translateX(-50%)', fontFamily: treatment.mono, fontSize: 9.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: tone.soft }}>even</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontFamily: treatment.mono, fontSize: 10, letterSpacing: '0.06em', color: tone.soft }}>
+            <span>caught up</span><span>behind</span>
+          </div>
+        </div>
+
+        <div style={{
+          fontFamily: isSerif ? treatment.serif : treatment.sans,
+          fontStyle: isSerif ? 'italic' : 'normal',
+          fontWeight: isSerif ? 400 : 600,
+          fontSize: 26, lineHeight: 1.18, letterSpacing: '-0.02em', textWrap: 'balance',
+        }}>
+          {heavy
+            ? 'More than half your live threads are waiting on you to reply.'
+            : "You're keeping up — most of your threads aren't waiting on you."}
         </div>
       </div>
     </CardShell>
@@ -364,7 +434,7 @@ function GroupsCard({ tone, treatment, active }) {
   return (
     <CardShell
       tone={tone} treatment={treatment}
-      label="04 · the ghost data"
+      label="05 · the ghost data"
       footer="the receipts don't lie.">
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 22 }}>
         <div>
@@ -428,7 +498,7 @@ function ArchetypeCard({ tone, treatment, active }) {
   return (
     <CardShell
       tone={tone} treatment={treatment}
-      label="05 · your archetype"
+      label="06 · your archetype"
       footer={`fits ${DATA.archetype.why}`}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft, marginBottom: 14 }}>
@@ -527,7 +597,7 @@ function RecapTile({ treatment, tone, stat, label }) {
 
 const CARDS_BY_KEY = {
   cover: CoverCard, volume: VolumeCard, people: PeopleCard, latency: LatencyCard,
-  groups: GroupsCard, archetype: ArchetypeCard, share: ShareCard,
+  ballincourt: BallInCourtCard, groups: GroupsCard, archetype: ArchetypeCard, share: ShareCard,
 };
 
 // Active cards: from DATA.cards if provided, else the full arc. Each card keeps
