@@ -42,8 +42,9 @@ done
 for link in .claude/skills/*; do
   [ -e "$link" ] || [ -L "$link" ] || continue
   name="$(basename "$link")"
-  if [ ! -d "skills/$name" ]; then
-    echo "  prune: .claude/skills/$name (no matching skills/$name/)"
+  # Only ever remove symlinks — never a real file someone deliberately placed here.
+  if [ -L "$link" ] && [ ! -d "skills/$name" ]; then
+    echo "  prune: .claude/skills/$name (dangling symlink, no matching skills/$name/)"
     rm -f "$link"
     removed=$((removed + 1))
   fi

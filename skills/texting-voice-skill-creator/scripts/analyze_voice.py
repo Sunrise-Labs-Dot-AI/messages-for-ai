@@ -38,6 +38,7 @@ Exit codes:
     0 — success (may include warnings for low sample size)
     2 — input malformed
     3 — sample too small (<30 substantive messages)
+    5 — privacy guard tripped (a full message body leaked into the output)
 """
 
 import argparse
@@ -47,7 +48,7 @@ import statistics
 import sys
 import unicodedata
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Common texting abbreviations — case-insensitive whole-word match.
 ABBREVIATIONS = [
@@ -55,10 +56,26 @@ ABBREVIATIONS = [
     "imo", "tbh", "fyi", "np", "rn", "ngl", "ily", "wyd", "smh",
 ]
 
-# Punctuation we care about at message end.
-END_CHARS_PERIOD = "."
-END_CHARS_EXCLAIM = "!"
-END_CHARS_QUESTION = "?"
+# Openers/closers get emitted VERBATIM into a committed, shareable file, so they
+# are restricted to this allowlist of generic greeting / acknowledgment / sign-off
+# words. A message's actual first/last word is surfaced only if it's in here —
+# otherwise it's dropped. This keeps proper nouns (names, places, employers) out
+# of the fingerprint, honoring the no-message-bodies invariant.
+SAFE_TOKENS = frozenset({
+    "hey", "hi", "hello", "yo", "hiya", "heya", "morning", "gm", "gn", "night",
+    "goodnight", "evening", "afternoon",
+    "ok", "okay", "k", "kk", "yeah", "yea", "yep", "yup", "yes", "sure", "cool",
+    "nice", "perfect", "awesome", "great", "sounds", "word", "bet", "deal", "done",
+    "gotcha", "right", "true", "fair", "facts",
+    "no", "nope", "nah",
+    "lol", "lmao", "lmfao", "haha", "hahaha", "hah", "omg", "oh", "ah", "ahh",
+    "hmm", "huh", "ugh", "aww", "aw", "wow", "yay", "ooh", "eh", "well", "so",
+    "anyway", "wait", "damn",
+    "thanks", "thank", "thx", "ty", "tysm", "please", "pls", "sorry", "welcome",
+    "np", "cheers", "bye", "later", "ttyl", "soon", "careful", "safe",
+    "love", "miss", "xo", "xoxo", "hugs", "mwah",
+    "happy", "congrats", "good", "glad", "excited",
+})
 
 # Burst definition default — consecutive outbound messages within this gap form one burst.
 DEFAULT_BURST_MINUTES = 2
@@ -117,14 +134,14 @@ def compute_length(texts):
     lengths = [len(t) for t in texts]
     return {
         "median_chars": int(statistics.median(lengths)),
-        "p25_chars": int(_pct(lengths, 25)),
-        "p75_chars": int(_pct(lengths, 75)),
+        "p25_chars": int(percentile(lengths, 25)),
+        "p75_chars": int(percentile(lengths, 75)),
         "pct_under_20_chars": pct(sum(1 for l in lengths if l < 20), len(lengths)),
     }
 
 
-def _pct(values, p):
-    """Percentile via linear interpolation."""
+def percentile(values, p):
+    """Percentile via linear interpolation. (Distinct from pct(), which is a ratio.)"""
     if not values:
         return 0
     s = sorted(values)
@@ -227,18 +244,20 @@ def compute_bursts(messages, burst_minutes):
     burst_sizes.append(current)
     return {
         "median_messages_per_burst": int(statistics.median(burst_sizes)),
-        "p75_messages_per_burst": int(_pct(burst_sizes, 75)),
+        "p75_messages_per_burst": int(percentile(burst_sizes, 75)),
         "burst_definition_minutes": burst_minutes,
     }
 
 
 def compute_openers(texts):
-    counter = Counter(w for w in (first_word(t) for t in texts) if w)
+    # Allowlist-only: surface a first word verbatim only if it's a recognized
+    # greeting/filler. Drops proper nouns (names/places) to protect privacy.
+    counter = Counter(w for w in (first_word(t) for t in texts) if w in SAFE_TOKENS)
     return {"top_3": [{"phrase": p, "count": c} for p, c in counter.most_common(3)]}
 
 
 def compute_closers(texts):
-    counter = Counter(w for w in (last_word(t) for t in texts) if w)
+    counter = Counter(w for w in (last_word(t) for t in texts) if w in SAFE_TOKENS)
     return {"top_3": [{"phrase": p, "count": c} for p, c in counter.most_common(3)]}
 
 
@@ -278,6 +297,11 @@ def main():
             parsed_ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
             continue
+        # Real exports mix tz-aware ("...Z") and naive timestamps. Comparing the
+        # two raises TypeError in min()/max()/sorted(). Normalize everything to
+        # naive-UTC so the rest of the pipeline never mixes the two.
+        if parsed_ts.tzinfo is not None:
+            parsed_ts = parsed_ts.astimezone(timezone.utc).replace(tzinfo=None)
         normalized.append({"text": text, "_ts": parsed_ts, "thread_id": m.get("thread_id")})
 
     if len(normalized) < MIN_SAMPLE:
@@ -316,6 +340,19 @@ def main():
         "closers": compute_closers(texts),
         "warnings": warnings,
     }
+
+    # Privacy guard (belt-and-suspenders for the no-message-bodies invariant):
+    # no full message body (any multi-word text) may appear verbatim in the
+    # output. Openers/closers/abbreviations are single allowlisted tokens, so a
+    # multi-word message body appearing here means a regression leaked content.
+    blob = json.dumps(fingerprint, ensure_ascii=False)
+    for t in texts:
+        if " " in t and t in blob:
+            print(json.dumps({
+                "error": "privacy guard tripped: a message body appears in the output",
+                "body_length": len(t),  # never print the body itself
+            }), file=sys.stderr)
+            sys.exit(5)
 
     print(json.dumps(fingerprint, indent=2, ensure_ascii=False))
 

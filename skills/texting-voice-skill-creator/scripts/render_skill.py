@@ -22,9 +22,24 @@ Exit codes:
 import argparse
 import json
 import os
+import re
 import sys
 
-PARTNER_HINTS = {"partner", "spouse", "wife", "husband", "girlfriend", "boyfriend"}
+# A slug becomes a directory name and is interpolated into paths. Restrict it to
+# a strict lowercase-hyphenated form so a crafted fingerprint can't traverse out
+# of --output-dir (e.g. "../../etc" or an absolute path).
+SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def sanitize_contact(name):
+    """The contact name is interpolated into SKILL.md (which Claude reads as
+    instructions). Strip newlines/control chars and cap length so it can't break
+    out of the YAML frontmatter or inject directives."""
+    if not isinstance(name, str):
+        name = str(name)
+    name = "".join(ch for ch in name if ch == " " or (ch.isprintable() and ch not in "\r\n"))
+    name = " ".join(name.split())  # collapse whitespace runs
+    return name[:80].strip() or "(unnamed)"
 
 
 def render_description(fp):
@@ -198,7 +213,46 @@ def main():
               file=sys.stderr)
         sys.exit(2)
 
-    skill_dir = os.path.join(args.output_dir, f"{fp['slug']}-text-voice")
+    # Validate the nested shape too — the top-level check alone lets a fingerprint
+    # with e.g. "length": {} through, which then KeyErrors during rendering.
+    nested_required = {
+        "length": ["median_chars", "p25_chars", "p75_chars", "pct_under_20_chars"],
+        "capitalization": ["pct_lowercase_start", "pct_all_lowercase"],
+        "punctuation": ["pct_ending_with_period", "pct_ending_with_nothing",
+                        "pct_ending_with_exclaim", "pct_ending_with_question"],
+        "emoji": ["pct_messages_with_emoji", "top_5"],
+        "bursts": ["median_messages_per_burst", "p75_messages_per_burst",
+                   "burst_definition_minutes"],
+        "openers": ["top_3"],
+        "closers": ["top_3"],
+    }
+    for key, subkeys in nested_required.items():
+        section = fp.get(key)
+        if not isinstance(section, dict) or any(s not in section for s in subkeys):
+            print(json.dumps({"error": f"fingerprint '{key}' is missing required fields",
+                              "expected": subkeys}), file=sys.stderr)
+            sys.exit(2)
+
+    # Validate the slug before it touches the filesystem.
+    slug = fp["slug"]
+    if not isinstance(slug, str) or not SLUG_RE.match(slug):
+        print(json.dumps({"error": "invalid slug — must be lowercase-hyphenated [a-z0-9-]",
+                          "slug": slug}), file=sys.stderr)
+        sys.exit(2)
+
+    # Sanitize the contact name (it lands in SKILL.md, read by Claude as instructions).
+    fp["contact"] = sanitize_contact(fp.get("contact"))
+
+    skill_dir = os.path.join(args.output_dir, f"{slug}-text-voice")
+    # Defense in depth: even with a validated slug, confirm the resolved path
+    # stays inside --output-dir before creating anything.
+    out_root = os.path.realpath(args.output_dir)
+    if os.path.realpath(skill_dir) != os.path.join(out_root, f"{slug}-text-voice") \
+            and not os.path.realpath(skill_dir).startswith(out_root + os.sep):
+        print(json.dumps({"error": "refusing to write outside --output-dir",
+                          "resolved": os.path.realpath(skill_dir)}), file=sys.stderr)
+        sys.exit(2)
+
     if os.path.exists(skill_dir):
         print(json.dumps({
             "error": "skill directory already exists",

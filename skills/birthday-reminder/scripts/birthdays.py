@@ -74,6 +74,13 @@ def main():
     ap.add_argument("--today", help="Override today (YYYY-MM-DD) — for testing.")
     args = ap.parse_args()
 
+    if args.window < 0:
+        print(
+            json.dumps({"error": "window must be >= 0", "window": args.window}),
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     today = (
         datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else date.today()
     )
@@ -101,10 +108,13 @@ def main():
     for i, entry in enumerate(entries):
         try:
             month, day, year = parse_birthday(entry["birthday"])
+            # next_occurrence is inside the try on purpose: an impossible-but-
+            # well-formed date like "06-31" raises ValueError here, and we want
+            # to skip just that entry with a warning — not crash the whole run.
+            next_dt = next_occurrence(today, month, day)
         except (KeyError, ValueError, TypeError) as e:
             print(f"  warn: skipping entry {i}: {e}", file=sys.stderr)
             continue
-        next_dt = next_occurrence(today, month, day)
         delta = (next_dt - today).days
         if delta > args.window:
             continue
