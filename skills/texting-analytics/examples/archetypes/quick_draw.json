@@ -1,0 +1,46 @@
+{
+  "latency": {
+    "total_reply_pairs": 800,
+    "pct_within_5min": 72,
+    "pct_within_30min": 92,
+    "pct_within_1hr": 97,
+    "pct_within_4hr": 99,
+    "mean_minutes": 8,
+    "median_minutes": 3,
+    "thread_count": 90,
+    "window_label": "past 12 months"
+  },
+  "ball_in_court": {
+    "total_threads_sampled": 100,
+    "threads_with_ball_in_court": 45,
+    "pct_ball_in_court": 45,
+    "live_conversations_estimate": 40,
+    "snapshot_label": "May 2026"
+  },
+  "group_contribution": {
+    "total_groups_analyzed": 10,
+    "total_messages_in_groups": 900,
+    "user_messages_in_groups": 162,
+    "user_contribution_pct": 18,
+    "user_reaction_rate_pct": 30,
+    "peer_reaction_rate_pct": 32,
+    "groups_where_user_silent": 1,
+    "groups_mostly_reactions": 5,
+    "per_thread": [
+      {
+        "thread_label": "the worst offender crew",
+        "total": 80,
+        "user_count": 3,
+        "user_pct": 0,
+        "user_reaction_pct": 0
+      },
+      {
+        "thread_label": "weekend plans",
+        "total": 60,
+        "user_count": 14,
+        "user_pct": 23,
+        "user_reaction_pct": 10
+      }
+    ]
+  }
+}

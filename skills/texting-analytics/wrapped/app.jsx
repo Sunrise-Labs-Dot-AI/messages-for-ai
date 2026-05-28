@@ -730,9 +730,9 @@ function App() {
   useEffect(() => {
     const compute = () => {
       const PHONE_H = 874, PHONE_W = 402;
-      const margin = 80;
-      const sH = (window.innerHeight - margin) / PHONE_H;
-      const sW = (window.innerWidth - margin) / PHONE_W;
+      // Reserve vertical room for the control bar that sits BELOW the frame.
+      const sH = (window.innerHeight - 150) / PHONE_H;
+      const sW = (window.innerWidth - 80) / PHONE_W;
       setScale(Math.min(1, sH, sW));
     };
     compute();
@@ -744,7 +744,7 @@ function App() {
     <div style={{
       position: 'fixed', inset: 0,
       background: '#1c1a1f',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20,
       overflow: 'hidden',
       fontFamily: '"Inter", system-ui, sans-serif',
     }}>
@@ -779,20 +779,25 @@ function App() {
         ← → · drag · tap edges
       </div>
 
-      {/* The phone */}
-      <div style={{ position: 'relative', zIndex: 1, transform: `scale(${scale})`, transformOrigin: 'center center' }}>
-        <IOSDevice width={402} height={874} dark={true}>
-          <div style={{ position: 'absolute', inset: 0 }}>
-            <Carousel treatment={treatment} idx={idx} go={go} captureRef={captureRef} />
-          </div>
-        </IOSDevice>
+      {/* The phone — a sized box (scaled dims) so the control bar flows BELOW
+          the frame instead of overlapping it. The iPhone is dedicated to the
+          creative; nothing interactive sits on it. */}
+      <div style={{ position: 'relative', zIndex: 1, width: 402 * scale, height: 874 * scale }}>
+        <div style={{ width: 402, height: 874, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+          <IOSDevice width={402} height={874} dark={true}>
+            <div style={{ position: 'absolute', inset: 0 }}>
+              <Carousel treatment={treatment} idx={idx} go={go} captureRef={captureRef} />
+            </div>
+          </IOSDevice>
+        </div>
       </div>
 
-      {/* Controls — OFF the creative, in the page chrome. Prev / Share / Next.
-          Share captures the CURRENT card and opens the native share sheet
-          (Safari → macOS share sheet via Web Share); otherwise saves a PNG. */}
+      {/* Controls — OUTSIDE the iPhone frame entirely, in the page chrome.
+          Prev / Share / Next. Share captures the CURRENT card and opens the
+          native share sheet (Safari → macOS share sheet via Web Share);
+          otherwise saves a PNG. */}
       <div style={{
-        position: 'absolute', bottom: 58, left: 0, right: 0, zIndex: 6,
+        zIndex: 6,
         display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12,
       }}>
         <ChromeBtn disabled={idx === 0} onClick={() => go(idx - 1)} aria="Previous card">‹</ChromeBtn>
