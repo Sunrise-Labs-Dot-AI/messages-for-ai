@@ -57,7 +57,16 @@ Using the `imessage-drafts` MCP:
 
 ### Phase 3: Compute the voice fingerprint
 
-Compute these dimensions and store as JSON:
+Write the filtered outbound messages to a temp JSON file (`[{ts, text, thread_id}, ...]`) and run `scripts/analyze_voice.py` rather than computing percentiles in your head:
+
+```bash
+python3 scripts/analyze_voice.py --input /tmp/outbound.json \
+    --contact "Allison" --slug allison > /tmp/fingerprint.json
+```
+
+The script exits with code 3 if the sample is under 30 — at that point stop and tell the user voice analysis needs more signal. With 30-100 messages, the fingerprint includes a `warnings` array and the rendered SKILL.md will surface the small-sample caveat.
+
+The fingerprint schema is:
 
 ```
 {
@@ -124,7 +133,15 @@ These are aggregates — never individual message text.
 
 ### Phase 4: Generate the SKILL.md
 
-Translate the fingerprint into a SKILL.md. The structure should mirror this template:
+Run `scripts/render_skill.py` — it consumes the fingerprint JSON from Phase 3 and writes `<slug>-text-voice/SKILL.md` + `fingerprint.json` to the output directory:
+
+```bash
+python3 scripts/render_skill.py --fingerprint /tmp/fingerprint.json --output-dir ./skills
+```
+
+The render is deterministic — same fingerprint in, same SKILL.md out. Re-runs are safe and diffable. The script refuses to overwrite an existing `<slug>-text-voice/` directory (exit code 4) — if the user wants to regenerate, they need to delete or version-suffix the old one.
+
+The generated SKILL.md follows this structure (the script handles all of it):
 
 ```markdown
 ---
@@ -180,10 +197,15 @@ After writing `SKILL.md` and `fingerprint.json` to the new directory, tell the u
 4. **Slug collisions.** If `skills/<slug>-text-voice/` already exists, stop and ask: overwrite, version, or pick a different slug? Don't silently clobber a previously-generated skill.
 5. **Respect anthropic-skills:james-text-voice as the base.** The generated skill is an overlay. Reference it explicitly in the description so the model knows to load both.
 
+## Layout
+
+- `SKILL.md` — this file.
+- `scripts/analyze_voice.py` — Phase 3 analyzer. Reads outbound-messages JSON, emits fingerprint JSON. Pure stdlib. Enforces the <30-sample refusal.
+- `scripts/render_skill.py` — Phase 4 generator. Reads fingerprint JSON, writes `<slug>-text-voice/SKILL.md` + `fingerprint.json`. Refuses to overwrite.
+- `examples/sample-fingerprint.json` — what a fingerprint looks like (Allison-shaped example, 36 messages, includes the small-sample warning).
+
 ## Future extensions
 
-- `scripts/analyze_voice.py` — factor Phase 3 into a Python helper so the model isn't computing percentiles in its head.
-- `scripts/render_skill.py` — factor Phase 4's template-fill into code so the SKILL.md is deterministic given the same fingerprint.
 - Diff mode: given an existing `<slug>-text-voice` skill and a fresh fingerprint, surface the deltas (drift report) instead of overwriting.
 - Multi-platform: when the contact has WhatsApp history too, pull from `whatsapp-drafts` MCP as well and produce a unified voice profile.
 - Group voice: a sibling skill `group-voice-skill-creator` that does the same analysis for a group thread, capturing the user's voice in that group context.
