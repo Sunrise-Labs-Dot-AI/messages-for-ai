@@ -44,10 +44,11 @@ const FULL_ARC = ['cover', 'volume', 'people', 'latency', 'ballincourt', 'groups
 // ── Hooks ───────────────────────────────────────────────────
 
 // Count-up animation, eased
-function useCountUp(target, durationMs = 1100, active = true, startDelay = 200) {
+function useCountUp(target, durationMs = 1100, active = true, startDelay = 200, instant = false) {
   const [val, setVal] = useState(active ? 0 : target);
   const wasActive = useRef(active);
   useEffect(() => {
+    if (instant) { setVal(target); return; }  // capture mode: jump to final value
     if (!active) {
       // Reset only if we were previously active
       if (wasActive.current) setVal(0);
@@ -74,7 +75,7 @@ function useCountUp(target, durationMs = 1100, active = true, startDelay = 200) 
       clearTimeout(delayTimer);
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [target, durationMs, active, startDelay]);
+  }, [target, durationMs, active, startDelay, instant]);
   return val;
 }
 
@@ -180,8 +181,8 @@ function CoverCard({ tone, treatment, active }) {
 }
 
 // Card 2: Hero number — total texts
-function VolumeCard({ tone, treatment, active }) {
-  const n = useCountUp(DATA.totalSent, 1400, active, 150);
+function VolumeCard({ tone, treatment, active, instant }) {
+  const n = useCountUp(DATA.totalSent, 1400, active, 150, instant);
   const isSerif = treatment.numberFont === 'serif';
   const italic = isSerif && treatment.italicNumbers;
   const perDay = DATA.totalSent ? Math.round(DATA.totalSent / 365) : null;
@@ -288,9 +289,12 @@ function PeopleCard({ tone, treatment, active }) {
 function LatencyCurve({ median, mean }) {
   const W = 320, H = 108, base = H - 2, top = 16;
   const med = Math.max(median, 0.1);
-  const xmax = Math.max(mean * 1.8, med * 1.6, 10);
+  // Crop the x-axis to the BODY of the distribution (a few medians wide) so the
+  // bell sits in frame. The long outlier tail is trimmed; if the outlier-dragged
+  // mean falls off-frame, we pin its marker at the right edge with an arrow.
+  const xmax = Math.max(med * 6, 8);
   const xOf = (v) => Math.min(v / xmax, 1) * W;
-  const sigma = 0.9;
+  const sigma = 0.85;
   const f = (v) => Math.exp(-Math.pow(Math.log(v + 1) - Math.log(med + 1), 2) / (2 * sigma * sigma));
   const N = 80;
   let peak = 0;
@@ -300,11 +304,14 @@ function LatencyCurve({ median, mean }) {
   let d = `M0 ${base}`;
   for (let i = 0; i <= N; i++) d += ` L${((i / N) * W).toFixed(1)} ${yOf(ys[i]).toFixed(1)}`;
   d += ` L${W} ${base} Z`;
+  const meanOff = mean > xmax;
+  const xMean = meanOff ? W - 1.5 : xOf(mean);
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block', overflow: 'visible' }}>
       <path d={d} fill="currentColor" fillOpacity="0.16" stroke="currentColor" strokeOpacity="0.5" strokeWidth="1.5" />
       <line x1={xOf(median)} y1={top - 8} x2={xOf(median)} y2={base} stroke="currentColor" strokeWidth="2.5" />
-      <line x1={xOf(mean)} y1={top - 8} x2={xOf(mean)} y2={base} stroke="currentColor" strokeOpacity="0.65" strokeWidth="1.5" strokeDasharray="3 3" />
+      <line x1={xMean} y1={top - 8} x2={xMean} y2={base} stroke="currentColor" strokeOpacity="0.65" strokeWidth="1.5" strokeDasharray="3 3" />
+      {meanOff && <path d={`M${W - 7} ${top - 4} L${W - 1} ${top} L${W - 7} ${top + 4} Z`} fill="currentColor" fillOpacity="0.65" />}
     </svg>
   );
 }
@@ -328,7 +335,7 @@ function LatencyCard({ tone, treatment, active }) {
           <LatencyCurve median={med} mean={mean} />
           <div style={{ display: 'flex', gap: 20, marginTop: 10, fontFamily: treatment.mono, fontSize: 11, letterSpacing: '0.04em', color: tone.soft }}>
             <span><b style={{ color: tone.ink }}>│</b> median {fmt(med, 1)} min</span>
-            <span>┊ mean {fmt(mean, 1)} min</span>
+            <span>┊ mean {fmt(mean, 1)} min{mean > med * 6 ? ' →' : ''}</span>
           </div>
         </div>
 
@@ -348,8 +355,8 @@ function LatencyCard({ tone, treatment, active }) {
 }
 
 // Card 5: Ball in your court — its own frame. A gauge with a clear midpoint line.
-function BallInCourtCard({ tone, treatment, active }) {
-  const pct = useCountUp(DATA.ballInCourt, 1200, active, 200);
+function BallInCourtCard({ tone, treatment, active, instant }) {
+  const pct = useCountUp(DATA.ballInCourt, 1200, active, 200, instant);
   const isSerif = treatment.numberFont === 'serif';
   const italic = isSerif && treatment.italicNumbers;
   const heavy = DATA.ballInCourt >= 50;
@@ -427,8 +434,8 @@ function Stat({ treatment, tone, value, label }) {
 }
 
 // Card 5: Group chat reveal
-function GroupsCard({ tone, treatment, active }) {
-  const pct = useCountUp(DATA.groupContribPct, 1100, active, 180);
+function GroupsCard({ tone, treatment, active, instant }) {
+  const pct = useCountUp(DATA.groupContribPct, 1100, active, 180, instant);
   const isSerif = treatment.numberFont === 'serif';
   const italic = isSerif && treatment.italicNumbers;
   return (
@@ -595,9 +602,9 @@ function RecapTile({ treatment, tone, stat, label }) {
 
 // Card 6: Emoji — aggregate emoji usage (from the emoji_stats pass). Omitted
 // unless analysis.json carries an `emoji` block.
-function EmojiCard({ tone, treatment, active }) {
+function EmojiCard({ tone, treatment, active, instant }) {
   const e = DATA.emoji || { pct_messages_with_emoji: 0, top: [] };
-  const pct = useCountUp(e.pct_messages_with_emoji, 1100, active, 180);
+  const pct = useCountUp(e.pct_messages_with_emoji, 1100, active, 180, instant);
   const top = (e.top || []).slice(0, 5);
   const isSerif = treatment.numberFont === 'serif';
   const italic = isSerif && treatment.italicNumbers;
@@ -678,7 +685,7 @@ const CARDS = CARD_KEYS.map((k) => ({ Comp: CARDS_BY_KEY[k], paletteIdx: PALETTE
 // Controlled: idx + go come from App, so navigation controls can live in the
 // page chrome (off the creative). captureRef points at the active card so App's
 // Share can snapshot just the card art.
-function Carousel({ treatment, idx, go, captureRef }) {
+function Carousel({ treatment, idx, go, captureRef, instant }) {
   const [drag, setDrag] = useState(null); // {startX, dx}
   const [w, setW] = useState(402);
   const ref = useRef(null);
@@ -763,6 +770,7 @@ function Carousel({ treatment, idx, go, captureRef }) {
               tone={treatment.cards[paletteIdx]}
               treatment={treatment}
               active={isActive}
+              instant={instant}
               onTap={onCardTap}
             />
           </div>
@@ -829,6 +837,56 @@ function App() {
   const [shareState, setShareState] = useState('idle');
   const captureRef = useRef(null);
   const go = useCallback((n) => setIdx(() => Math.max(0, Math.min(CARDS.length - 1, n))), []);
+
+  // Share ALL cards as one composite image. Walks every card (so each renders
+  // in its active, final state — `capturing` makes count-ups jump to final),
+  // snapshots each, tiles them into a grid, then shares/saves the one image.
+  const [capturing, setCapturing] = useState(false);
+  const [shareAllState, setShareAllState] = useState('');
+  const handleShareAll = useCallback(async () => {
+    if (!window.html2canvas || capturing) return;
+    const startIdx = idx;
+    setCapturing(true);
+    try {
+      const shots = [];
+      for (let i = 0; i < CARDS.length; i++) {
+        setIdx(i);
+        setShareAllState(`${i + 1}/${CARDS.length}`);
+        await new Promise((r) => setTimeout(r, 800));  // let the reveal settle
+        const el = captureRef.current;
+        if (el) shots.push(await window.html2canvas(el, { scale: 2, backgroundColor: null, useCORS: true, logging: false }));
+      }
+      if (!shots.length) return;
+      const cols = shots.length <= 4 ? 2 : 3;
+      const rows = Math.ceil(shots.length / cols);
+      const scale = 360 / shots[0].width;
+      const sw = Math.round(shots[0].width * scale), sh = Math.round(shots[0].height * scale);
+      const gap = 18, pad = 28;
+      const cvs = document.createElement('canvas');
+      cvs.width = pad * 2 + cols * sw + (cols - 1) * gap;
+      cvs.height = pad * 2 + rows * sh + (rows - 1) * gap;
+      const ctx = cvs.getContext('2d');
+      ctx.fillStyle = '#0a0a0c'; ctx.fillRect(0, 0, cvs.width, cvs.height);
+      shots.forEach((c, i) => ctx.drawImage(c, pad + (i % cols) * (sw + gap), pad + Math.floor(i / cols) * (sh + gap), sw, sh));
+      const blob = await new Promise((res) => cvs.toBlob(res, 'image/png'));
+      const file = new File([blob], `texting-wrapped-${DATA.year}-all.png`, { type: 'image/png' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'My Texting Wrapped', text: 'My full Texting Wrapped · messagesfor.ai' });
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      }
+      setShareAllState('done');
+    } catch (e) {
+      setShareAllState('');
+    } finally {
+      setCapturing(false);
+      setIdx(startIdx);
+      setTimeout(() => setShareAllState(''), 2500);
+    }
+  }, [idx, capturing]);
 
   // Capture the CURRENT card → native share sheet (Safari bridges Web Share to
   // the macOS share sheet); otherwise save a PNG. The card is the only thing
@@ -924,7 +982,7 @@ function App() {
         <div style={{ width: 402, height: 874, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
           <IOSDevice width={402} height={874} dark={true}>
             <div style={{ position: 'absolute', inset: 0 }}>
-              <Carousel treatment={treatment} idx={idx} go={go} captureRef={captureRef} />
+              <Carousel treatment={treatment} idx={idx} go={go} captureRef={captureRef} instant={capturing} />
             </div>
           </IOSDevice>
         </div>
@@ -938,16 +996,16 @@ function App() {
         zIndex: 6,
         display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12,
       }}>
-        <ChromeBtn disabled={idx === 0} onClick={() => go(idx - 1)} aria="Previous card">‹</ChromeBtn>
+        <ChromeBtn disabled={idx === 0 || capturing} onClick={() => go(idx - 1)} aria="Previous card">‹</ChromeBtn>
         <button
           onClick={handleShare}
-          disabled={shareState === 'working'}
+          disabled={shareState === 'working' || capturing}
           style={{
             height: 44, padding: '0 22px', borderRadius: 9999, border: 'none',
             background: '#fff', color: '#111',
             fontFamily: 'ui-monospace, "JetBrains Mono", monospace',
             fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase',
-            cursor: shareState === 'working' ? 'default' : 'pointer',
+            cursor: (shareState === 'working' || capturing) ? 'default' : 'pointer',
             boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
           }}>
           {shareState === 'working' ? 'Rendering…'
@@ -955,8 +1013,28 @@ function App() {
             : shareState === 'saved' ? '✓ Saved PNG'
             : 'Share this card'}
         </button>
-        <ChromeBtn disabled={idx === CARDS.length - 1} onClick={() => go(idx + 1)} aria="Next card">›</ChromeBtn>
+        <ChromeBtn disabled={idx === CARDS.length - 1 || capturing} onClick={() => go(idx + 1)} aria="Next card">›</ChromeBtn>
       </div>
+
+      {/* On the final card: share the WHOLE set as one composite image. Still in
+          the page chrome, off the creative. */}
+      {idx === CARDS.length - 1 && (
+        <button
+          onClick={handleShareAll}
+          disabled={capturing}
+          style={{
+            height: 40, padding: '0 20px', borderRadius: 9999,
+            border: '1px solid rgba(255,255,255,0.25)', background: 'rgba(255,255,255,0.08)',
+            color: '#fff', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
+            fontFamily: 'ui-monospace, "JetBrains Mono", monospace',
+            fontSize: 11.5, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase',
+            cursor: capturing ? 'default' : 'pointer',
+          }}>
+          {shareAllState === 'done' ? '✓ Shared all cards'
+            : shareAllState ? `Rendering ${shareAllState}…`
+            : '⧉ Share all cards'}
+        </button>
+      )}
 
       {/* Tweaks panel — present only in the interactive dev prototype (index.html).
           The shipped wrapped.html generated by build_wrapped.py omits it. */}
