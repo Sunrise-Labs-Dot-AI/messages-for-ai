@@ -67,9 +67,19 @@ CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
   die "You're on '$CURRENT_BRANCH'. Releases run from '$RELEASE_BRANCH'. Merge your PRs, switch to $RELEASE_BRANCH, then re-run. (Override: RELEASE_BRANCH=$CURRENT_BRANCH)"
 ok "on $RELEASE_BRANCH"
 
-[ -z "$(git status --porcelain)" ] || \
-  die "Working tree has uncommitted changes. Commit or stash them first — the release commit must be clean."
-ok "working tree clean"
+# Gate on TRACKED changes only — the release commit is built from tracked
+# state, so staged/modified tracked files are the real hazard. Untracked
+# files (leftover artifacts, a stray dir from another branch) are surfaced
+# as a warning below but don't block.
+[ -z "$(git status --porcelain --untracked-files=no)" ] || \
+  die "You have uncommitted changes to tracked files. Commit or stash them first — the release commit must be clean."
+ok "no uncommitted tracked changes"
+
+UNTRACKED="$(git status --porcelain --untracked-files=all | grep '^??' || true)"
+if [ -n "$UNTRACKED" ]; then
+  printf '  \033[33m⚠ untracked files present (not blocking, but worth a look):\033[0m\n'
+  echo "$UNTRACKED" | sed 's/^?? /      /'
+fi
 
 git fetch origin --quiet || true
 if [ -n "$(git rev-list "HEAD..origin/$RELEASE_BRANCH" 2>/dev/null)" ]; then
