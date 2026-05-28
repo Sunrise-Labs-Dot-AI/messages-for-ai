@@ -56,10 +56,15 @@ Three phases. Don't skip any.
 
 ### Phase 1: Resolve upcoming birthdays
 
-1. Read `~/.messages-mcp/birthdays.json`. If the file doesn't exist, stop and walk the user through creating it (see "First-time setup" below).
-2. Compute "days until next occurrence" for each entry against today's date. Default window: 14 days. Honor an explicit window from the user ("next 30 days", "this month").
-3. Sort by days-out ascending. Filter out anything outside the window.
-4. If the list is empty, say so plainly — don't pad. "No birthdays in the next 14 days."
+Run `scripts/birthdays.py` rather than computing dates yourself. The script handles leap years, year-already-passed wrap-around, and missing optional fields.
+
+```bash
+python3 scripts/birthdays.py --input ~/.messages-mcp/birthdays.json --window 14
+```
+
+Output is JSON: `{ today, window_days, count, upcoming: [...] }`. Each `upcoming` entry has `name`, `contact_handle`, `next_occurrence`, `days_until`, `weekday`, `age_turning` (null if birth year not provided), `relationship`, `notes`, `last_year_skipped`.
+
+Honor an explicit window from the user ("next 30 days", "this month" → roughly 31). If the input file doesn't exist, the script exits with code 2 and an error JSON on stderr — at that point stop and walk the user through "First-time setup" below. If `count` is 0, say so plainly: "No birthdays in the next N days." Don't pad.
 
 ### Phase 2: Enrich with context (optional)
 
@@ -93,9 +98,9 @@ Then call `stage_draft` with the rendered text and the contact's handle. The men
 
 ## First-time setup
 
-If `~/.messages-mcp/birthdays.json` doesn't exist, write a starter version with three example entries and tell the user:
+If `~/.messages-mcp/birthdays.json` doesn't exist, copy `skills/birthday-reminder/examples/birthdays.example.json` to that path and tell the user:
 
-> Birthday list lives at `~/.messages-mcp/birthdays.json`. I've created a starter with example entries — edit it with your real people (10–20 closest is a sensible start). Then run the briefing again.
+> Birthday list lives at `~/.messages-mcp/birthdays.json`. I've seeded it from the example file — edit it with your real people (10–20 closest is a sensible start). Then run the briefing again.
 
 Don't try to scrape Contacts or guess birthdays from message history. Be honest that this is currently manual.
 
@@ -108,11 +113,16 @@ Don't try to scrape Contacts or guess birthdays from message history. Be honest 
 5. **Handles must match.** When staging a draft, the `to_handle` must match a handle from `list_threads` — otherwise the menubar can't route the message. Resolve via `list_threads` with `contact_filter` before staging.
 6. **Privacy**: this skill reads from a local JSON file the user controls. Don't ever write the birthday list to anywhere outside `~/.messages-mcp/`. Don't paste names + birthdays into a third-party service.
 
+## Layout
+
+- `SKILL.md` — this file.
+- `scripts/birthdays.py` — date resolver. Pure stdlib. Reads the JSON, returns upcoming.
+- `examples/birthdays.example.json` — schema example with 4 entries (partner, friend, family, leap-day edge case). Use as the seed when the user has no file yet.
+
 ## Future extensions
 
 Not in v1, but reasonable next steps:
 
-- `scripts/birthdays.py` — a thin Python helper that takes today's date + the JSON and returns a structured "upcoming" list (so the model isn't doing date math).
 - `listBirthdays` daemon RPC method that pulls from `CNContactStore` so the JSON isn't required.
 - Weekly digest mode: scheduled task that runs every Monday and texts the user a "this week's birthdays" summary via iMessage to themselves.
 - "Did I miss anyone?" mode: surface birthdays from the last 7 days where no outbound message went to the contact on the day.
