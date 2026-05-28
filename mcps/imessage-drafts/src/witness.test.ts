@@ -6,6 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   _setHomeForTesting,
   registerWithWitness,
+  setChatDbAccessProbe,
   writeLastInvocation,
   type WitnessRecord,
 } from "./witness.ts";
@@ -14,6 +15,7 @@ let tmpDir: string | null = null;
 
 afterEach(() => {
   _setHomeForTesting(null);
+  setChatDbAccessProbe(null);
   if (tmpDir !== null) {
     rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
@@ -109,6 +111,36 @@ describe("writeLastInvocation (iMessage)", () => {
     // The rename swaps the inode; an in-place writeFileSync would preserve it.
     // Asserting the change confirms the DispatchSource-friendly write path.
     expect(inoAfter).not.toBe(inoBefore);
+  });
+
+  test("omits chatdb_access when no probe is wired", () => {
+    const dir = setupTmpHome();
+    writeLastInvocation("list_threads");
+    const record = JSON.parse(
+      readFileSync(join(dir, "last_invocation_imessage.json"), "utf8"),
+    ) as WitnessRecord;
+    expect(record.chatdb_access).toBeUndefined();
+  });
+
+  test("records chatdb_access from the wired probe (the issue #17 client-FDA signal)", () => {
+    const dir = setupTmpHome();
+    setChatDbAccessProbe(() => "permission_denied");
+    writeLastInvocation("health_check");
+    const record = JSON.parse(
+      readFileSync(join(dir, "last_invocation_imessage.json"), "utf8"),
+    ) as WitnessRecord;
+    expect(record.chatdb_access).toBe("permission_denied");
+  });
+
+  test("a throwing probe never blocks the witness write", () => {
+    const dir = setupTmpHome();
+    setChatDbAccessProbe(() => { throw new Error("probe boom"); });
+    expect(() => writeLastInvocation("list_threads")).not.toThrow();
+    const record = JSON.parse(
+      readFileSync(join(dir, "last_invocation_imessage.json"), "utf8"),
+    ) as WitnessRecord;
+    expect(record.tool).toBe("list_threads");
+    expect(record.chatdb_access).toBeUndefined();
   });
 });
 

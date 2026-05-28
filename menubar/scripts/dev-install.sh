@@ -116,6 +116,16 @@ else
   echo "⚠  no app icon at $ICON_SRC — bundle will use the generic AppKit icon" >&2
 fi
 
+# Build stamp so the Settings footer can identify exactly which dev build
+# is installed. Git runs fine from this subdir (it walks up to the repo
+# root). "-dirty" flags an install built from an uncommitted working tree.
+GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if ! git diff --quiet HEAD 2>/dev/null; then
+  GIT_SHA="${GIT_SHA}-dirty"
+fi
+BUILD_TIME="$(date -u '+%Y-%m-%d %H:%M UTC')"
+echo "› build stamp: ${GIT_SHA} (${BUILD_TIME})"
+
 cat > "${APP}/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -132,9 +142,11 @@ cat > "${APP}/Contents/Info.plist" <<EOF
   <key>CFBundleIconFile</key>
   <string>MessagesForAI</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>0.3.3-dev</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>${GIT_SHA}</string>
+  <key>MFABuildTime</key>
+  <string>${BUILD_TIME}</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>

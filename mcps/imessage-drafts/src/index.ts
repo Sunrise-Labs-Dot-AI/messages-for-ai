@@ -8,6 +8,8 @@ import { registerDraftTools } from "./tools/drafts.ts";
 import { registerTimeTool } from "./tools/time.ts";
 import { registerHealthTools } from "./tools/health.ts";
 import { migrateLegacyDir } from "./storage/migrate.ts";
+import { setChatDbAccessProbe } from "./witness.ts";
+import { callDaemon } from "./daemon/rpc-client.ts";
 
 async function main() {
   // One-shot migration from the v0.1.x on-disk root (`~/.imessage-mcp/`)
@@ -16,8 +18,27 @@ async function main() {
   // subsystem touches the new directory.
   migrateLegacyDir();
 
+  // The witness records chat.db access for the menubar's #17 detection.
+  // Post-refactor the MCP no longer reads chat.db itself — the daemon does —
+  // so we report the DAEMON's access. callDaemon is async but the witness
+  // probe is synchronous, so cache the daemon's status and refresh on a timer.
+  let cachedChatDbStatus: "ok" | "permission_denied" | "not_found" | "error" | undefined;
+  const refreshChatDbStatus = async () => {
+    try {
+      const d = await callDaemon<{ open_status: "ok" | "permission_denied" | "not_found" | "error" }>(
+        "chatDbDiagnostic",
+      );
+      cachedChatDbStatus = d.open_status;
+    } catch {
+      cachedChatDbStatus = "error"; // daemon unreachable
+    }
+  };
+  setChatDbAccessProbe(() => cachedChatDbStatus);
+  void refreshChatDbStatus();
+  setInterval(() => void refreshChatDbStatus(), 30_000).unref?.();
+
   const server = new McpServer(
-    { name: "imessage-drafts-mcp", version: "0.3.2" },
+    { name: "imessage-drafts-mcp", version: "0.3.3" },
     {
       instructions:
         "Read-only iMessage access (chat.db) plus a local draft-staging API for the macOS Messages app. " +

@@ -77,6 +77,14 @@ struct Draft: Codable, Identifiable, Equatable {
   /// nudge against prompt-injection-driven drafts induced by an
   /// unknown sender. Absent / false on iMessage drafts.
   let induced_by_unknown_contact: Bool?
+  /// WhatsApp reply-draft: the message id (stanzaId) this draft quotes,
+  /// or nil for an ordinary message / iMessage drafts. The daemon
+  /// reconstructs the quote from this at send time; the menubar only
+  /// displays it.
+  let quoted_message_id: String?
+  /// Stage-time snapshot of the quoted message, for the "Replying to …"
+  /// callout. nil when the draft isn't a reply. Absent on iMessage drafts.
+  let quoted_preview: QuotedPreview?
 
   /// Effective transport. Returns the stored `platform` if present, or
   /// `.imessage` as the back-compat default for legacy drafts that
@@ -212,6 +220,24 @@ extension Draft {
   // Stable per-row identity for ForEach over context_messages.
   func contextRowIdentity(at index: Int, message: ContextMessage) -> String {
     "\(id)#\(index)#\(message.sent_at ?? "")"
+  }
+}
+
+// Snapshot of the message a WhatsApp reply-draft quotes, embedded in the
+// draft JSON at stage time so the menubar can render a "Replying to …"
+// callout without a daemon lookup. Mirrors `QuotedPreview` on the
+// TypeScript side. Bodies are written raw to the draft file (the MCP's
+// <untrusted_content> wrapping is applied only at the LLM-facing tool
+// boundary, never on disk), so they're display-ready here.
+struct QuotedPreview: Codable, Hashable {
+  let message_id: String?
+  let body: String?
+  let from_me: Bool
+  let sender_name: String?
+
+  var displayName: String {
+    if from_me { return "You" }
+    return sender_name ?? "Unknown"
   }
 }
 

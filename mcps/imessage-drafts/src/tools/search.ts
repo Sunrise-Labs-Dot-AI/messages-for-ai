@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerWithWitness } from "../witness.ts";
 import { SearchShape, requireSinceOrContactFilter } from "../schema.ts";
-import { searchMessages } from "../chatdb/queries.ts";
+import { callDaemon } from "../daemon/rpc-client.ts";
 import { errorResult, jsonResult } from "./_result.ts";
 import { wrapBodyInPlace, wrapUntrusted } from "./_untrusted.ts";
 import type { ThreadMessage } from "../chatdb/queries.ts";
@@ -20,7 +20,7 @@ export function registerSearchTool(server: McpServer): void {
       const err = requireSinceOrContactFilter(args);
       if (err) return errorResult(err);
       try {
-        const rows = searchMessages({
+        const rows = await callDaemon<ThreadMessage[]>("searchMessages", {
           query: args.query,
           limit: args.limit,
           sinceIso: args.since,
@@ -30,6 +30,18 @@ export function registerSearchTool(server: McpServer): void {
         const wrapped: ThreadMessage[] = rows.map((m) => ({
           ...wrapBodyInPlace(m),
           sender: { handle: m.sender.handle, name: wrapUntrusted(m.sender.name) },
+          // reply_to carries a peer-typed body + sidecar-sourced sender name —
+          // wrap both, same as the top-level fields.
+          reply_to: m.reply_to
+            ? {
+                ...m.reply_to,
+                body: wrapUntrusted(m.reply_to.body),
+                sender: {
+                  handle: m.reply_to.sender.handle,
+                  name: wrapUntrusted(m.reply_to.sender.name),
+                },
+              }
+            : null,
         }));
         return jsonResult({ query: args.query, hits: wrapped });
       } catch (e) {

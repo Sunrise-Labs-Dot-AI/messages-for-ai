@@ -20,14 +20,18 @@ function buildShortNSString(text: string): Buffer {
   ]);
 }
 
+// 0x81 marks a uint16 LITTLE-endian length (the real typedstream encoding) for
+// any body 0x80..0xFFFF bytes. The earlier helper wrongly used a single byte
+// after 0x81, which matched the buggy decoder rather than real data.
 function buildLongNSString(text: string): Buffer {
   const utf8 = Buffer.from(text, "utf8");
-  if (utf8.length < 0x80 || utf8.length > 0xff) throw new Error("test helper expects 128..255 bytes");
-  const lenByte = Buffer.from([0x81, utf8.length]);
+  if (utf8.length < 0x80 || utf8.length > 0xffff) throw new Error("test helper expects 128..65535 bytes");
+  const lenBuf = Buffer.alloc(2);
+  lenBuf.writeUInt16LE(utf8.length, 0);
   return Buffer.concat([
     Buffer.from("NSString", "utf8"),
-    Buffer.from([0x01, 0x2b]),
-    lenByte,
+    Buffer.from([0x01, 0x2b, 0x81]),
+    lenBuf,
     utf8,
   ]);
 }
@@ -47,10 +51,38 @@ describe("decodeAttributedBody", () => {
     expect(decodeAttributedBody(blob)).toBe("hello world");
   });
 
-  test("decodes 0x81-prefixed length (one byte 128-255)", () => {
+  test("decodes 0x81 uint16-LE length (128-255 bytes)", () => {
     const text = "x".repeat(200);
-    const blob = buildLongNSString(text);
+    expect(decodeAttributedBody(buildLongNSString(text))).toBe(text);
+  });
+
+  test("decodes a >=256-byte body fully, with no leading control-char artifact", () => {
+    // Regression: a 500-char body's real length is `0x81 F4 01` (uint16 LE).
+    // The old decoder read len=0xF4=244 and started the string at the 0x01
+    // byte → "\x01" + first 243 chars (leading control char + truncated).
+    const text = "A" + "b".repeat(498) + "Z"; // 500 chars, distinctive ends
+    const decoded = decodeAttributedBody(buildLongNSString(text));
+    expect(decoded).toBe(text);
+    expect(decoded!.length).toBe(500);
+    expect(decoded!.charCodeAt(0)).toBeGreaterThanOrEqual(0x20); // not a control char
+  });
+
+  test("decodes 0x82 uint32-LE length (>= 64 KB body)", () => {
+    const text = "y".repeat(70_000);
+    const utf8 = Buffer.from(text, "utf8");
+    const lenBuf = Buffer.alloc(4);
+    lenBuf.writeUInt32LE(utf8.length, 0);
+    const blob = Buffer.concat([
+      Buffer.from("NSString", "utf8"),
+      Buffer.from([0x01, 0x2b, 0x82]),
+      lenBuf,
+      utf8,
+    ]);
     expect(decodeAttributedBody(blob)).toBe(text);
+  });
+
+  test("strips a leading control-char artifact if one slips through", () => {
+    expect(decodeAttributedBody(buildShortNSString("hello"))).toBe("hello");
   });
 
   test("decodes UTF-8 multi-byte sequences correctly", () => {

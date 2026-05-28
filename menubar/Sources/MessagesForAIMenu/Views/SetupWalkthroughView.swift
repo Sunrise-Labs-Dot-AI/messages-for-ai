@@ -22,6 +22,7 @@ import SwiftUI
 struct SetupWalkthroughView: View {
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
+    @EnvironmentObject var imessageDaemon: IMessageDaemonController
     @StateObject private var invocations = LastInvocationStore()
     @Environment(\.dismissWindow) private var dismissWindow
 
@@ -44,6 +45,39 @@ struct SetupWalkthroughView: View {
     @State private var imessageVerified: Bool? = nil
     @State private var whatsappVerified: Bool? = nil
 
+    // Full Disk Access state for the iMessage transport. Recomputed in
+    // refreshProgrammaticChecks (on appear, every 5s, and on focus return).
+    // Seeded to .unknown (not .ok) so the gate fails closed until the first
+    // probe runs — a permission gate must never default to "granted".
+    @State private var chatDbAccess: ChatDbAccessState = .unknown
+
+    // chat.db access as reported by the Claude-launched MCP via the witness
+    // record's chatdb_access, set in evaluateInvocation. Post-#17 refactor the
+    // MCP doesn't read chat.db itself — it proxies through the menu-bar-launched
+    // daemon — so this field carries the DAEMON's open_status as observed end to
+    // end across the MCP→daemon socket. That makes it the stronger signal:
+    // `chatDbAccess` above is only the menu-bar app's own probe (proves the app
+    // can read), whereas this proves the actual read path Claude uses works.
+    // Prefer it when present; it stays nil until the first successful call
+    // lands a witness (a down daemon writes none — see imessageDaemonRow).
+    @State private var clientChatDbAccess: ChatDbAccessState? = nil
+
+    // Stepper position. The walkthrough is presented one step at a time
+    // (install checks → test each enabled transport) rather than as one
+    // long scroll, so a fresh user has a single clear action per screen.
+    @State private var currentStepIndex: Int = 0
+
+    // Memoized codesign-identity lookups, keyed by binary path. The installed
+    // inner Mach-Os are immutable for the app's lifetime, but
+    // codesignIdentifier(of:) runs a full SecStaticCodeCheckValidity
+    // (all-architectures) costing tens-to-hundreds of ms per binary.
+    // refreshProgrammaticChecks() runs on appear, on a 5s tick, and on every
+    // daemon-status change, so without this cache we'd re-validate every
+    // binary on the main thread repeatedly. Caching is safe: the freshness
+    // gate in evaluateInvocation (record.ts > walkthroughStartedAt) — not
+    // codesign recency — is the temporal security control.
+    @State private var codesignCache: [String: String?] = [:]
+
     @State private var claudeDesktopBundleURL: URL? = nil
     /// Result of the most recent "Add to Claude Desktop config" click.
     /// Drives the inline outcome view; nil means the button hasn't been
@@ -58,36 +92,43 @@ struct SetupWalkthroughView: View {
     private static let timeoutSeconds: TimeInterval = 60
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                header
+        VStack(alignment: .leading, spacing: 0) {
+            stepHeader
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+                .padding(.bottom, 16)
 
-                programmaticPane
+            Divider()
 
-                if settings.imessageEnabled {
-                    testNowPane(transport: .imessage)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    stepContent
                 }
-                if settings.whatsappEnabled {
-                    testNowPane(transport: .whatsapp)
-                }
-
-                completionFooter
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(24)
+
+            Divider()
+
+            navigationFooter
+                .padding(.horizontal, 24)
+                .padding(.vertical, 16)
         }
-        .frame(minWidth: 520, idealWidth: 560)
+        .frame(minWidth: 520, idealWidth: 560, minHeight: 460)
         .onAppear {
             refreshProgrammaticChecks()
             claudeDesktopBundleURL = NSWorkspace.shared.urlForApplication(
                 withBundleIdentifier: "com.anthropic.claudefordesktop"
             )
-            // Kick the WhatsApp daemon if the transport is enabled.
-            // start() is idempotent (the controller short-circuits if
-            // already running). Without this call, a user who opens the
-            // walkthrough before clicking the menubar icon (e.g. via the
-            // Dock launch path) sees red rows because DraftListView's
-            // .task — which is the OTHER place the daemon gets kicked —
-            // hasn't fired yet.
+            // Kick both daemons if their transport is enabled. start() is
+            // idempotent (the controllers short-circuit if already running).
+            // Without these, a user who opens the walkthrough before clicking
+            // the menubar icon (e.g. via the Dock launch path) sees red rows
+            // because the OTHER kick points — DraftListView's .task (WhatsApp)
+            // and the menu-bar label's onAppear (iMessage) — haven't fired yet.
+            if settings.imessageEnabled {
+                imessageDaemon.start()
+            }
             if settings.whatsappEnabled {
                 whatsappDaemon.start()
             }
@@ -100,6 +141,13 @@ struct SetupWalkthroughView: View {
         }
         .onChange(of: whatsappDaemon.baileysState) { _, _ in
             refreshProgrammaticChecks()
+        }
+        // If a transport is toggled in Settings while the walkthrough is open,
+        // `steps` grows/shrinks. clampedIndex protects reads, but re-anchor the
+        // stored index too so the user can't land on a stale "All set" for a
+        // step that no longer exists.
+        .onChange(of: steps) { _, newSteps in
+            currentStepIndex = min(max(currentStepIndex, 0), newSteps.count - 1)
         }
         .onReceive(tick) { _ in
             elapsed = Date().timeIntervalSince(walkthroughStartedAt)
@@ -123,27 +171,111 @@ struct SetupWalkthroughView: View {
         .onChange(of: invocations.whatsapp) { _, new in
             evaluateInvocation(.whatsapp, record: new)
         }
+        // Re-probe the moment the app regains focus — e.g. the user
+        // switched to System Settings to grant Full Disk Access and came
+        // back. Flips the FDA row green without a manual re-check button.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshProgrammaticChecks()
+        }
     }
+
+    // MARK: - Stepper model
+
+    /// Pure, testable model of the step sequence + gating predicates, rebuilt
+    /// each render from live settings + @State. The logic lives in
+    /// `WalkthroughStepper` (bottom of file) so the FDA gate and index math
+    /// have regression coverage independent of SwiftUI.
+    private var stepper: WalkthroughStepper {
+        WalkthroughStepper(
+            imessageEnabled: settings.imessageEnabled,
+            whatsappEnabled: settings.whatsappEnabled,
+            currentStepIndex: currentStepIndex,
+            chatDbAccess: chatDbAccess,
+            clientChatDbAccess: clientChatDbAccess,
+            imessageDaemonDown: imessageDaemonDown,
+            imessageVerified: imessageVerified,
+            whatsappVerified: whatsappVerified
+        )
+    }
+
+    private var steps: [WalkthroughStepper.Step] { stepper.steps }
+    private var clampedIndex: Int { stepper.clampedIndex }
+    private var currentStep: WalkthroughStepper.Step { stepper.currentStep }
+    private var isLastStep: Bool { stepper.isLastStep }
 
     // MARK: - Subviews
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Let's make sure Claude can see this app")
-                .font(.title2.weight(.semibold))
-            Text("Two quick steps. The first runs automatically. The second sends a test prompt to Claude and watches for the response.")
+    private var stepHeader: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                // Iterate the steps array (not a 0..<count integer range):
+                // `steps` is dynamic (transports can toggle), and
+                // ForEach(0..<count) treats its range as constant data — a
+                // mid-walkthrough count change trips SwiftUI's "constant data"
+                // runtime warning and can mis-render the dots.
+                ForEach(Array(steps.enumerated()), id: \.offset) { index, _ in
+                    Capsule()
+                        .fill(index <= clampedIndex ? Color.accentColor : Color.secondary.opacity(0.25))
+                        .frame(height: 4)
+                }
+            }
+            .accessibilityHidden(true)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(stepTitle(currentStep))
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Text("Step \(clampedIndex + 1) of \(steps.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            // Combine title + counter so VoiceOver reads "Check the install,
+            // Step 1 of 3" as one element instead of two separate stops.
+            .accessibilityElement(children: .combine)
+            Text(stepSubtitle(currentStep))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var stepContent: some View {
+        switch currentStep {
+        case .installHealth:
+            programmaticPane
+        case .test(let transport):
+            testNowPane(transport: transport)
+        }
+    }
+
+    private func stepTitle(_ step: WalkthroughStepper.Step) -> String {
+        switch step {
+        case .installHealth: return "Check the install"
+        case .test(let transport): return "Test \(transport.displayName)"
+        }
+    }
+
+    private func stepSubtitle(_ step: WalkthroughStepper.Step) -> String {
+        switch step {
+        case .installHealth:
+            return "These run automatically. If Full Disk Access or the reader service is flagged below, resolve it before continuing."
+        case .test:
+            return "Send a test prompt to Claude — we'll watch for the MCP call and confirm it landed."
         }
     }
 
     private var programmaticPane: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Install health")
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(programmaticChecks) { check in
                     checkRow(check)
+                }
+                if settings.imessageEnabled {
+                    imessageDaemonRow
+                    fdaRow
                 }
                 claudeConfigRow
             }
@@ -151,6 +283,147 @@ struct SetupWalkthroughView: View {
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
+    }
+
+    /// True when the iMessage reader daemon is in a terminal-failure state
+    /// (crash-looping or stopped) that won't recover on its own. Transient
+    /// states (idle/starting/backingOff) are treated as pending, not down, so
+    /// the gate doesn't flicker during the ~1.2s launch window or a backoff
+    /// retry. Feeds both the daemon row's remediation block and the stepper
+    /// gate.
+    private var imessageDaemonDown: Bool {
+        switch imessageDaemon.status {
+        case .crashLooping, .stopped: return true
+        case .idle, .starting, .running, .backingOff: return false
+        }
+    }
+
+    /// iMessage reader-service liveness. Post-#17 refactor, ALL chat.db reads
+    /// run in the menu-bar-launched `imessage-drafts-daemon`; the Claude-side
+    /// MCP is a thin socket client. If that daemon isn't running, the FDA row
+    /// below can still read green (the menu-bar app holds the same grant, and
+    /// the MCP returns "daemon unavailable" — which writes no witness, so the
+    /// client FDA signal never lands), yet every real iMessage tool call
+    /// fails. Surfacing liveness here — and gating advance on it — closes that
+    /// pass-then-fail trap, the exact symptom #17 was opened to kill. Mirrors
+    /// the WhatsApp daemon row.
+    @ViewBuilder
+    private var imessageDaemonRow: some View {
+        let (label, passing): (String, Bool?) = {
+            switch imessageDaemon.status {
+            case .idle, .starting: return ("iMessage reader service starting…", nil)
+            case .running:         return ("iMessage reader service running", true)
+            case .backingOff:      return ("iMessage reader service reconnecting…", nil)
+            case .crashLooping:    return ("iMessage reader service couldn't start", false)
+            case .stopped:         return ("iMessage reader service stopped", false)
+            }
+        }()
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                statusBadge(for: passing)
+                Text(label).font(.callout)
+                Spacer()
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(label), \(Self.statusWord(for: passing))")
+
+            if imessageDaemonDown {
+                imessageDaemonHelp
+            }
+        }
+    }
+
+    /// Inline remediation for a down reader service. start() resets the
+    /// crash-loop counter and relaunches; if it keeps failing the log path
+    /// points the user (or support) at the real error.
+    private var imessageDaemonHelp: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("The reader service handles every Messages read for Claude. Try restarting it; if it keeps failing, quit and reopen Messages for AI, then check ~/.messages-mcp/logs/imessage-daemon.log.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("Restart reader service") {
+                    imessageDaemon.start()
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+            }
+        }
+        .padding(.leading, 32)
+        .padding(.top, 4)
+    }
+
+    /// Full Disk Access row. This is the gap that made fresh-install users
+    /// finish the walkthrough thinking everything worked: every other row
+    /// goes green (the binaries ARE present, signed, and reachable) but the
+    /// reader daemon can't open chat.db without the Messages-for-AI Full Disk
+    /// Access grant, so the first real tool call returns permission_denied.
+    /// Rendered only when iMessage is enabled — WhatsApp reads its own files
+    /// under ~/.whatsapp-mcp, none of which are TCC-protected.
+    @ViewBuilder
+    private var fdaRow: some View {
+        // Prefer the Claude-launched MCP's own report when we have one; fall
+        // back to the menu-bar app's probe until the first witness lands.
+        let access = clientChatDbAccess ?? chatDbAccess
+        let passing: Bool? = {
+            switch access {
+            case .ok: return true
+            case .permissionDenied: return false
+            // notFound (Messages never used on this Mac) and unknown are
+            // not FDA denials — show neutral and don't block completion.
+            case .notFound, .unknown: return nil
+            }
+        }()
+        let label: String = {
+            switch access {
+            case .ok: return "Full Disk Access granted (Messages for AI can read Messages)"
+            case .permissionDenied: return "Full Disk Access needed to read Messages"
+            case .notFound: return "No Messages database found on this Mac yet"
+            case .unknown: return "Couldn't check Messages access"
+            }
+        }()
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                statusBadge(for: passing)
+                Text(label).font(.callout)
+                Spacer()
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(label), \(Self.statusWord(for: passing))")
+
+            if access == .permissionDenied {
+                fdaHelp
+            }
+        }
+    }
+
+    /// Inline remediation for missing Full Disk Access: plain-language
+    /// instructions + a one-click deeplink straight to the FDA pane. The
+    /// row re-checks automatically on focus return (see the
+    /// didBecomeActive observer), so there's no manual re-check button.
+    private var fdaHelp: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Grant Full Disk Access to Messages for AI in System Settings → Privacy & Security → Full Disk Access, then switch back here — this updates on its own. If it stays red right after granting, quit and reopen Messages for AI.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("Open Full Disk Access settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+            }
+        }
+        .padding(.leading, 32)
+        .padding(.top, 4)
     }
 
     /// The Claude Desktop config check — rendered separately from the
@@ -332,8 +605,6 @@ struct SetupWalkthroughView: View {
         let prompt = Self.testPrompt(for: transport)
 
         return VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Test \(transport.displayName)")
-
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 12) {
                     statusBadge(for: verified)
@@ -383,32 +654,76 @@ struct SetupWalkthroughView: View {
         }
     }
 
-    private var completionFooter: some View {
-        HStack {
+    private var navigationFooter: some View {
+        HStack(spacing: 12) {
             Button("Skip for now") {
                 settings.walkthroughSkipped = true
                 settings.walkthroughComplete = false
                 dismissWindow(id: WindowID.setupWalkthrough)
             }
             Spacer()
-            Button("All set") {
-                settings.walkthroughComplete = true
-                settings.walkthroughSkipped = false
-                dismissWindow(id: WindowID.setupWalkthrough)
+            if clampedIndex > 0 {
+                Button("Back") { goBack() }
             }
-            .keyboardShortcut(.defaultAction)
-            .disabled(!allVerifiedOrSkipped)
-            .accessibilityHint(allVerifiedOrSkipped
-                ? "Marks setup complete and closes the window."
-                : "Disabled. Run the test prompt for each enabled transport above to enable this button.")
+            if isLastStep {
+                Button("All set") {
+                    settings.walkthroughComplete = true
+                    settings.walkthroughSkipped = false
+                    dismissWindow(id: WindowID.setupWalkthrough)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(!allVerifiedOrSkipped)
+                .accessibilityHint(allVerifiedOrSkipped
+                    ? "Marks setup complete and closes the window."
+                    : "Disabled. Run the test prompt for each enabled transport to enable this button.")
+            } else {
+                Button("Next") { goNext() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canAdvance)
+                    .accessibilityHint(canAdvance
+                        ? "Go to the next step."
+                        : "Disabled. Resolve the flagged check above (Full Disk Access or the reader service) before continuing.")
+            }
         }
     }
 
-    // MARK: - Helpers
+    /// Whether the user may leave the current step — see
+    /// `WalkthroughStepper.canAdvance`.
+    private var canAdvance: Bool { stepper.canAdvance }
 
-    private func sectionTitle(_ s: String) -> some View {
-        Text(s).font(.callout.weight(.semibold))
+    private func goNext() {
+        if clampedIndex < steps.count - 1 {
+            currentStepIndex = clampedIndex + 1
+            announceStep()
+        }
     }
+
+    private func goBack() {
+        if clampedIndex > 0 {
+            currentStepIndex = clampedIndex - 1
+            announceStep()
+        }
+    }
+
+    /// Announce the new step to VoiceOver after a stepper transition. Without
+    /// this, VoiceOver's cursor stays on the Next/Back button and a
+    /// screen-reader user gets no signal that the whole content region
+    /// changed under them.
+    private func announceStep() {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        NSAccessibility.post(
+            element: window,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: "Step \(clampedIndex + 1) of \(steps.count): \(stepTitle(currentStep))",
+                .priority: NSAccessibilityPriorityLevel.high.rawValue,
+            ]
+        )
+    }
+
+    // MARK: - Helpers
 
     private func checkRow(_ check: ProgrammaticCheck) -> some View {
         HStack(spacing: 10) {
@@ -466,11 +781,9 @@ struct SetupWalkthroughView: View {
         }
     }
 
-    private var allVerifiedOrSkipped: Bool {
-        let imsOK = !settings.imessageEnabled || imessageVerified == true
-        let waOK = !settings.whatsappEnabled || whatsappVerified == true
-        return imsOK && waOK
-    }
+    /// Whether "All set" may complete the walkthrough — see
+    /// `WalkthroughStepper.allVerifiedOrSkipped`.
+    private var allVerifiedOrSkipped: Bool { stepper.allVerifiedOrSkipped }
 
     private static func testPrompt(for transport: Platform) -> String {
         switch transport {
@@ -516,14 +829,40 @@ struct SetupWalkthroughView: View {
         // with our expected identifier.
         guard !record.writerPath.isEmpty,
               checks.binaryExists(at: record.writerPath),
-              checks.codesignIdentifier(of: record.writerPath)
+              cachedCodesignIdentifier(record.writerPath)
                 == HealthChecks.expectedSigningIdentifier
         else { return }
 
         switch transport {
-        case .imessage: imessageVerified = true
-        case .whatsapp: whatsappVerified = true
+        case .imessage:
+            // The witness reports the daemon's chat.db access (the MCP proxies
+            // its reads through the daemon and forwards that status). A
+            // permission_denied witness means Claude reached the MCP and the
+            // daemon, but the daemon can't read Messages — record it (drives the
+            // FDA row) and do NOT mark iMessage verified, so the walkthrough
+            // can't complete on a half-working setup. This also closes a latent
+            // false-green: health_check succeeds under FDA denial and would
+            // otherwise green verification. Older MCPs omit the field (nil) →
+            // reachability alone verifies, preserving prior behavior.
+            if let access = record.chatDbAccess {
+                clientChatDbAccess = access
+                imessageVerified = (access != .permissionDenied)
+            } else {
+                imessageVerified = true
+            }
+        case .whatsapp:
+            whatsappVerified = true
         }
+    }
+
+    /// Memoized wrapper over `HealthChecks.codesignIdentifier(of:)`. Negative
+    /// (nil) results are cached too — a missing/invalid binary won't appear
+    /// mid-session. See `codesignCache` for why this is both needed and safe.
+    private func cachedCodesignIdentifier(_ path: String) -> String? {
+        if let cached = codesignCache[path] { return cached }
+        let identifier = checks.codesignIdentifier(of: path)
+        codesignCache[path] = identifier
+        return identifier
     }
 
     private func refreshProgrammaticChecks() {
@@ -536,8 +875,13 @@ struct SetupWalkthroughView: View {
         // didn't opt in. (The WhatsApp daemon binary is included only
         // when the WhatsApp transport is enabled, since its sole
         // purpose is to back the WhatsApp daemon.)
+        // The daemon binary is checked alongside the MCP because, post-#17
+        // refactor, the daemon (not the MCP) is what actually reads chat.db —
+        // a missing/unsigned daemon binary breaks every iMessage read even
+        // though the thin MCP client is present. Mirrors the WhatsApp pair.
         var bins: [(String, String)] = [
             ("iMessage MCP binary", "imessage-drafts-mcp"),
+            ("iMessage daemon binary", "imessage-drafts-daemon"),
         ]
         if settings.whatsappEnabled {
             bins.append(("WhatsApp MCP binary", "whatsapp-drafts-mcp"))
@@ -547,7 +891,7 @@ struct SetupWalkthroughView: View {
             let path = Self.bundlePrefix + name
             let exists = checks.binaryExists(at: path)
             rows.append(ProgrammaticCheck(label: "\(label) present", passing: exists))
-            let identifier = checks.codesignIdentifier(of: path)
+            let identifier = cachedCodesignIdentifier(path)
             let signed = identifier == HealthChecks.expectedSigningIdentifier
             rows.append(ProgrammaticCheck(label: "\(label) signature valid", passing: signed))
         }
@@ -597,6 +941,11 @@ struct SetupWalkthroughView: View {
         // (not appended to programmaticChecks) so the row can carry an
         // inline help block when remediation is needed.
         claudeConfigState = checks.claudeDesktopConfigState()
+        // FDA only gates the iMessage transport; skip the probe entirely
+        // for WhatsApp-only setups.
+        if settings.imessageEnabled {
+            chatDbAccess = checks.chatDbAccessState()
+        }
     }
 }
 
@@ -605,6 +954,89 @@ private struct ProgrammaticCheck: Identifiable {
     let label: String
     /// nil = neutral / informational; true = green; false = red.
     let passing: Bool?
+}
+
+/// Pure, value-type model of the setup walkthrough's step sequence and the
+/// gating predicates that decide when the user may advance / finish. Extracted
+/// from `SetupWalkthroughView` so the FDA gate (the whole point of #17) and the
+/// stepper index math have regression coverage that doesn't require driving
+/// SwiftUI. Holds no state of its own — construct one per render from the
+/// view's live settings + @State. Covered by `WalkthroughStepperTests`.
+struct WalkthroughStepper: Equatable {
+    var imessageEnabled: Bool
+    var whatsappEnabled: Bool
+    /// Free index from the view's @State; always read via `clampedIndex`.
+    var currentStepIndex: Int
+    /// Menu-bar app's own chat.db probe (fallback signal).
+    var chatDbAccess: ChatDbAccessState
+    /// chat.db access reported by the Claude-launched MCP, which proxies its
+    /// reads through the menu-bar-launched daemon (issue #17). Proves the actual
+    /// MCP→daemon→chat.db path works; stronger than the menu-bar's own probe.
+    /// Nil until the first successful call lands a witness.
+    var clientChatDbAccess: ChatDbAccessState? = nil
+    /// The iMessage reader daemon is in a terminal-failure state (crash-looping
+    /// or stopped). Orthogonal to FDA: the menu-bar's chat.db probe — and thus
+    /// the FDA row — can read green while the daemon is dead, because they
+    /// share the same grant but only the daemon serves the MCP's reads.
+    var imessageDaemonDown: Bool = false
+    var imessageVerified: Bool?
+    var whatsappVerified: Bool?
+
+    /// FDA signal the gates use: the client MCP's report (which reflects the
+    /// daemon's access, observed end to end across the socket) wins over the
+    /// menu-bar app's own probe, because it proves the path Claude actually
+    /// uses works — not just that the menu-bar process can read.
+    var effectiveChatDbAccess: ChatDbAccessState { clientChatDbAccess ?? chatDbAccess }
+
+    /// One screen of the walkthrough. Built dynamically from the enabled
+    /// transports so an iMessage-only user never sees a WhatsApp step.
+    enum Step: Equatable {
+        case installHealth
+        case test(Platform)
+    }
+
+    var steps: [Step] {
+        var result: [Step] = [.installHealth]
+        if imessageEnabled { result.append(.test(.imessage)) }
+        if whatsappEnabled { result.append(.test(.whatsapp)) }
+        return result
+    }
+
+    /// `steps` always has ≥1 element, so clamping is total. Guards against a
+    /// settings change that shrinks `steps` mid-walkthrough indexing past end.
+    var clampedIndex: Int { min(max(currentStepIndex, 0), steps.count - 1) }
+    var currentStep: Step { steps[clampedIndex] }
+    var isLastStep: Bool { clampedIndex >= steps.count - 1 }
+
+    /// Whether the user may leave the current step. The install-health step
+    /// holds the user until Full Disk Access is granted AND the reader daemon
+    /// is alive (the two ways #17's pass-then-fail can happen); test steps are
+    /// advisory, so the final "All set" — not Next — carries the verification
+    /// gate.
+    var canAdvance: Bool {
+        switch currentStep {
+        case .installHealth:
+            if imessageEnabled && effectiveChatDbAccess == .permissionDenied { return false }
+            if imessageEnabled && imessageDaemonDown { return false }
+            return true
+        case .test:
+            return true
+        }
+    }
+
+    /// Whether "All set" may complete the walkthrough. Blocks while iMessage is
+    /// enabled but FDA is denied OR the reader daemon is down, so a user can't
+    /// mark setup "done" with either of the two things that make every iMessage
+    /// tool call fail still broken. (The daemon check is belt-and-suspenders:
+    /// imessageVerified can't be true without a successful call, which a down
+    /// daemon precludes — but stating it keeps the intent explicit.)
+    var allVerifiedOrSkipped: Bool {
+        let imsOK = !imessageEnabled || imessageVerified == true
+        let waOK = !whatsappEnabled || whatsappVerified == true
+        let fdaOK = !imessageEnabled || effectiveChatDbAccess != .permissionDenied
+        let daemonOK = !imessageEnabled || !imessageDaemonDown
+        return imsOK && waOK && fdaOK && daemonOK
+    }
 }
 
 // Platform.displayName is defined in Views/PlatformStyling.swift and reused here.

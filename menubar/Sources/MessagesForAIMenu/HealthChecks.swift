@@ -20,6 +20,26 @@ enum ClaudeConfigState: Equatable {
     case parseError
 }
 
+/// Result of probing whether this process can read the Messages database
+/// at `~/Library/Messages/chat.db`.
+///
+/// Why the menu bar can stand in for the iMessage MCP: every inner Mach-O
+/// (this app + `imessage-drafts-mcp`) is signed with the same codesign
+/// Identifier `com.sunriselabs.messages-for-ai`, and macOS keys Full Disk
+/// Access grants by codesign Identifier — so the menu bar's own ability to
+/// open `chat.db` is a faithful proxy for whether the MCP has FDA, without
+/// having to spawn the stdio MCP and call its `health_check` tool.
+enum ChatDbAccessState: Equatable {
+    /// `chat.db` opened read-only — Full Disk Access is granted.
+    case ok
+    /// `open()` failed with EPERM/EACCES — Full Disk Access is missing.
+    case permissionDenied
+    /// `chat.db` is genuinely absent (Messages never set up). Not an FDA gap.
+    case notFound
+    /// `open()` failed for some other reason (rare).
+    case unknown
+}
+
 /// Pure health-check primitives used by the SetupWalkthrough + Status pane.
 /// All functions are deterministic given filesystem state; testable via the
 /// injectable `bundleBinaryPrefix` + `claudeDesktopConfigPath` fields.
@@ -36,6 +56,16 @@ struct HealthChecks {
 
     /// Override the Claude Desktop config location for tests. Nil = system path.
     var claudeDesktopConfigPath: URL? = nil
+
+    /// Default Messages database path. Mirrors the iMessage MCP's
+    /// `CHAT_DB_PATH` (mcps/imessage-drafts/src/chatdb/open.ts).
+    static let defaultChatDbPath = FileManager.default
+        .homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Messages/chat.db").path
+
+    /// Path probed by `chatDbAccessState()`. Injectable so tests can point
+    /// at a tmp file (→ .ok) or a missing path (→ .notFound) without FDA.
+    var chatDbPath: String = HealthChecks.defaultChatDbPath
 
     // MARK: - Binary presence + codesign
 
@@ -127,6 +157,27 @@ struct HealthChecks {
         else { return false }
 
         return identifier == expectedIdentifier
+    }
+
+    // MARK: - Full Disk Access (chat.db readability)
+
+    /// Probe-open `chat.db` read-only and classify the outcome. TCC denies
+    /// the `open()` syscall on this protected path (errno EPERM) for any
+    /// process lacking Full Disk Access; a genuinely-missing database
+    /// reports ENOENT. We open and immediately close a raw fd rather than
+    /// going through SQLite — all we need to know is whether the kernel
+    /// lets us read the bytes at all.
+    func chatDbAccessState() -> ChatDbAccessState {
+        let fd = open(chatDbPath, O_RDONLY)
+        if fd >= 0 {
+            close(fd)
+            return .ok
+        }
+        switch errno {
+        case EPERM, EACCES: return .permissionDenied
+        case ENOENT:        return .notFound
+        default:            return .unknown
+        }
     }
 
     // MARK: - Claude Desktop config inspection

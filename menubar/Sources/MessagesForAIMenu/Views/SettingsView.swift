@@ -8,9 +8,14 @@ struct SettingsView: View {
   @EnvironmentObject var settings: SettingsStore
   @EnvironmentObject var loginItem: LoginItemController
   @EnvironmentObject var whatsappDaemon: WhatsAppDaemonController
+  @EnvironmentObject var imessageDaemon: IMessageDaemonController
 
   @Environment(\.openWindow) private var openWindow
-  @StateObject private var invocations = LastInvocationStore()
+  // Ungated: the Status pane reports the real last-seen call time even when
+  // it's older than the walkthrough's 10-minute freshness window, so prior
+  // history (which persists in ~/.messages-mcp/ across reinstalls) doesn't
+  // read as "never."
+  @StateObject private var invocations = LastInvocationStore(applyStalenessGate: false)
 
   private let checks = HealthChecks()
 
@@ -29,6 +34,7 @@ struct SettingsView: View {
         whatsappSection
         loginItemRow
         statusSection
+        versionFooter
       }
       .padding(.horizontal, 16)
       .padding(.top, 24)
@@ -45,6 +51,7 @@ struct SettingsView: View {
       enabledBinding: $settings.imessageEnabled
     ) {
       VStack(alignment: .leading, spacing: 10) {
+        imessageDaemonRow
         labeledSwitchRow(
           title: "Require approval to send",
           subtitle: settings.requireApproval
@@ -61,6 +68,47 @@ struct SettingsView: View {
         // "Open drafts in Finder" button is added, it should be a
         // proper button gated behind a power-user toggle.
       }
+    }
+  }
+
+  /// Compact status row for the chat.db reader daemon. The daemon is what
+  /// actually holds Full Disk Access (it's launched by this menu-bar app);
+  /// the Claude-launched MCP is a thin client to it. No remote connection
+  /// like WhatsApp — just process liveness.
+  private var imessageDaemonRow: some View {
+    HStack(spacing: 8) {
+      Circle()
+        .fill(imessageDaemonColor)
+        .frame(width: 8, height: 8)
+      Text(imessageDaemonLabel)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Spacer()
+      if case .crashLooping = imessageDaemon.status {
+        Button("Restart") { imessageDaemon.start() }
+          .buttonStyle(.bordered)
+          .controlSize(.mini)
+      }
+    }
+  }
+
+  private var imessageDaemonColor: Color {
+    switch imessageDaemon.status {
+    case .running: return .green
+    case .starting, .backingOff: return .orange
+    case .crashLooping: return .red
+    case .idle, .stopped: return .gray
+    }
+  }
+
+  private var imessageDaemonLabel: String {
+    switch imessageDaemon.status {
+    case .idle: return "Reader service: idle"
+    case .starting: return "Reader service: starting…"
+    case .running: return "Reader service: running"
+    case .backingOff(let s, _): return "Reader service: restarting in \(Int(s))s"
+    case .crashLooping: return "Reader service: couldn’t start — tap Restart"
+    case .stopped: return "Reader service: stopped"
     }
   }
 
@@ -242,6 +290,7 @@ struct SettingsView: View {
       }
 
       let imessageBinPath = HealthChecks.defaultBundleBinaryPrefix + "imessage-drafts-mcp"
+      let imessageDaemonBinPath = HealthChecks.defaultBundleBinaryPrefix + "imessage-drafts-daemon"
       let whatsappBinPath = HealthChecks.defaultBundleBinaryPrefix + "whatsapp-drafts-mcp"
       let daemonBinPath = HealthChecks.defaultBundleBinaryPrefix + "whatsapp-drafts-daemon"
       let configState = checks.claudeDesktopConfigState()
@@ -250,6 +299,15 @@ struct SettingsView: View {
         label: "iMessage MCP binary",
         passing: checks.binaryExists(at: imessageBinPath)
           && checks.codesignIdentifier(of: imessageBinPath) == HealthChecks.expectedSigningIdentifier
+      )
+      // The daemon binary — not the thin MCP client — is what reads chat.db
+      // post-#17. Check it here too, in parity with the WhatsApp daemon row
+      // below and the setup walkthrough, so this pane can't read all-green
+      // while the reader binary is missing/unsigned.
+      statusRow(
+        label: "iMessage daemon binary",
+        passing: checks.binaryExists(at: imessageDaemonBinPath)
+          && checks.codesignIdentifier(of: imessageDaemonBinPath) == HealthChecks.expectedSigningIdentifier
       )
       if settings.whatsappEnabled {
         statusRow(
@@ -276,6 +334,13 @@ struct SettingsView: View {
       }
 
       lastInvocationRow(label: "Last iMessage call from Claude", record: invocations.imessage)
+      if settings.imessageEnabled {
+        // chat.db access as seen by the reader DAEMON. Post-refactor the MCP's
+        // witness reports the daemon's status (the MCP no longer touches
+        // chat.db itself). "denied" means the Messages for AI app lacks Full
+        // Disk Access — Claude does NOT need FDA (issue #17 + daemon refactor).
+        clientFdaRow(record: invocations.imessage)
+      }
       if settings.whatsappEnabled {
         lastInvocationRow(label: "Last WhatsApp call from Claude", record: invocations.whatsapp)
       }
@@ -330,12 +395,44 @@ struct SettingsView: View {
         .accessibilityHidden(true)
       Text(label).font(.caption)
       Spacer()
-      Text(record.map { Self.relative($0.ts) } ?? "never")
+      Text(record.map { Self.relative($0.ts) } ?? "no record yet")
         .font(.caption.monospaced())
         .foregroundStyle(.secondary)
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(label): \(record.map { Self.relative($0.ts) } ?? "never")")
+    .accessibilityLabel("\(label): \(record.map { Self.relative($0.ts) } ?? "no record yet")")
+  }
+
+  /// Surfaces the Claude-launched iMessage MCP's own chat.db access, read from
+  /// the witness record it writes (issue #17). nil record / nil access → we
+  /// haven't heard from a witness that reports it yet.
+  private func clientFdaRow(record: WitnessRecord?) -> some View {
+    let access = record?.chatDbAccess
+    let (passing, value): (Bool?, String) = {
+      switch access {
+      case .ok: return (true, "granted")
+      case .permissionDenied: return (false, "denied — enable ‘Messages for AI’ in Full Disk Access")
+      case .notFound: return (nil, "no Messages DB")
+      case .unknown: return (nil, "unknown")
+      case .none: return (nil, "no record yet")
+      }
+    }()
+    let symbol = passing == true ? "checkmark.circle.fill"
+      : (passing == false ? "xmark.circle.fill" : "circle.dotted")
+    let color: Color = passing == true ? .green : (passing == false ? .red : .secondary)
+    return HStack(spacing: 8) {
+      Image(systemName: symbol)
+        .foregroundStyle(color)
+        .accessibilityHidden(true)
+      Text("iMessage reader Full Disk Access").font(.caption)
+      Spacer()
+      Text(value)
+        .font(.caption.monospaced())
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.trailing)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("iMessage reader Full Disk Access: \(value)")
   }
 
   /// Status word used inside combined accessibility labels.
@@ -406,6 +503,42 @@ struct SettingsView: View {
       Spacer()
       SwitchButton(isOn: isOn, enabled: enabled)
     }
+  }
+
+  // MARK: - Version footer
+
+  // Bottom-of-page build stamp so a dev install (or a release) can be
+  // identified at a glance. Values come from the bundle Info.plist:
+  // CFBundleShortVersionString + CFBundleVersion are written by
+  // dev-install.sh (git short SHA, "-dirty" if the tree had uncommitted
+  // changes) / build-release.sh (release version). MFABuildTime is the
+  // dev-install build timestamp. Falls back gracefully when run outside a
+  // packaged .app (e.g. `swift run` / tests), where the keys are absent.
+  private var versionFooter: some View {
+    VStack(spacing: 2) {
+      Divider().padding(.bottom, 2)
+      Text("Messages for AI \(Self.appVersion)")
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+      Text(Self.buildStamp)
+        .font(.caption2.monospaced())
+        .foregroundStyle(.tertiary)
+        .textSelection(.enabled)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.top, 2)
+  }
+
+  static var appVersion: String {
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "dev"
+  }
+
+  static var buildStamp: String {
+    let sha = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "—"
+    if let t = Bundle.main.object(forInfoDictionaryKey: "MFABuildTime") as? String, !t.isEmpty {
+      return "build \(sha) · \(t)"
+    }
+    return "build \(sha)"
   }
 
   private func infoRow(label: String, value: String) -> some View {

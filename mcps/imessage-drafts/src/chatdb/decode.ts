@@ -12,6 +12,16 @@
 
 const NSSTRING_MARKER = Buffer.from("NSString", "utf8");
 
+// Strip leading/trailing C0 control characters (NUL, SOH, …) that can leak in
+// from imperfect typedstream parsing, while preserving legit whitespace
+// (tab/newline/CR) and all internal text. Belt-and-suspenders on top of the
+// correct length decoding below.
+function stripBoundaryControls(s: string): string {
+  return s
+    .replace(/^[\x00-\x08\x0B\x0C\x0E-\x1F]+/, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]+$/, "");
+}
+
 export function decodeAttributedBody(blob: Buffer | Uint8Array | null): string | null {
   if (!blob || blob.length === 0) return null;
   const buf = Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
@@ -33,34 +43,36 @@ export function decodeAttributedBody(blob: Buffer | Uint8Array | null): string |
   }
   if (cursor >= buf.length) return null;
 
-  // Variable-length length field:
-  //   < 0x80         → single byte
-  //   0x81 NN        → one-byte length follows
-  //   0x82 NN NN     → big-endian uint16
-  //   0x83 NN NN NN NN → big-endian uint32
+  // typedstream variable-length integer (LITTLE-endian):
+  //   < 0x80 → the byte itself is the length
+  //   0x81   → uint16 LE follows (2 bytes)
+  //   0x82   → uint32 LE follows (4 bytes)
+  //
+  // The previous version read 0x81 as a SINGLE byte and 0x82/0x83 as
+  // big-endian. That silently mis-parsed every message ≥128 chars: it took
+  // the low length byte as the length and the high byte as the first
+  // character — producing a leading control-char artifact (e.g. "\x01…" for
+  // a 256–511-char body) AND truncating to the low byte's value. That is the
+  // bug behind get_thread / search_messages cutting off mid-message.
   let len: number;
   const first = buf[cursor++];
   if (first === undefined) return null;
   if (first < 0x80) {
     len = first;
   } else if (first === 0x81) {
-    const v = buf[cursor++];
-    if (v === undefined) return null;
-    len = v;
-  } else if (first === 0x82) {
     if (cursor + 2 > buf.length) return null;
-    len = buf.readUInt16BE(cursor);
+    len = buf.readUInt16LE(cursor);
     cursor += 2;
-  } else if (first === 0x83) {
+  } else if (first === 0x82) {
     if (cursor + 4 > buf.length) return null;
-    len = buf.readUInt32BE(cursor);
+    len = buf.readUInt32LE(cursor);
     cursor += 4;
   } else {
     return null;
   }
 
   if (len <= 0 || cursor + len > buf.length) return null;
-  const decoded = buf.toString("utf8", cursor, cursor + len);
+  const decoded = stripBoundaryControls(buf.toString("utf8", cursor, cursor + len));
   return decoded.length > 0 ? decoded : null;
 }
 
@@ -85,4 +97,11 @@ export function truncateBody(body: string | null): string | null {
   }
   const omitted = body.length - lo;
   return `${body.slice(0, lo)}... [truncated, ${omitted} chars omitted]`;
+}
+
+// True when `body` exceeds the on-wire byte budget (truncateBody would clip
+// it). Callers surface this as `body_truncated` so an agent knows the returned
+// body is intentionally shortened vs. the complete message.
+export function isOverBudget(body: string | null): boolean {
+  return body != null && Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES;
 }

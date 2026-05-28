@@ -4,7 +4,14 @@ import { callDaemon, DaemonRpcError, DaemonUnavailableError } from "../daemon/rp
 import { registerWithWitness } from "../witness.ts";
 import { SearchInput, SearchShape, isoToMs } from "../schema.ts";
 import { errorResult, jsonResult } from "./_result.ts";
-import { wrapBodyInPlace } from "./_untrusted.ts";
+import { wrapBodyInPlace, wrapUntrusted } from "./_untrusted.ts";
+
+interface ReplyTo {
+  message_id: string;
+  body: string | null;
+  from_me: boolean;
+  sender_name: string | null;
+}
 
 interface DaemonMessage {
   message_id: string;
@@ -20,6 +27,17 @@ interface DaemonMessage {
   message_type: string;
   attachment_meta: { caption?: string; filename?: string; mime?: string } | null;
   reply_to_id: string | null;
+  reply_to: ReplyTo | null;
+}
+
+// Wrap message body AND the quoted reply_to.body in <untrusted_content>.
+function wrapMessage(m: DaemonMessage): DaemonMessage {
+  const wrapped = wrapBodyInPlace(m);
+  if (wrapped.reply_to == null) return wrapped;
+  return {
+    ...wrapped,
+    reply_to: { ...wrapped.reply_to, body: wrapUntrusted(wrapped.reply_to.body) },
+  };
 }
 
 export function registerSearchTool(server: McpServer) {
@@ -43,7 +61,7 @@ export function registerSearchTool(server: McpServer) {
           contact_filter: args.contact_filter,
           limit: args.limit,
         });
-        return jsonResult({ ok: true, messages: messages.map(wrapBodyInPlace) });
+        return jsonResult({ ok: true, messages: messages.map(wrapMessage) });
       } catch (e) {
         if (e instanceof DaemonUnavailableError) return errorResult(e.message);
         if (e instanceof DaemonRpcError) return errorResult(`daemon error (${e.code}): ${e.message}`);
