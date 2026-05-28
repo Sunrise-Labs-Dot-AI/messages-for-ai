@@ -68,11 +68,10 @@
   },
   "age": {
     "estimated_age": 33,
-    "band": "gen_z",
-    "label": "Gen Z",
-    "range_label": "Gen Z / Millennial",
-    "approx_age": "13-27",
-    "confidence": "between",
+    "band": "millennial",
+    "label": "Millennial",
+    "approx_age": "28-43",
+    "confidence": "low",
     "drivers": [
       "All-lowercase typing",
       "Uses 😂 for laughter (non-ironic)",

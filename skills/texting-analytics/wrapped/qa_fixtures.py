@@ -107,7 +107,7 @@ def archetype_of(a):
 def main():
     os.makedirs(FIXTURES, exist_ok=True)
     os.makedirs(OUT, exist_ok=True)
-    rows, links, mismatches = [], [], 0
+    rows, tiles, mismatches = [], [], 0
 
     for key, treatment, total_sent, expected, a in SCENARIOS:
         fpath = os.path.join(FIXTURES, f"{key}.json")
@@ -137,16 +137,44 @@ def main():
 
         rows.append(f"  {'✓' if ok else '✗'} {key:<13} {treatment:<8} → {got}"
                     + ("" if ok else f"  (expected {expected})"))
-        links.append(f'<li><a href="{key}.html">{key}</a> — {got} · {treatment}'
-                     + (" · +volume" if total_sent else "") + "</li>")
+        tiles.append(
+            f'<a class="tile" href="{key}.html" target="_blank">'
+            f'<div class="frame"><iframe src="{key}.html" scrolling="no" loading="lazy" tabindex="-1"></iframe></div>'
+            f'<div class="meta"><span class="name">{got}</span>'
+            f'<span class="sub">{key} · {treatment}{" · +volume" if total_sent else ""}</span></div></a>'
+        )
 
+    index_html = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Texting Wrapped — QA gallery</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 40px 28px 64px; background: #0a0a0c; color: #f4f0e8;
+    font-family: -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  header { max-width: 1100px; margin: 0 auto 28px; }
+  h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 6px; }
+  p { margin: 0; color: #8a8694; font-size: 14px; }
+  .grid { max-width: 1100px; margin: 0 auto;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 22px; }
+  .tile { text-decoration: none; color: inherit; display: block;
+    border-radius: 18px; overflow: hidden; background: #131318;
+    border: 1px solid rgba(255,255,255,0.08); transition: transform .15s ease, border-color .15s ease; }
+  .tile:hover { transform: translateY(-3px); border-color: rgba(255,255,255,0.22); }
+  .frame { position: relative; height: 380px; overflow: hidden; background: #000; }
+  .frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0;
+    pointer-events: none; }
+  .meta { padding: 12px 16px 14px; }
+  .name { display: block; font-weight: 600; font-size: 16px; letter-spacing: -0.01em; }
+  .sub { display: block; margin-top: 2px; color: #8a8694;
+    font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 11px;
+    letter-spacing: 0.04em; text-transform: uppercase; }
+</style></head><body>
+<header><h1>Texting Wrapped — QA gallery</h1>
+<p>One synthetic user per archetype. Click a tile to open it full-size (swipe ←/→, test Share).</p></header>
+<div class="grid">__TILES__</div>
+</body></html>"""
     with open(os.path.join(OUT, "index.html"), "w") as f:
-        f.write("<!doctype html><meta charset=utf-8><title>Wrapped QA fixtures</title>"
-                "<style>body{font:16px system-ui;background:#111;color:#eee;padding:40px;max-width:640px;margin:auto}"
-                "a{color:#7cf}li{margin:8px 0}</style>"
-                "<h1>Texting Wrapped — archetype QA fixtures</h1>"
-                "<p>One synthetic user per archetype. Open each, swipe the cards (←/→), test Share.</p><ul>"
-                + "".join(links) + "</ul>")
+        f.write(index_html.replace("__TILES__", "".join(tiles)))
 
     print("\n".join(rows))
     print(f"\nfixtures: {os.path.relpath(FIXTURES, REPO)}/  ·  previews: {os.path.relpath(OUT, REPO)}/index.html")

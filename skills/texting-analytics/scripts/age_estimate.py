@@ -27,6 +27,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUBRIC_PATH = os.path.join(HERE, "..", "data", "age_rubric.json")
 
 
+def band_for_age(rubric, age, fallback):
+    """The single band whose age range contains `age`. Keeps the band consistent
+    with the headline number — no Gen-Z/Millennial bucketing."""
+    for bid, b in rubric["age_bands"].items():
+        rng = b["approx_age_2025"]
+        if rng.endswith("+"):
+            lo, hi = int(rng[:-1]), 200
+        else:
+            lo, hi = (int(x) for x in rng.split("-"))
+        if lo <= age <= hi:
+            return bid
+    return fallback
+
+
 def fired_features(analysis, total_sent):
     """Map observed aggregates → the rubric feature ids we can actually detect.
     We only fire features we can observe from style/emoji/latency/volume."""
@@ -68,6 +82,21 @@ def fired_features(analysis, total_sent):
             fired.append("fast_replies")
         elif med >= 60:
             fired.append("slow_replies")
+
+    # Phrase / token counts (aggregate counts, not message bodies) — these come
+    # from emoji_stats.py's style block and sharpen the estimate.
+    genz = style.get("genz_slang_hits", 0)
+    aging = style.get("aging_slang_hits", 0)
+    if genz >= 3:
+        fired.append("current_genz_slang")
+    if aging >= 3:
+        fired.append("aging_slang")
+    if (style.get("pct_ellipsis") or 0) >= 10:
+        fired.append("ellipsis_connector")
+    if (style.get("pct_repeated_exclaim") or 0) >= 8:
+        fired.append("repeated_exclaim")
+    if (style.get("pct_emoji_ending") or 0) >= 15:
+        fired.append("emoji_as_punctuation")
 
     # Volume (needs a total-sent count, which analysis.json doesn't carry).
     if total_sent:
@@ -126,13 +155,16 @@ def main():
     estimated_age = round(sum(scores[b] * MIDPOINTS.get(b, 40) for b in bands) / score_sum)
 
     label_of = lambda b: rubric["age_bands"][b]["label"]
-    # Confidence + range per the rubric's scoring_logic.
+    # Single band, derived from the estimated NUMBER so the label and the number
+    # never disagree (and Gen Z / Millennial never get bucketed together).
+    num_band = band_for_age(rubric, estimated_age, top_id)
+    # Confidence reflects how decisive the score spread is.
     if second_s == 0 or top_s >= 2 * second_s:
-        confidence, range_label = "likely", label_of(top_id)
+        confidence = "high"
     elif (top_s - second_s) / top_s <= 0.20:
-        confidence, range_label = "between", f"{label_of(top_id)} / {label_of(second_id)}"
+        confidence = "low"
     else:
-        confidence, range_label = "leaning", label_of(top_id)
+        confidence = "medium"
 
     # Drivers: the fired features, strongest weight first (top 3), human labels.
     drivers = sorted(
@@ -143,10 +175,9 @@ def main():
 
     age = {
         "estimated_age": estimated_age,
-        "band": top_id,
-        "label": label_of(top_id),
-        "range_label": range_label,
-        "approx_age": rubric["age_bands"][top_id]["approx_age_2025"],
+        "band": num_band,
+        "label": label_of(num_band),
+        "approx_age": rubric["age_bands"][num_band]["approx_age_2025"],
         "confidence": confidence,
         "drivers": driver_labels,
         "sample_size": analysis.get("style", {}).get("sample_size"),

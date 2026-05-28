@@ -549,7 +549,7 @@ function ShareCard({ tone, treatment, active }) {
   tiles.push({ stat: `${fmt(DATA.median, 1)}m`, label: 'median reply' });
   tiles.push({ stat: `${DATA.ballInCourt}%`, label: 'ball in court' });
   tiles.push({ stat: `${Number(DATA.groupContribPct).toFixed(1)}%`, label: 'group share' });
-  if (DATA.emoji) tiles.push({ stat: `${Math.round(DATA.emoji.pct_messages_with_emoji)}%`, label: 'emoji rate' });
+  if (DATA.emoji && DATA.emoji.top && DATA.emoji.top.length) tiles.push({ stat: DATA.emoji.top[0].emoji, label: 'top emoji' });
   if (DATA.age && DATA.age.estimated_age != null) tiles.push({ stat: `${DATA.age.estimated_age}`, label: 'texting age' });
   const recap = tiles.slice(0, 6);
   return (
@@ -674,7 +674,7 @@ function EmojiCard({ tone, treatment, active, instant }) {
 // Card 7: Texting age — playful, probabilistic (from age_estimate.py via the
 // research rubric). Omitted unless analysis.json carries an `age` block.
 function AgeCard({ tone, treatment, active }) {
-  const a = DATA.age || { range_label: '—', approx_age: '', drivers: [] };
+  const a = DATA.age || { label: '—', estimated_age: null, approx_age: '', drivers: [] };
   const isSerif = treatment.titleFont === 'serif';
   const drivers = (a.drivers || []).slice(0, 3);
   return (
@@ -702,7 +702,7 @@ function AgeCard({ tone, treatment, active }) {
           fontFamily: isSerif ? treatment.serif : treatment.sans,
           fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
           fontSize: 24, letterSpacing: '-0.01em',
-        }}>{a.range_label} energy</div>
+        }}>{a.label} energy</div>
         {a.approx_age && (
           <div style={{ fontFamily: treatment.mono, fontSize: 12, color: tone.soft, letterSpacing: '0.06em' }}>
             that band typically runs {a.approx_age}
