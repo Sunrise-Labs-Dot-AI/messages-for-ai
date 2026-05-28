@@ -89,6 +89,24 @@ python3 scripts/build_charts.py --input <output_folder>/analysis.json --output <
 
 This writes the four PNG charts. Then write `report.md` summarizing the findings, with the same voice and structure as the example below. Reference the four charts inline with relative paths.
 
+### Phase 4 (optional): Texting Wrapped — shareable story cards
+
+If the user asks for a "Texting Wrapped", shareable cards, a "story", or anything social-share-flavored (rather than the analytical report), generate the Wrapped instead of — or in addition to — the charts.
+
+```bash
+python3 wrapped/build_wrapped.py --analysis <output_folder>/analysis.json \
+    --treatment sunrise --output <output_folder>/wrapped.html
+```
+
+This reads the same `analysis.json` and emits one self-contained `wrapped.html`: a 7-card swipeable story in an iPhone frame (Cover → Latency → Groups → Archetype → Share, plus Volume/People when available), with count-up animations and a derived archetype payoff. The user opens it and swipes (← / →, drag, or tap edges), then screenshots cards to share.
+
+Flags:
+- `--treatment {sunrise,receipt,pager}` — the visual direction (default `sunrise`). `sunrise` = warm editorial gradients + serif; `receipt` = cream paper + monospace stats; `pager` = midnight + electric lime/magenta. To preview all three interactively, open `wrapped/index.html` (it has a treatment switcher).
+- `--total-sent N` — adds the hero Volume card. **Required to show it** — `analysis.json` doesn't carry a total-sent count yet, so the card is omitted without this.
+- `--include-people` — adds the Top People card. **Privacy gate:** this card shows contact NAMES, so it's omitted by default and only renders when you pass this flag AND `analysis.json` has a `top_people` array. Don't pass it without the user's explicit OK.
+
+The design lives in `wrapped/` (from a Claude Design handoff — see `wrapped/DESIGN-HANDOFF.md`). `build_wrapped.py` only injects data; the `.jsx` files are the source of truth for the look. Brand stamp (`sunriselabs.ai · messagesfor.ai`) is on the share card — don't remove it.
+
 ## Voice and tone for the report
 
 PM-voice with self-aware humor. Lead with the headline. Numbers in the first paragraph. Don't bury the lede. The Bad Texter Analysis example in `examples/example-report.md` is the reference.
