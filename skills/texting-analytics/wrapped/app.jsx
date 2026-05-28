@@ -464,10 +464,10 @@ function ArchetypeCard({ tone, treatment, active }) {
   );
 }
 
-// Card 7: Share
-function ShareCard({ tone, treatment, active, onShare, shareState }) {
+// Card 7: Share — pure creative. The share CTA lives in the page chrome
+// (App's control bar), not on the card, so the shared image stays clean.
+function ShareCard({ tone, treatment, active }) {
   const isSerif = treatment.titleFont === 'serif';
-  const accent = tone.accent || tone.ink;
   const recap = [
     DATA.totalSent ? { stat: fmt(DATA.totalSent), label: 'texts' }
                    : { stat: `${fmt(DATA.median, 1)}m`, label: 'median reply' },
@@ -493,31 +493,11 @@ function ShareCard({ tone, treatment, active, onShare, shareState }) {
           Your year, on the record.
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 22 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {recap.map((r, i) => (
             <RecapTile key={i} treatment={treatment} tone={tone} stat={r.stat} label={r.label} />
           ))}
         </div>
-
-        <button
-          onClick={(e) => { e.stopPropagation(); onShare(); }}
-          style={{
-            marginTop: 'auto',
-            width: '100%',
-            padding: '18px 20px',
-            border: 'none',
-            background: tone.ink,
-            color: tone.bg && tone.bg.startsWith('#') ? tone.bg : '#fff',
-            fontFamily: treatment.mono,
-            fontSize: 13, letterSpacing: '0.18em', textTransform: 'uppercase', fontWeight: 600,
-            cursor: 'pointer',
-            transition: 'transform 120ms ease',
-          }}
-          onMouseDown={(e) => e.currentTarget.style.transform = 'scale(0.98)'}
-          onMouseUp={(e) => e.currentTarget.style.transform = 'scale(1)'}
-          onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}>
-          {shareState === 'shared' ? '✓ Copied to share' : 'Share your Wrapped'}
-        </button>
       </div>
     </CardShell>
   );
@@ -557,9 +537,10 @@ const CARD_KEYS = (DATA.cards && DATA.cards.length ? DATA.cards : FULL_ARC)
   .filter((k) => CARDS_BY_KEY[k]);
 const CARDS = CARD_KEYS.map((k) => ({ Comp: CARDS_BY_KEY[k], paletteIdx: FULL_ARC.indexOf(k) }));
 
-function Carousel({ treatment, onPaletteChange }) {
-  const [idx, setIdx] = useState(0);
-  const [shareState, setShareState] = useState('idle');
+// Controlled: idx + go come from App, so navigation controls can live in the
+// page chrome (off the creative). captureRef points at the active card so App's
+// Share can snapshot just the card art.
+function Carousel({ treatment, idx, go, captureRef }) {
   const [drag, setDrag] = useState(null); // {startX, dx}
   const [w, setW] = useState(402);
   const ref = useRef(null);
@@ -572,12 +553,6 @@ function Carousel({ treatment, onPaletteChange }) {
     if (ref.current) ro.observe(ref.current);
     return () => ro.disconnect();
   }, []);
-
-  const total = CARDS.length;
-
-  const go = useCallback((next) => {
-    setIdx((i) => Math.max(0, Math.min(total - 1, next)));
-  }, [total]);
 
   // keyboard
   useEffect(() => {
@@ -607,11 +582,6 @@ function Carousel({ treatment, onPaletteChange }) {
     setDrag(null);
   };
 
-  const handleShare = () => {
-    setShareState('shared');
-    setTimeout(() => setShareState('idle'), 1800);
-  };
-
   // tap zones
   const onCardTap = (e) => {
     const rect = ref.current.getBoundingClientRect();
@@ -634,33 +604,35 @@ function Carousel({ treatment, onPaletteChange }) {
         userSelect: 'none',
         cursor: drag ? 'grabbing' : 'default',
       }}>
-      {/* Card stack */}
+      {/* Card stack — each card is PURE creative (no controls baked in). The
+          active card's wrapper is the capture target for sharing. */}
       {CARDS.map(({ Comp, paletteIdx }, i) => {
         const offset = i - idx;
         const dragOffset = (drag && i === idx) ? drag.dx : 0;
         const isActive = i === idx;
         const visible = Math.abs(offset) <= 1 || drag;
         return (
-          <div key={i} style={{
-            position: 'absolute', inset: 0,
-            transform: `translate3d(${offset * w + dragOffset}px, 0, 0)`,
-            transition: drag ? 'none' : 'transform 520ms cubic-bezier(.22,.61,.36,1), opacity 520ms ease',
-            opacity: visible ? 1 : 0,
-            pointerEvents: isActive ? 'auto' : 'none',
-          }}>
+          <div key={i}
+            ref={isActive ? (el) => { if (captureRef) captureRef.current = el; } : undefined}
+            style={{
+              position: 'absolute', inset: 0,
+              transform: `translate3d(${offset * w + dragOffset}px, 0, 0)`,
+              transition: drag ? 'none' : 'transform 520ms cubic-bezier(.22,.61,.36,1), opacity 520ms ease',
+              opacity: visible ? 1 : 0,
+              pointerEvents: isActive ? 'auto' : 'none',
+            }}>
             <Comp
               tone={treatment.cards[paletteIdx]}
               treatment={treatment}
               active={isActive}
               onTap={onCardTap}
-              onShare={handleShare}
-              shareState={shareState}
             />
           </div>
         );
       })}
 
-      {/* Top story-segment indicators — sit below dynamic island */}
+      {/* Top story-segment progress — subtle phone status, not a CTA. Excluded
+          from the shared image (capture targets the card, not this overlay). */}
       <div style={{
         position: 'absolute', top: 58, left: 16, right: 16,
         display: 'flex', gap: 4, pointerEvents: 'none', zIndex: 10,
@@ -674,30 +646,29 @@ function Carousel({ treatment, onPaletteChange }) {
           }}>
             <div style={{
               height: '100%',
-              width: i < idx ? '100%' : i === idx ? '100%' : '0%',
+              width: i <= idx ? '100%' : '0%',
               background: 'rgba(255,255,255,0.95)',
               transition: 'width 360ms ease',
             }}/>
           </div>
         ))}
       </div>
-
-      {/* Bottom dots — above home indicator */}
-      <div style={{
-        position: 'absolute', bottom: 44, left: 0, right: 0,
-        display: 'flex', justifyContent: 'center', gap: 6,
-        pointerEvents: 'none', zIndex: 10,
-      }}>
-        {CARDS.map((_, i) => (
-          <div key={i} style={{
-            width: i === idx ? 16 : 5, height: 5, borderRadius: 3,
-            background: i === idx ? 'currentColor' : 'rgba(127,127,127,0.4)',
-            mixBlendMode: 'difference',
-            transition: 'all 280ms ease',
-          }}/>
-        ))}
-      </div>
     </div>
+  );
+}
+
+// Chrome nav button (page chrome, off the creative)
+function ChromeBtn({ children, onClick, disabled, aria }) {
+  return (
+    <button onClick={onClick} disabled={disabled} aria-label={aria} style={{
+      width: 44, height: 44, borderRadius: 9999,
+      border: '1px solid rgba(255,255,255,0.25)',
+      background: 'rgba(255,255,255,0.08)', color: '#fff',
+      fontSize: 22, lineHeight: 1, cursor: disabled ? 'default' : 'pointer',
+      opacity: disabled ? 0.3 : 1,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
+    }}>{children}</button>
   );
 }
 
@@ -713,6 +684,46 @@ function App() {
     : [DEFAULTS, () => {}];
   const treatmentId = tweaks.treatment in TREATMENTS ? tweaks.treatment : 'sunrise';
   const treatment = TREATMENTS[treatmentId];
+
+  // Navigation + share state live here so the controls render in the page
+  // chrome (off the creative), not on the cards.
+  const [idx, setIdx] = useState(0);
+  const [shareState, setShareState] = useState('idle');
+  const captureRef = useRef(null);
+  const go = useCallback((n) => setIdx(() => Math.max(0, Math.min(CARDS.length - 1, n))), []);
+
+  // Capture the CURRENT card → native share sheet (Safari bridges Web Share to
+  // the macOS share sheet); otherwise save a PNG. The card is the only thing
+  // captured, so the shared image is clean creative.
+  const handleShare = useCallback(async () => {
+    const el = captureRef.current;
+    if (!el || !window.html2canvas) return;
+    try {
+      setShareState('working');
+      const canvas = await window.html2canvas(el, {
+        scale: 3, backgroundColor: null, useCORS: true, logging: false,
+      });
+      const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+      if (!blob) { setShareState('idle'); return; }
+      const file = new File([blob], `texting-wrapped-${DATA.year}.png`, { type: 'image/png' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'My Texting Wrapped',
+          text: 'My Texting Wrapped · messagesfor.ai' });
+        setShareState('shared');
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = file.name;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+        setShareState('saved');
+      }
+    } catch (e) {
+      setShareState('idle');  // includes user-cancelled share (AbortError)
+    } finally {
+      setTimeout(() => setShareState('idle'), 2200);
+    }
+  }, []);
 
   // Scale the device to fit viewport (height-driven)
   const [scale, setScale] = useState(1);
@@ -772,9 +783,36 @@ function App() {
       <div style={{ position: 'relative', zIndex: 1, transform: `scale(${scale})`, transformOrigin: 'center center' }}>
         <IOSDevice width={402} height={874} dark={true}>
           <div style={{ position: 'absolute', inset: 0 }}>
-            <Carousel treatment={treatment} ref={null} />
+            <Carousel treatment={treatment} idx={idx} go={go} captureRef={captureRef} />
           </div>
         </IOSDevice>
+      </div>
+
+      {/* Controls — OFF the creative, in the page chrome. Prev / Share / Next.
+          Share captures the CURRENT card and opens the native share sheet
+          (Safari → macOS share sheet via Web Share); otherwise saves a PNG. */}
+      <div style={{
+        position: 'absolute', bottom: 58, left: 0, right: 0, zIndex: 6,
+        display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12,
+      }}>
+        <ChromeBtn disabled={idx === 0} onClick={() => go(idx - 1)} aria="Previous card">‹</ChromeBtn>
+        <button
+          onClick={handleShare}
+          disabled={shareState === 'working'}
+          style={{
+            height: 44, padding: '0 22px', borderRadius: 9999, border: 'none',
+            background: '#fff', color: '#111',
+            fontFamily: 'ui-monospace, "JetBrains Mono", monospace',
+            fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase',
+            cursor: shareState === 'working' ? 'default' : 'pointer',
+            boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
+          }}>
+          {shareState === 'working' ? 'Rendering…'
+            : shareState === 'shared' ? '✓ Shared'
+            : shareState === 'saved' ? '✓ Saved PNG'
+            : 'Share this card'}
+        </button>
+        <ChromeBtn disabled={idx === CARDS.length - 1} onClick={() => go(idx + 1)} aria="Next card">›</ChromeBtn>
       </div>
 
       {/* Tweaks panel — present only in the interactive dev prototype (index.html).
