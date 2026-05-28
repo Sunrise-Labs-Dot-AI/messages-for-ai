@@ -47,6 +47,17 @@ def analysis(median, mean, fast, ball, group_pct, silent, total_groups, worst_to
                 {"thread_label": "weekend plans", "total": 60, "user_count": 14, "user_pct": 23, "user_reaction_pct": 10},
             ],
         },
+        "emoji": {
+            "pct_messages_with_emoji": 23.0, "emoji_per_message": 0.41,
+            "top": [{"emoji": "😂", "count": 612}, {"emoji": "❤️", "count": 388},
+                    {"emoji": "🙏", "count": 201}, {"emoji": "🔥", "count": 144},
+                    {"emoji": "😭", "count": 97}],
+        },
+        "style": {
+            "pct_end_period": 9.0, "pct_all_lowercase": 61.0,
+            "laugh_tokens": {"lol": 240, "haha": 180, "joy": 612}, "dominant_laugh": "joy",
+            "sample_size": 4000,
+        },
     }
 
 

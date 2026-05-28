@@ -130,7 +130,11 @@ def build_data(analysis, year, total_sent, include_people):
     top_people = analysis.get("top_people") if include_people else None
     if top_people:
         cards.append("people")
-    cards += ["latency", "ballincourt", "groups", "archetype", "share"]
+    cards += ["latency", "ballincourt", "groups"]
+    emoji = analysis.get("emoji")
+    if emoji:
+        cards.append("emoji")
+    cards += ["archetype", "share"]
 
     data = {
         "year": year,
@@ -149,6 +153,10 @@ def build_data(analysis, year, total_sent, include_people):
         data["totalSent"] = int(total_sent)
     if top_people:
         data["topPeople"] = top_people
+    if emoji:
+        data["emoji"] = emoji
+    if analysis.get("style"):
+        data["style"] = analysis["style"]
     return data
 
 

@@ -39,7 +39,7 @@ const DATA = (typeof window !== 'undefined' && window.WRAPPED_DATA) || {
 
 // Full card arc — used to keep each card's designed palette even when some
 // cards are omitted (build_wrapped drops cards the analysis can't populate).
-const FULL_ARC = ['cover', 'volume', 'people', 'latency', 'ballincourt', 'groups', 'archetype', 'share'];
+const FULL_ARC = ['cover', 'volume', 'people', 'latency', 'ballincourt', 'groups', 'emoji', 'archetype', 'share'];
 
 // ── Hooks ───────────────────────────────────────────────────
 
@@ -498,7 +498,7 @@ function ArchetypeCard({ tone, treatment, active }) {
   return (
     <CardShell
       tone={tone} treatment={treatment}
-      label="06 · your archetype"
+      label="07 · your archetype"
       footer={`fits ${DATA.archetype.why}`}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft, marginBottom: 14 }}>
@@ -593,19 +593,87 @@ function RecapTile({ treatment, tone, stat, label }) {
   );
 }
 
+// Card 6: Emoji — aggregate emoji usage (from the emoji_stats pass). Omitted
+// unless analysis.json carries an `emoji` block.
+function EmojiCard({ tone, treatment, active }) {
+  const e = DATA.emoji || { pct_messages_with_emoji: 0, top: [] };
+  const pct = useCountUp(e.pct_messages_with_emoji, 1100, active, 180);
+  const top = (e.top || []).slice(0, 5);
+  const isSerif = treatment.numberFont === 'serif';
+  const italic = isSerif && treatment.italicNumbers;
+  return (
+    <CardShell
+      tone={tone} treatment={treatment}
+      label="06 · your emoji"
+      footer="a picture's worth a thousand texts.">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 20 }}>
+        <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft }}>
+          You drop an emoji in
+        </div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+          <div style={{
+            fontFamily: isSerif ? treatment.serif : treatment.sans,
+            fontStyle: italic ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 700,
+            fontSize: 116, lineHeight: 0.85, letterSpacing: isSerif ? '-0.045em' : '-0.07em',
+          }}>{fmt(pct, pct % 1 ? 1 : 0)}</div>
+          <div style={{
+            fontFamily: isSerif ? treatment.serif : treatment.sans,
+            fontStyle: italic ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
+            fontSize: 44, letterSpacing: '-0.04em',
+          }}>%</div>
+        </div>
+        <div style={{ fontFamily: treatment.mono, fontSize: 13, color: tone.soft, letterSpacing: '0.04em', marginTop: -6 }}>
+          of your texts.
+        </div>
+
+        {top.length > 0 && (
+          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', marginTop: 6 }}>
+            {top.map((t, i) => (
+              <div key={i} style={{
+                textAlign: 'center',
+                opacity: active ? 1 : 0, transform: active ? 'translateY(0)' : 'translateY(10px)',
+                transition: `all 500ms cubic-bezier(.2,.7,.2,1) ${250 + i * 80}ms`,
+              }}>
+                <div style={{ fontSize: i === 0 ? 52 : 36, lineHeight: 1 }}>{t.emoji}</div>
+                <div style={{ fontFamily: treatment.mono, fontSize: 11, color: tone.soft, marginTop: 7 }}>{t.count.toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{
+          marginTop: 8,
+          fontFamily: isSerif ? treatment.serif : treatment.sans,
+          fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
+          fontSize: 24, lineHeight: 1.2, letterSpacing: '-0.01em', textWrap: 'balance',
+        }}>
+          {top[0] ? <>{top[0].emoji} is doing the heavy lifting.</> : 'A words-only minimalist.'}
+        </div>
+      </div>
+    </CardShell>
+  );
+}
+
 // ── Carousel ────────────────────────────────────────────────
 
 const CARDS_BY_KEY = {
   cover: CoverCard, volume: VolumeCard, people: PeopleCard, latency: LatencyCard,
-  ballincourt: BallInCourtCard, groups: GroupsCard, archetype: ArchetypeCard, share: ShareCard,
+  ballincourt: BallInCourtCard, groups: GroupsCard, emoji: EmojiCard,
+  archetype: ArchetypeCard, share: ShareCard,
 };
 
-// Active cards: from DATA.cards if provided, else the full arc. Each card keeps
-// its designed palette via its index in FULL_ARC (so omitting a card doesn't
-// recolor the survivors).
+// Palette is decoupled from card order so adding/omitting cards never recolors
+// the others. Each key maps to an index into the treatment's palette array;
+// emoji reuses the (usually-omitted) people slot to avoid a 9th palette.
+const PALETTE_OF = {
+  cover: 0, volume: 1, people: 2, latency: 3, ballincourt: 4,
+  groups: 5, archetype: 6, share: 7, emoji: 2,
+};
+
+// Active cards: from DATA.cards if provided, else the full arc.
 const CARD_KEYS = (DATA.cards && DATA.cards.length ? DATA.cards : FULL_ARC)
   .filter((k) => CARDS_BY_KEY[k]);
-const CARDS = CARD_KEYS.map((k) => ({ Comp: CARDS_BY_KEY[k], paletteIdx: FULL_ARC.indexOf(k) }));
+const CARDS = CARD_KEYS.map((k) => ({ Comp: CARDS_BY_KEY[k], paletteIdx: PALETTE_OF[k] != null ? PALETTE_OF[k] : 0 }));
 
 // Controlled: idx + go come from App, so navigation controls can live in the
 // page chrome (off the creative). captureRef points at the active card so App's

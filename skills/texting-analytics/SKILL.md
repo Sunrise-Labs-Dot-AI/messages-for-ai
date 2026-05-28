@@ -107,6 +107,16 @@ Flags:
 
 The design lives in `wrapped/` (from a Claude Design handoff — see `wrapped/DESIGN-HANDOFF.md`). `build_wrapped.py` only injects data; the `.jsx` files are the source of truth for the look. Brand stamp (`sunriselabs.ai · messagesfor.ai`) is on the share card — don't remove it.
 
+**Emoji card (optional).** To include the emoji card, produce an `emoji` (and `style`) block and merge it into `analysis.json` before running `build_wrapped.py`. This is the ONE place the analytics reads message *content* — so it goes through `scripts/emoji_stats.py`, which emits **aggregates only** (counts, percentages, single glyphs, short slang tokens) and never a message body (guard-enforced, exit 5 on a leak):
+
+```bash
+# messages.json = the texts you already pulled: [{"text": "...", "from_me": true}, ...]
+python3 scripts/emoji_stats.py --input messages.json --outbound-only
+# merge its {emoji, style} output into analysis.json, then build_wrapped.py adds the card.
+```
+
+If `analysis.json` has no `emoji` block, the emoji card is simply omitted (like Volume/People).
+
 ## Voice and tone for the report
 
 PM-voice with self-aware humor. Lead with the headline. Numbers in the first paragraph. Don't bury the lede. The Bad Texter Analysis example in `examples/example-report.md` is the reference.
