@@ -223,57 +223,55 @@ function VolumeCard({ tone, treatment, active, instant }) {
   );
 }
 
-// Card 3: Top People
+// Card 3: Top People — your most-texted (up to 10). A personal "keep" card,
+// not built for public sharing (it shows names) — excluded from Share-all.
 function PeopleCard({ tone, treatment, active }) {
-  const people = DATA.topPeople || [];
+  const people = (DATA.topPeople || []).slice(0, 10);
   const max = people.length ? people[0].count : 1;
   const isSerif = treatment.titleFont === 'serif';
   return (
     <CardShell
       tone={tone} treatment={treatment}
       label="02 · your inner circle"
-      footer="five names, half your year.">
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', paddingTop: 8 }}>
+      footer="the people who got the most of you.">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <div style={{
           fontFamily: isSerif ? treatment.serif : treatment.sans,
           fontStyle: isSerif ? 'italic' : 'normal',
           fontWeight: isSerif ? 400 : 700,
-          fontSize: 44, lineHeight: 0.95,
+          fontSize: 38, lineHeight: 0.95,
           letterSpacing: isSerif ? '-0.025em' : '-0.04em',
-          marginBottom: 22,
+          marginBottom: 18,
         }}>
-          The top five.
+          Your top {people.length}.
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
           {people.map((p, i) => {
             const pct = (p.count / max) * 100;
             return (
-              <div key={p.name} style={{
-                opacity: active ? 1 : 0, transform: active ? 'translateX(0)' : 'translateX(-12px)',
-                transition: `all 500ms cubic-bezier(.2,.7,.2,1) ${200 + i * 90}ms`,
+              <div key={p.name + i} style={{
+                opacity: active ? 1 : 0, transform: active ? 'translateX(0)' : 'translateX(-10px)',
+                transition: `all 420ms cubic-bezier(.2,.7,.2,1) ${150 + i * 55}ms`,
               }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
-                  <span style={{ fontFamily: treatment.mono, fontSize: 12, color: tone.soft, width: 18, fontWeight: 500, flexShrink: 0 }}>0{i + 1}</span>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 3 }}>
+                  <span style={{ fontFamily: treatment.mono, fontSize: 11, color: tone.soft, width: 20, fontWeight: 500, flexShrink: 0 }}>{String(i + 1).padStart(2, '0')}</span>
                   <span style={{
                     fontFamily: isSerif ? treatment.serif : treatment.sans,
                     fontWeight: isSerif ? 500 : 600,
-                    fontSize: 22, letterSpacing: '-0.01em',
+                    fontSize: 17, letterSpacing: '-0.01em',
                     flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                   }}>{p.name}</span>
-                  <span style={{ fontFamily: treatment.mono, fontSize: 12, color: tone.soft, fontWeight: 500, flexShrink: 0 }}>
+                  <span style={{ fontFamily: treatment.mono, fontSize: 11, color: tone.soft, fontWeight: 500, flexShrink: 0 }}>
                     {p.count.toLocaleString()}
                   </span>
                 </div>
-                <div style={{ position: 'relative', height: 4, background: 'currentColor', opacity: 0.32, marginLeft: 30, borderRadius: 2 }}>
+                <div style={{ position: 'relative', height: 3, background: 'currentColor', opacity: 0.28, marginLeft: 30, borderRadius: 2 }}>
                   <div style={{
-                    position: 'absolute', left: 0, top: -2, bottom: -2,
+                    position: 'absolute', left: 0, top: 0, bottom: 0,
                     width: active ? `${pct}%` : 0,
-                    background: 'currentColor', opacity: 1, borderRadius: 2,
-                    transition: `width 900ms cubic-bezier(.2,.7,.2,1) ${280 + i * 90}ms`,
+                    background: 'currentColor', borderRadius: 2,
+                    transition: `width 800ms cubic-bezier(.2,.7,.2,1) ${230 + i * 55}ms`,
                   }}/>
-                </div>
-                <div style={{ marginLeft: 30, marginTop: 5, fontFamily: treatment.mono, fontSize: 10, color: tone.soft, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-                  {p.tag}
                 </div>
               </div>
             );
@@ -545,29 +543,41 @@ function ArchetypeCard({ tone, treatment, active }) {
 // (App's control bar), not on the card, so the shared image stays clean.
 function ShareCard({ tone, treatment, active }) {
   const isSerif = treatment.titleFont === 'serif';
-  const recap = [
-    DATA.totalSent ? { stat: fmt(DATA.totalSent), label: 'texts' }
-                   : { stat: `${fmt(DATA.median, 1)}m`, label: 'median reply' },
-    { stat: `${DATA.ballInCourt}%`, label: 'ball in court' },
-    { stat: `${Number(DATA.groupContribPct).toFixed(1)}%`, label: 'group share' },
-    { stat: archetypeShort(), label: 'archetype' },
-  ];
+  // Richer recap — every headline number from the year, up to 6 tiles.
+  const tiles = [];
+  if (DATA.totalSent) tiles.push({ stat: fmt(DATA.totalSent), label: 'texts sent' });
+  tiles.push({ stat: `${fmt(DATA.median, 1)}m`, label: 'median reply' });
+  tiles.push({ stat: `${DATA.ballInCourt}%`, label: 'ball in court' });
+  tiles.push({ stat: `${Number(DATA.groupContribPct).toFixed(1)}%`, label: 'group share' });
+  if (DATA.emoji) tiles.push({ stat: `${Math.round(DATA.emoji.pct_messages_with_emoji)}%`, label: 'emoji rate' });
+  if (DATA.age && DATA.age.estimated_age != null) tiles.push({ stat: `${DATA.age.estimated_age}`, label: 'texting age' });
+  const recap = tiles.slice(0, 6);
   return (
     <CardShell
       tone={tone} treatment={treatment}
       label={`Wrapped · ${DATA.year}`}
       footer="sunriselabs.ai · messagesfor.ai">
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+        <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft, marginBottom: 10 }}>
+          The year, in one card
+        </div>
         <div style={{
           fontFamily: isSerif ? treatment.serif : treatment.sans,
           fontStyle: isSerif ? 'italic' : 'normal',
-          fontWeight: isSerif ? 400 : 700,
-          fontSize: 50, lineHeight: 0.92,
-          letterSpacing: isSerif ? '-0.025em' : '-0.04em',
-          marginBottom: 22,
+          fontWeight: isSerif ? 400 : 800,
+          fontSize: 46, lineHeight: 0.9,
+          letterSpacing: isSerif ? '-0.03em' : '-0.05em',
           textWrap: 'balance',
         }}>
-          Your year, on the record.
+          {DATA.archetype.name}
+        </div>
+        <div style={{
+          marginTop: 8, marginBottom: 20,
+          fontFamily: isSerif ? treatment.serif : treatment.sans,
+          fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 500,
+          fontSize: 18, lineHeight: 1.2, color: tone.soft, letterSpacing: '-0.01em', textWrap: 'balance',
+        }}>
+          {DATA.archetype.verdict}
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -676,15 +686,26 @@ function AgeCard({ tone, treatment, active }) {
         <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft }}>
           You text like a
         </div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, whiteSpace: 'nowrap' }}>
+          <div style={{
+            fontFamily: isSerif ? treatment.serif : treatment.sans,
+            fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 800,
+            fontSize: 120, lineHeight: 0.85, letterSpacing: isSerif ? '-0.04em' : '-0.06em',
+          }}>{a.estimated_age != null ? a.estimated_age : '—'}</div>
+          <div style={{
+            fontFamily: isSerif ? treatment.serif : treatment.sans,
+            fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
+            fontSize: 28, letterSpacing: '-0.02em',
+          }}>-year-old</div>
+        </div>
         <div style={{
           fontFamily: isSerif ? treatment.serif : treatment.sans,
-          fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 800,
-          fontSize: 60, lineHeight: 0.9, letterSpacing: isSerif ? '-0.03em' : '-0.05em',
-          textWrap: 'balance',
-        }}>{a.range_label}</div>
+          fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
+          fontSize: 24, letterSpacing: '-0.01em',
+        }}>{a.range_label} energy</div>
         {a.approx_age && (
-          <div style={{ fontFamily: treatment.mono, fontSize: 13, color: tone.soft, letterSpacing: '0.06em' }}>
-            roughly age {a.approx_age}
+          <div style={{ fontFamily: treatment.mono, fontSize: 12, color: tone.soft, letterSpacing: '0.06em' }}>
+            that band typically runs {a.approx_age}
           </div>
         )}
         {drivers.length > 0 && (
@@ -899,6 +920,7 @@ function App() {
     try {
       const shots = [];
       for (let i = 0; i < CARDS.length; i++) {
+        if (CARD_KEYS[i] === 'people') continue;  // keep contact names out of a public composite
         setIdx(i);
         setShareAllState(`${i + 1}/${CARDS.length}`);
         await new Promise((r) => setTimeout(r, 800));  // let the reveal settle

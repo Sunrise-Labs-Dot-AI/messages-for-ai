@@ -43,27 +43,27 @@
   ],
   "latency": {
     "total_reply_pairs": 800,
-    "pct_within_5min": 47,
-    "pct_within_30min": 67,
-    "pct_within_1hr": 77,
-    "pct_within_4hr": 92,
-    "mean_minutes": 77,
-    "median_minutes": 4,
+    "pct_within_5min": 45,
+    "pct_within_30min": 65,
+    "pct_within_1hr": 75,
+    "pct_within_4hr": 90,
+    "mean_minutes": 20,
+    "median_minutes": 10,
     "thread_count": 90,
     "window_label": "past 12 months"
   },
   "ball_in_court": {
     "total_threads_sampled": 100,
-    "threads_with_ball_in_court": 60,
-    "pct_ball_in_court": 60,
+    "threads_with_ball_in_court": 12,
+    "pct_ball_in_court": 12,
     "live_conversations_estimate": 40,
     "snapshot_label": "May 2026"
   },
   "group_contribution": {
-    "total_groups_analyzed": 19,
+    "total_groups_analyzed": 12,
     "total_messages_in_groups": 900,
-    "user_messages_in_groups": 79,
-    "user_contribution_pct": 8.8,
+    "user_messages_in_groups": 135,
+    "user_contribution_pct": 15,
     "user_reaction_rate_pct": 30,
     "peer_reaction_rate_pct": 32,
     "groups_where_user_silent": 2,
@@ -71,8 +71,8 @@
     "per_thread": [
       {
         "thread_label": "the worst offender crew",
-        "total": 48,
-        "user_count": 0,
+        "total": 90,
+        "user_count": 4,
         "user_pct": 0,
         "user_reaction_pct": 0
       },

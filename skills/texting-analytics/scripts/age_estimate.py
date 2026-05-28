@@ -119,6 +119,12 @@ def main():
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     (top_id, top_s), (second_id, second_s) = ranked[0], ranked[1]
 
+    # A single whole-number age, even if it's a best-guess: blend the band
+    # midpoints weighted by their normalized scores.
+    MIDPOINTS = {"gen_z": 20, "millennial": 35, "gen_x": 51, "boomer_plus": 68}
+    score_sum = sum(scores.values()) or 1
+    estimated_age = round(sum(scores[b] * MIDPOINTS.get(b, 40) for b in bands) / score_sum)
+
     label_of = lambda b: rubric["age_bands"][b]["label"]
     # Confidence + range per the rubric's scoring_logic.
     if second_s == 0 or top_s >= 2 * second_s:
@@ -136,6 +142,7 @@ def main():
     driver_labels = [d["label"] for d in drivers[:3]]
 
     age = {
+        "estimated_age": estimated_age,
         "band": top_id,
         "label": label_of(top_id),
         "range_label": range_label,

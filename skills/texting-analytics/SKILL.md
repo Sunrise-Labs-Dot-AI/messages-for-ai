@@ -126,6 +126,16 @@ python3 scripts/age_estimate.py --analysis analysis.json [--total-sent N]
 
 It scores observed style features against `data/age_rubric.json` (from the research package in `research/`). **Frame it as entertainment, never an identity claim** — it's a probabilistic prior with high individual variation, and unreliable on small samples. Omitted if there's no `age` block.
 
+### Aggregating iMessage + WhatsApp
+
+The Wrapped is **cross-platform by default**. Run each platform's adapter to produce its normalized export, then feed *both* to `analyze.py` in one call:
+
+```bash
+python3 scripts/analyze.py --input imessage.json whatsapp.json --output analysis.json
+```
+
+`analyze.py` merges the threads and events (thread IDs are platform-namespaced — `imessage:…` / `whatsapp:…` — so there are no collisions) and every metric, including `top_people`, is computed over the combined set. Same for the emoji/style pass — pass the messages you pulled from *both* MCPs. One Wrapped, both platforms.
+
 ## Voice and tone for the report
 
 PM-voice with self-aware humor. Lead with the headline. Numbers in the first paragraph. Don't bury the lede. The Bad Texter Analysis example in `examples/example-report.md` is the reference.

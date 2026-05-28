@@ -23,9 +23,19 @@ FIXTURES = os.path.join(HERE, "..", "examples", "archetypes")
 OUT = os.path.join(REPO, "dist", "wrapped-preview", "fixtures")
 
 
-def analysis(median, mean, fast, ball, group_pct, silent, total_groups, worst_total, worst_user):
+TOP_PEOPLE = [
+    {"name": "Maya Chen", "count": 2847}, {"name": "Daniel Park", "count": 1962},
+    {"name": "Jordan Reyes", "count": 1403}, {"name": "Sophie Liu", "count": 982},
+    {"name": "Alex Whitman", "count": 711}, {"name": "Priya Nair", "count": 640},
+    {"name": "Sam Okafor", "count": 588}, {"name": "Lena Fischer", "count": 502},
+    {"name": "Marcus Bell", "count": 477}, {"name": "Nina Alvarez", "count": 401},
+]
+
+
+def analysis(median, mean, fast, ball, group_pct, silent, total_groups, worst_total, worst_user, emoji_pct=23.0):
     """Build a schema-complete analysis.json for a synthetic user."""
     return {
+        "top_people": TOP_PEOPLE,
         "latency": {
             "total_reply_pairs": 800, "pct_within_5min": fast, "pct_within_30min": min(fast + 20, 95),
             "pct_within_1hr": min(fast + 30, 97), "pct_within_4hr": min(fast + 45, 99),
@@ -48,7 +58,7 @@ def analysis(median, mean, fast, ball, group_pct, silent, total_groups, worst_to
             ],
         },
         "emoji": {
-            "pct_messages_with_emoji": 23.0, "emoji_per_message": 0.41,
+            "pct_messages_with_emoji": emoji_pct, "emoji_per_message": round(emoji_pct / 56, 2),
             "top": [{"emoji": "😂", "count": 612}, {"emoji": "❤️", "count": 388},
                     {"emoji": "🙏", "count": 201}, {"emoji": "🔥", "count": 144},
                     {"emoji": "😭", "count": 97}],
@@ -75,6 +85,12 @@ SCENARIOS = [
      analysis(median=3,  mean=8,  fast=72, ball=45, group_pct=18,  silent=1,  total_groups=10, worst_total=80,  worst_user=3)),
     ("steady",       "receipt", None,  "The Steady Hand",
      analysis(median=18, mean=30, fast=22, ball=50, group_pct=22,  silent=1,  total_groups=12, worst_total=70,  worst_user=6)),
+    ("closer",       "pager",   None,  "The Closer",
+     analysis(median=10, mean=20, fast=45, ball=12, group_pct=15,  silent=2,  total_groups=12, worst_total=90,  worst_user=4)),
+    ("mvp",          "sunrise", 11200, "The Group MVP",
+     analysis(median=6,  mean=15, fast=50, ball=45, group_pct=38,  silent=0,  total_groups=8,  worst_total=60,  worst_user=20)),
+    ("maximalist",   "receipt", None,  "The Emoji Maximalist",
+     analysis(median=5,  mean=12, fast=55, ball=40, group_pct=15,  silent=1,  total_groups=10, worst_total=70,  worst_user=5, emoji_pct=52.0)),
 ]
 
 
@@ -84,6 +100,7 @@ def archetype_of(a):
         float(lat["median_minutes"]), float(lat["mean_minutes"]), lat["pct_within_5min"],
         bic["pct_ball_in_court"], grp["user_contribution_pct"],
         grp["groups_where_user_silent"], grp["total_groups_analyzed"],
+        a.get("emoji", {}).get("pct_messages_with_emoji", 0),
     )["name"]
 
 

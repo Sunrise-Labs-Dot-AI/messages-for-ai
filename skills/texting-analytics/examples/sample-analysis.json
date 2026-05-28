@@ -41,6 +41,13 @@
       {"thread_label": "Margo-verse", "total": 48, "user_count": 0, "user_pct": 0, "user_reaction_pct": 0}
     ]
   },
+  "top_people": [
+    {"name": "Maya Chen", "count": 2847}, {"name": "Daniel Park", "count": 1962},
+    {"name": "Jordan Reyes", "count": 1403}, {"name": "Sophie Liu", "count": 982},
+    {"name": "Alex Whitman", "count": 711}, {"name": "Priya Nair", "count": 640},
+    {"name": "Sam Okafor", "count": 588}, {"name": "Lena Fischer", "count": 502},
+    {"name": "Marcus Bell", "count": 477}, {"name": "Nina Alvarez", "count": 401}
+  ],
   "emoji": {
     "pct_messages_with_emoji": 23,
     "emoji_per_message": 0.41,
@@ -60,6 +67,7 @@
     "sample_size": 4000
   },
   "age": {
+    "estimated_age": 33,
     "band": "gen_z",
     "label": "Gen Z",
     "range_label": "Gen Z / Millennial",

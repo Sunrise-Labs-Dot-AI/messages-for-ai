@@ -60,54 +60,41 @@ def derive_worst_ghost(group):
     }
 
 
-def derive_archetype(median, mean, fast_pct, ball, group_pct, silent, total_groups):
-    """Pick the most salient archetype from the metrics. Verdict/why use the
-    real numbers so the payoff card is honest, not canned."""
+def derive_archetype(median, mean, fast_pct, ball, group_pct, silent, total_groups, emoji_pct=0):
+    """Pick the most salient archetype. Priority-ordered: first match wins, most
+    distinctive/spicy first. Verdict/why use the real numbers so it's honest."""
     slow_tail = mean >= max(4 * max(median, 0.1), median + 20)
+    A = lambda name, short, verdict, why: {"name": name, "short": short, "verdict": verdict, "why": why}
+
     if group_pct < 3 and ball >= 80:
-        return {
-            "name": "The Group Chat Ghost",
-            "short": "Ghost",
-            "verdict": "present in name, absent in spirit.",
-            "why": f"{group_pct:.1f}% group share, silent in {silent} of {total_groups} groups, {ball}% of threads waiting on you.",
-        }
+        return A("The Group Chat Ghost", "Ghost", "present in name, absent in spirit.",
+                 f"{group_pct:.1f}% group share, silent in {silent} of {total_groups} groups, {ball}% of threads waiting on you.")
     if ball >= 75:
-        return {
-            "name": "Left-on-Read Royalty",
-            "short": "Royalty",
-            "verdict": "the throne is built on unanswered threads.",
-            "why": f"{ball}% of active threads are waiting on a reply from you.",
-        }
+        return A("Left-on-Read Royalty", "Royalty", "the throne is built on unanswered threads.",
+                 f"{ball}% of active threads are waiting on a reply from you.")
+    if ball <= 20:
+        return A("The Closer", "Closer", "inbox zero, but make it texting.",
+                 f"only {ball}% of threads are waiting on you — you finish what you start.")
+    if group_pct >= 30:
+        return A("The Group MVP", "MVP", "the group chat would collapse without you.",
+                 f"you send {group_pct:.1f}% of all group-thread messages — far above an even share.")
+    if emoji_pct >= 45:
+        return A("The Emoji Maximalist", "Maximalist", "why use words when a face will do.",
+                 f"{emoji_pct:.0f}% of your texts carry an emoji.")
     if slow_tail and median <= 10:
-        return {
-            "name": "The Fast Starter",
-            "short": "Fast Starter",
-            "verdict": "quick on the draw, slow on the follow-through.",
-            "why": f"median reply {median:g} min, but the mean is {mean:g} min — the long tail tells on you.",
-        }
+        return A("The Fast Starter", "Fast Starter", "quick on the draw, slow on the follow-through.",
+                 f"median reply {median:g} min, but the mean is {mean:g} min — the long tail tells on you.")
+    if median <= 3:
+        return A("The Quick Draw", "Quick Draw", "replies before the typing bubble fades.",
+                 f"median reply {median:g} min, {fast_pct}% within five.")
     if group_pct < 5:
-        return {
-            "name": "The Quiet Lurker",
-            "short": "Lurker",
-            "verdict": "reads everything, says little.",
-            "why": f"just {group_pct:.1f}% of group-thread messages, silent in {silent} of {total_groups} groups.",
-        }
-    if median <= 5:
-        return {
-            "name": "The Quick Draw",
-            "short": "Quick Draw",
-            "verdict": "replies before the typing bubble fades.",
-            "why": f"median reply {median:g} min, {fast_pct}% within five.",
-        }
-    return {
-        "name": "The Steady Hand",
-        "short": "Steady",
-        "verdict": "consistent, present, hard to rattle.",
-        "why": f"median {median:g} min, {ball}% ball-in-court, {group_pct:.1f}% group share.",
-    }
+        return A("The Quiet Lurker", "Lurker", "reads everything, says little.",
+                 f"just {group_pct:.1f}% of group-thread messages, silent in {silent} of {total_groups} groups.")
+    return A("The Steady Hand", "Steady", "consistent, present, hard to rattle.",
+             f"median {median:g} min, {ball}% ball-in-court, {group_pct:.1f}% group share.")
 
 
-def build_data(analysis, year, total_sent, include_people):
+def build_data(analysis, year, total_sent, show_people):
     lat = analysis.get("latency", {})
     bic = analysis.get("ball_in_court", {})
     grp = analysis.get("group_contribution", {})
@@ -119,15 +106,18 @@ def build_data(analysis, year, total_sent, include_people):
     group_pct = float(grp.get("user_contribution_pct", 0))
     silent = int(grp.get("groups_where_user_silent", 0))
     total_groups = int(grp.get("total_groups_analyzed", 0))
+    emoji_pct = float(analysis.get("emoji", {}).get("pct_messages_with_emoji", 0))
 
-    archetype = derive_archetype(median, mean, fast_pct, ball, group_pct, silent, total_groups)
+    archetype = derive_archetype(median, mean, fast_pct, ball, group_pct, silent, total_groups, emoji_pct)
     worst_ghost = derive_worst_ghost(grp)
 
     # Card arc — start with the always-available cards.
     cards = ["cover"]
     if total_sent:
         cards.append("volume")
-    top_people = analysis.get("top_people") if include_people else None
+    # Top people: included whenever analyze.py produced the list (it's a
+    # personal "keep" card). show_people=False suppresses it (e.g. public share).
+    top_people = analysis.get("top_people") if show_people else None
     if top_people:
         cards.append("people")
     cards += ["latency", "ballincourt", "groups"]
@@ -201,9 +191,9 @@ def main():
     ap.add_argument("--year", type=int, default=2026)
     ap.add_argument("--total-sent", type=int, default=None,
                     help="Total texts sent — enables the Volume card (analysis.json lacks this).")
-    ap.add_argument("--include-people", action="store_true",
-                    help="Include the Top People card (needs contact NAMES — a privacy choice). "
-                         "Requires a 'top_people' array in analysis.json.")
+    ap.add_argument("--no-people", action="store_true",
+                    help="Suppress the Top People card (it shows contact NAMES — pass this "
+                         "when generating a Wrapped meant for public sharing).")
     args = ap.parse_args()
 
     try:
@@ -216,7 +206,7 @@ def main():
         print(json.dumps({"error": "invalid JSON", "detail": str(e)}), file=sys.stderr)
         sys.exit(2)
 
-    data = build_data(analysis, args.year, args.total_sent, args.include_people)
+    data = build_data(analysis, args.year, args.total_sent, show_people=not args.no_people)
 
     # Read the design files (source of truth for the look). Tweaks-panel is the
     # dev-only treatment switcher and is intentionally NOT inlined into the
@@ -254,7 +244,7 @@ def main():
         "cards": data["cards"],
         "archetype": data["archetype"]["name"],
         "note": (None if args.total_sent else
-                 "Volume card omitted (no --total-sent). People card omitted unless --include-people + top_people present."),
+                 "Volume card omitted (no --total-sent). Top People shows when analysis.json has top_people (suppress with --no-people)."),
     }, indent=2))
 
 

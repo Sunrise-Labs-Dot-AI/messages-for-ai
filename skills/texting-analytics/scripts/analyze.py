@@ -176,6 +176,22 @@ def group_block(threads, events, min_msgs=20, large_min=6):
     }
 
 
+def top_people_block(threads, events, limit=10):
+    """Most-texted 1:1 people by total message volume, across all platforms
+    (events are already merged). Name comes from the thread's display_name
+    (the MCP resolves real contact names in production; the harness may show a
+    handle). For the user's own view — keep it out of any shared composite."""
+    counts = {}
+    for e in events:
+        t = threads.get(e["thread_id"])
+        if not t or t["is_group"]:
+            continue
+        counts[e["thread_id"]] = counts.get(e["thread_id"], 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    return [{"name": threads.get(tid, {}).get("display_name") or tid, "count": c}
+            for tid, c in ranked]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--input", nargs="+", required=True, help="one or more normalized exports")
@@ -193,6 +209,7 @@ def main():
         "latency": latency_block(threads, events),
         "ball_in_court": ball_block(threads, events, until_ms),
         "group_contribution": group_block(threads, events, large_min=a.large_min),
+        "top_people": top_people_block(threads, events),
         "filters": {"excluded_business_1to1_threads": len(biz)},
     }
     json.dump(out, open(a.output, "w"), indent=2)

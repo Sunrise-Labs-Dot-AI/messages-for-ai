@@ -1,4 +1,46 @@
 {
+  "top_people": [
+    {
+      "name": "Maya Chen",
+      "count": 2847
+    },
+    {
+      "name": "Daniel Park",
+      "count": 1962
+    },
+    {
+      "name": "Jordan Reyes",
+      "count": 1403
+    },
+    {
+      "name": "Sophie Liu",
+      "count": 982
+    },
+    {
+      "name": "Alex Whitman",
+      "count": 711
+    },
+    {
+      "name": "Priya Nair",
+      "count": 640
+    },
+    {
+      "name": "Sam Okafor",
+      "count": 588
+    },
+    {
+      "name": "Lena Fischer",
+      "count": 502
+    },
+    {
+      "name": "Marcus Bell",
+      "count": 477
+    },
+    {
+      "name": "Nina Alvarez",
+      "count": 401
+    }
+  ],
   "latency": {
     "total_reply_pairs": 800,
     "pct_within_5min": 40,
@@ -81,6 +123,7 @@
     "sample_size": 4000
   },
   "age": {
+    "estimated_age": 33,
     "band": "gen_z",
     "label": "Gen Z",
     "range_label": "Gen Z / Millennial",
