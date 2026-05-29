@@ -192,6 +192,25 @@ def top_people_block(threads, events, limit=10):
             for tid, c in ranked]
 
 
+def top_people_by_chars_block(threads, events, limit=10):
+    """Same 1:1 ranking but summed by character volume (text_len) instead of
+    message count. Surfaces the people you actually wrote PARAGRAPHS to vs. the
+    rapid-fire short-text relationships. Metadata-only: we only have the per-
+    message text LENGTH, never the body."""
+    chars = {}
+    for e in events:
+        t = threads.get(e["thread_id"])
+        if not t or t["is_group"]:
+            continue
+        n = e.get("text_len") or 0
+        if n <= 0:
+            continue
+        chars[e["thread_id"]] = chars.get(e["thread_id"], 0) + n
+    ranked = sorted(chars.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    return [{"name": threads.get(tid, {}).get("display_name") or tid, "chars": c}
+            for tid, c in ranked]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--input", nargs="+", required=True, help="one or more normalized exports")
@@ -210,6 +229,7 @@ def main():
         "ball_in_court": ball_block(threads, events, until_ms),
         "group_contribution": group_block(threads, events, large_min=a.large_min),
         "top_people": top_people_block(threads, events),
+        "top_people_by_chars": top_people_by_chars_block(threads, events),
         "filters": {"excluded_business_1to1_threads": len(biz)},
     }
     json.dump(out, open(a.output, "w"), indent=2)

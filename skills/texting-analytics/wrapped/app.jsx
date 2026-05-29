@@ -39,7 +39,7 @@ const DATA = (typeof window !== 'undefined' && window.WRAPPED_DATA) || {
 
 // Full card arc — used to keep each card's designed palette even when some
 // cards are omitted (build_wrapped drops cards the analysis can't populate).
-const FULL_ARC = ['cover', 'volume', 'people', 'latency', 'ballincourt', 'groups', 'emoji', 'age', 'archetype', 'share'];
+const FULL_ARC = ['cover', 'volume', 'people', 'people_depth', 'latency', 'ballincourt', 'groups', 'emoji', 'age', 'archetype', 'share'];
 
 // ── Hooks ───────────────────────────────────────────────────
 
@@ -123,11 +123,19 @@ function CardShell({ tone, treatment, label, children, footer, onTap }) {
         }}/>
       )}
 
+      {/* Masthead wordmark — appears at the top of every captured share image
+          so the shared PNG has subtle attribution even out of context. */}
+      <div style={{
+        fontFamily: treatment.mono, fontSize: 10, letterSpacing: '0.18em',
+        textTransform: 'uppercase', color: tone.soft, fontWeight: 500,
+        opacity: 0.55, marginBottom: 10,
+      }}>texting wrapped · messagesfor.ai</div>
+
       {/* Top label */}
       {label && (
         <div style={{
-          fontFamily: treatment.mono, fontSize: 11, letterSpacing: '0.12em',
-          textTransform: 'uppercase', color: tone.soft, fontWeight: 500,
+          fontFamily: treatment.mono, fontSize: 13, letterSpacing: '0.12em',
+          textTransform: 'uppercase', color: tone.soft, fontWeight: 600,
         }}>{label}</div>
       )}
 
@@ -137,8 +145,8 @@ function CardShell({ tone, treatment, label, children, footer, onTap }) {
 
       {footer && (
         <div style={{
-          fontFamily: treatment.mono, fontSize: 10.5, letterSpacing: '0.12em',
-          textTransform: 'uppercase', color: tone.soft, fontWeight: 500,
+          fontFamily: treatment.mono, fontSize: 12.5, letterSpacing: '0.12em',
+          textTransform: 'uppercase', color: tone.soft, fontWeight: 600,
         }}>{footer}</div>
       )}
     </div>
@@ -282,6 +290,67 @@ function PeopleCard({ tone, treatment, active }) {
   );
 }
 
+// Card 2b: Top 10 by DEPTH (approx words). Same surface as PeopleCard but
+// reranks by word volume — separates bursty short-text relationships from
+// the people you actually wrote paragraphs to. Personal-only (omitted from
+// public share-all composite, same as PeopleCard).
+function PeopleDepthCard({ tone, treatment, active }) {
+  const people = (DATA.topPeopleByDepth || []).slice(0, 10);
+  const max = people.length ? people[0].words : 1;
+  const isSerif = treatment.titleFont === 'serif';
+  return (
+    <CardShell
+      tone={tone} treatment={treatment}
+      label="02b · how much you wrote"
+      footer="ranked by words, not pings.">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+        <div style={{
+          fontFamily: isSerif ? treatment.serif : treatment.sans,
+          fontStyle: isSerif ? 'italic' : 'normal',
+          fontWeight: isSerif ? 400 : 700,
+          fontSize: 38, lineHeight: 0.95,
+          letterSpacing: isSerif ? '-0.025em' : '-0.04em',
+          marginBottom: 18,
+        }}>
+          By depth.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+          {people.map((p, i) => {
+            const pct = (p.words / max) * 100;
+            return (
+              <div key={p.name + i} style={{
+                opacity: active ? 1 : 0, transform: active ? 'translateX(0)' : 'translateX(-10px)',
+                transition: `all 420ms cubic-bezier(.2,.7,.2,1) ${150 + i * 55}ms`,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 3 }}>
+                  <span style={{ fontFamily: treatment.mono, fontSize: 11, color: tone.soft, width: 20, fontWeight: 500, flexShrink: 0 }}>{String(i + 1).padStart(2, '0')}</span>
+                  <span style={{
+                    fontFamily: isSerif ? treatment.serif : treatment.sans,
+                    fontWeight: isSerif ? 500 : 600,
+                    fontSize: 17, letterSpacing: '-0.01em',
+                    flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                  }}>{p.name}</span>
+                  <span style={{ fontFamily: treatment.mono, fontSize: 11, color: tone.soft, fontWeight: 500, flexShrink: 0 }}>
+                    {p.words.toLocaleString()} words
+                  </span>
+                </div>
+                <div style={{ position: 'relative', height: 3, background: 'currentColor', opacity: 0.28, marginLeft: 30, borderRadius: 2 }}>
+                  <div style={{
+                    position: 'absolute', left: 0, top: 0, bottom: 0,
+                    width: active ? `${pct}%` : 0,
+                    background: 'currentColor', borderRadius: 2,
+                    transition: `width 800ms cubic-bezier(.2,.7,.2,1) ${230 + i * 55}ms`,
+                  }}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </CardShell>
+  );
+}
+
 // Reply-time distribution — a right-skewed (lognormal-ish) curve: a tall spike
 // near the median, a long tail out past the mean. Median + mean drawn as lines.
 function LatencyCurve({ median, mean }) {
@@ -341,7 +410,8 @@ function LatencyCard({ tone, treatment, active }) {
           fontFamily: isSerif ? treatment.serif : treatment.sans,
           fontStyle: isSerif ? 'italic' : 'normal',
           fontWeight: isSerif ? 400 : 600,
-          fontSize: 24, lineHeight: 1.22, letterSpacing: '-0.01em', textWrap: 'balance',
+          fontSize: 24, lineHeight: 1.22, letterSpacing: 0,
+          wordSpacing: isSerif ? '0.05em' : 0, textWrap: 'balance',
         }}>
           {skew
             ? <>Half your replies land within <span style={{ textDecoration: 'underline', textUnderlineOffset: 5 }}>{fmt(med, 1)} minutes</span>. But your average is {fmt(mean, 1)} — a handful of slow ones drag the tail way out.</>
@@ -404,7 +474,8 @@ function BallInCourtCard({ tone, treatment, active, instant }) {
           fontFamily: isSerif ? treatment.serif : treatment.sans,
           fontStyle: isSerif ? 'italic' : 'normal',
           fontWeight: isSerif ? 400 : 600,
-          fontSize: 26, lineHeight: 1.18, letterSpacing: '-0.02em', textWrap: 'balance',
+          fontSize: 26, lineHeight: 1.18, letterSpacing: 0,
+          wordSpacing: isSerif ? '0.05em' : 0, textWrap: 'balance',
         }}>
           {heavy
             ? 'More than half your live threads are waiting on you to reply.'
@@ -469,8 +540,8 @@ function GroupsCard({ tone, treatment, active, instant }) {
           fontFamily: isSerif ? treatment.serif : treatment.sans,
           fontStyle: isSerif ? 'italic' : 'normal',
           fontWeight: isSerif ? 400 : 600,
-          fontSize: 30, lineHeight: 1.1, letterSpacing: '-0.02em',
-          textWrap: 'balance',
+          fontSize: 30, lineHeight: 1.1, letterSpacing: 0,
+          wordSpacing: isSerif ? '0.05em' : 0, textWrap: 'balance',
         }}>
           Silent in <span style={{ textDecoration: 'underline', textUnderlineOffset: 6 }}>{DATA.silentGroups} of {DATA.totalGroups}</span> groups.
         </div>
@@ -529,7 +600,8 @@ function ArchetypeCard({ tone, treatment, active }) {
           fontFamily: isSerif ? treatment.serif : treatment.sans,
           fontStyle: isSerif ? 'italic' : 'normal',
           fontWeight: isSerif ? 400 : 500,
-          fontSize: 22, lineHeight: 1.2, letterSpacing: '-0.01em',
+          fontSize: 22, lineHeight: 1.2, letterSpacing: 0,
+          wordSpacing: isSerif ? '0.05em' : 0,
           opacity: active ? 1 : 0, transition: 'opacity 800ms ease 900ms',
         }}>
           {DATA.archetype.verdict}
@@ -662,7 +734,8 @@ function EmojiCard({ tone, treatment, active, instant }) {
           marginTop: 8,
           fontFamily: isSerif ? treatment.serif : treatment.sans,
           fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
-          fontSize: 24, lineHeight: 1.2, letterSpacing: '-0.01em', textWrap: 'balance',
+          fontSize: 24, lineHeight: 1.2, letterSpacing: 0,
+          wordSpacing: isSerif ? '0.05em' : 0, textWrap: 'balance',
         }}>
           {top[0] ? <>{top[0].emoji} is doing the heavy lifting.</> : 'A words-only minimalist.'}
         </div>
@@ -734,16 +807,17 @@ function AgeCard({ tone, treatment, active }) {
 // ── Carousel ────────────────────────────────────────────────
 
 const CARDS_BY_KEY = {
-  cover: CoverCard, volume: VolumeCard, people: PeopleCard, latency: LatencyCard,
-  ballincourt: BallInCourtCard, groups: GroupsCard, emoji: EmojiCard,
+  cover: CoverCard, volume: VolumeCard, people: PeopleCard, people_depth: PeopleDepthCard,
+  latency: LatencyCard, ballincourt: BallInCourtCard, groups: GroupsCard, emoji: EmojiCard,
   age: AgeCard, archetype: ArchetypeCard, share: ShareCard,
 };
 
 // Palette is decoupled from card order so adding/omitting cards never recolors
 // the others. Each key maps to an index into the treatment's palette array;
 // emoji + age reuse earlier slots (people/volume) to avoid extra palettes.
+// people_depth reuses people's palette so the two sister cards visually rhyme.
 const PALETTE_OF = {
-  cover: 0, volume: 1, people: 2, latency: 3, ballincourt: 4,
+  cover: 0, volume: 1, people: 2, people_depth: 2, latency: 3, ballincourt: 4,
   groups: 5, archetype: 6, share: 7, emoji: 2, age: 1,
 };
 
@@ -917,10 +991,16 @@ function App() {
     if (!window.html2canvas || capturing) return;
     const startIdx = idx;
     setCapturing(true);
+    // Same font-ready precaution as handleShare — italic body text otherwise
+    // renders with collapsed word gaps in the captured PNG.
+    if (document.fonts && document.fonts.ready) {
+      try { await document.fonts.ready; } catch (_) {}
+    }
     try {
       const shots = [];
       for (let i = 0; i < CARDS.length; i++) {
-        if (CARD_KEYS[i] === 'people') continue;  // keep contact names out of a public composite
+        // Both People cards (count + depth) show contact names — exclude from a public composite.
+        if (CARD_KEYS[i] === 'people' || CARD_KEYS[i] === 'people_depth') continue;
         setIdx(i);
         setShareAllState(`${i + 1}/${CARDS.length}`);
         await new Promise((r) => setTimeout(r, 800));  // let the reveal settle
@@ -967,6 +1047,12 @@ function App() {
     if (!el || !window.html2canvas) return;
     try {
       setShareState('working');
+      // Make sure custom fonts are fully loaded before capture — html2canvas
+      // would otherwise fall back to a system serif and collapse word gaps in
+      // italic body text. See feedback on the v0.3.3 export.
+      if (document.fonts && document.fonts.ready) {
+        try { await document.fonts.ready; } catch (_) {}
+      }
       const canvas = await window.html2canvas(el, {
         scale: 3, backgroundColor: null, useCORS: true, logging: false,
       });

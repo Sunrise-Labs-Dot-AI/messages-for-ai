@@ -118,8 +118,14 @@ def build_data(analysis, year, total_sent, show_people):
     # Top people: included whenever analyze.py produced the list (it's a
     # personal "keep" card). show_people=False suppresses it (e.g. public share).
     top_people = analysis.get("top_people") if show_people else None
+    top_people_by_chars = analysis.get("top_people_by_chars") if show_people else None
     if top_people:
         cards.append("people")
+    if top_people_by_chars:
+        # Second People card — same surface, ranked by depth (words) instead of
+        # count. Separates the bursty short-text relationships from the ones
+        # you actually wrote paragraphs to.
+        cards.append("people_depth")
     cards += ["latency", "ballincourt", "groups"]
     emoji = analysis.get("emoji")
     if emoji:
@@ -146,6 +152,13 @@ def build_data(analysis, year, total_sent, show_people):
         data["totalSent"] = int(total_sent)
     if top_people:
         data["topPeople"] = top_people
+    if top_people_by_chars:
+        # Convert chars → approximate words (chars ÷ 5) at build time so the
+        # card stays presentational.
+        data["topPeopleByDepth"] = [
+            {"name": p["name"], "words": int(round(p.get("chars", 0) / 5))}
+            for p in top_people_by_chars
+        ]
     if emoji:
         data["emoji"] = emoji
     if analysis.get("style"):
