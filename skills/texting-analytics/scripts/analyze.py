@@ -183,16 +183,21 @@ def group_block(threads, events, min_msgs=20, large_min=6):
 
 
 def top_people_block(threads, events, limit=10):
-    """1:1 people you SENT the most messages to, across all platforms (events
-    are already merged). Outbound only — counting both directions would double
-    every relationship and obscure asymmetries (a wife who replies as much as
-    you ranks the same as a chatty colleague who replies twice as much). Name
-    comes from the thread's display_name (MCP resolves real contact names in
+    """1:1 people you SENT the most substantive messages to, across all
+    platforms (events are already merged). Outbound only — counting both
+    directions would double every relationship and obscure asymmetries (a
+    wife who replies as much as you ranks the same as a chatty colleague
+    who replies twice as much). SUBSTANTIVE kinds only — tapbacks/reactions
+    ("Liked", 👍 reactions) and chat-system events don't get counted as
+    messages sent (they inflated couple/spouse rows ~15%). Name comes from
+    the thread's display_name (MCP resolves real contact names in
     production; the harness may show a handle). For the user's own view —
     keep it out of any shared composite."""
     counts = {}
     for e in events:
         if not e.get("from_me"):
+            continue
+        if e.get("kind") not in SUBSTANTIVE:
             continue
         t = threads.get(e["thread_id"])
         if not t or t["is_group"]:
@@ -211,6 +216,8 @@ def talk_listen_block(threads, events, person_limit=8):
     (text LENGTH never the body)."""
     sent, recv = {}, {}
     for e in events:
+        if e.get("kind") not in SUBSTANTIVE:
+            continue
         t = threads.get(e["thread_id"])
         if not t or t["is_group"]:
             continue
@@ -272,6 +279,8 @@ def top_people_by_chars_block(threads, events, limit=10):
     for e in events:
         if not e.get("from_me"):
             continue
+        if e.get("kind") not in SUBSTANTIVE:
+            continue
         t = threads.get(e["thread_id"])
         if not t or t["is_group"]:
             continue
@@ -290,24 +299,44 @@ def main():
     ap.add_argument("--output", required=True)
     ap.add_argument("--large-min", type=int, default=6, help="participant count at which a group is 'large'")
     ap.add_argument("--keep-business", action="store_true", help="don't filter automated/business 1:1 threads")
+    ap.add_argument("--window-days", type=int, default=365,
+                    help="bound analysis to the last N days from the newest event (default: 365 for 'Wrapped'). "
+                         "Pass --window-days 0 for all-time.")
     a = ap.parse_args()
     threads, events = load(a.input)
     biz = set() if a.keep_business else business_thread_ids(threads, events)
     if biz:
         events = [e for e in events if e["thread_id"] not in biz]
         threads = {tid: t for tid, t in threads.items() if tid not in biz}
+    # Bound to a window so a Wrapped reads as a year-in-review, not a
+    # full-history accumulator (4 years of texts to a spouse can easily hit
+    # 12k+ — a Wrapped should be the LAST YEAR's view by default).
     until_ms = max((e["ts_ms"] for e in events), default=int(time.time() * 1000))
+    since_ms = 0 if a.window_days <= 0 else (until_ms - a.window_days * 86400 * 1000)
+    if since_ms > 0:
+        events_full = events  # ball_block stays on full timeline (snapshot of CURRENT inboxes)
+        events = [e for e in events if e["ts_ms"] >= since_ms]
+    else:
+        events_full = events
     out = {
         "latency": latency_block(threads, events),
-        "ball_in_court": ball_block(threads, events, until_ms),
+        # ball_in_court is a CURRENT snapshot ("which threads is the ball
+        # parked in right now?") — uses full event history so threads that
+        # last got a reply 14 months ago still surface.
+        "ball_in_court": ball_block(threads, events_full, until_ms),
         "group_contribution": group_block(threads, events, large_min=a.large_min),
         "top_people": top_people_block(threads, events),
         "top_people_by_chars": top_people_by_chars_block(threads, events),
         "talk_listen": talk_listen_block(threads, events),
-        "filters": {"excluded_business_1to1_threads": len(biz)},
+        "filters": {
+            "excluded_business_1to1_threads": len(biz),
+            "window_days": a.window_days,
+            "since_ts_ms": since_ms,
+            "until_ts_ms": until_ms,
+        },
     }
     json.dump(out, open(a.output, "w"), indent=2)
-    print(f"[analyze] threads={len(threads)} events={len(events)} biz_excluded={len(biz)} -> {a.output}")
+    print(f"[analyze] threads={len(threads)} events={len(events)} window={a.window_days}d biz_excluded={len(biz)} -> {a.output}")
 
 
 if __name__ == "__main__":
