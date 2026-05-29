@@ -129,8 +129,8 @@
     "approx_age": "28-43",
     "confidence": "low",
     "drivers": [
-      "All-lowercase typing",
       "Uses \ud83d\ude02 for laughter (non-ironic)",
+      "All-lowercase typing",
       "No period even on multi-sentence messages"
     ],
     "sample_size": 4000

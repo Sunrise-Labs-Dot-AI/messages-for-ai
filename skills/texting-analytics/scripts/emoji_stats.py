@@ -41,6 +41,14 @@ LAUGH_PATTERNS = {
 }
 LAUGH_EMOJI = {"😂": "joy", "🤣": "rofl", "💀": "skull", "😭": "sob"}
 
+# Canonical emoji for the legacy iMessage tapback types. 2006 is "Reacted
+# with a custom emoji" — the actual emoji is parsed from the reaction body.
+TAPBACK_EMOJI = {
+    2000: "❤️", 2001: "👍", 2002: "👎", 2003: "😂",
+    2004: "‼️", 2005: "❓",
+    # 2006 → custom; 2007 → sticker (skip from emoji counts)
+}
+
 # Slang phrase counts (whole-word / phrase matches). Generational signal that
 # sharpens the age estimate — counting tokens, never storing message bodies.
 GENZ_SLANG = [r"\brizz\b", r"\bskibidi\b", r"\bno cap\b", r"\bfr fr\b", r"\bbussin\b",
@@ -65,8 +73,11 @@ def is_emoji_char(c):
 
 
 def extract_emoji(text):
-    # Skip variation selectors / ZWJ so ZWJ sequences don't over-count.
-    return [c for c in text if is_emoji_char(c)]
+    # Skip variation selectors / ZWJ so ZWJ sequences don't over-count. Also
+    # skip U+FFFC (object replacement character — iMessage uses it as a
+    # placeholder for attachments). It would dominate the inline-emoji top
+    # otherwise.
+    return [c for c in text if is_emoji_char(c) and c != "￼"]
 
 
 def end_period(text):
@@ -95,17 +106,39 @@ def main():
         print(json.dumps({"error": "expected a JSON array"}), file=sys.stderr)
         sys.exit(2)
 
-    texts = []
+    # Split messages by KIND. Reactions get their emoji counted into a separate
+    # bucket — a 👍 tapback is qualitatively different from a 👍 typed inline.
+    # Style + slang stats only consider inline text (kind != "reaction").
+    inline_texts = []
+    reaction_emoji = Counter()
     for m in messages:
         if not isinstance(m, dict):
             continue
         if args.outbound_only and not m.get("from_me"):
             continue
+        kind = m.get("kind")
+        if kind == "reaction":
+            # Map known tapback codes to their canonical emoji; for "custom
+            # emoji" reactions (2006) and any unknown codes, parse the body.
+            assoc = m.get("assoc")
+            if assoc in TAPBACK_EMOJI:
+                reaction_emoji[TAPBACK_EMOJI[assoc]] += 1
+            else:
+                body = (m.get("text") or "").strip()
+                emo = extract_emoji(body)
+                if emo:
+                    # Take the FIRST emoji — reaction bodies look like
+                    # "Reacted 😂 to '<original>'", so the first emoji is the
+                    # reaction itself, not anything from the quoted message.
+                    reaction_emoji[emo[0]] += 1
+            continue
+        if kind and kind not in ("text", "media"):
+            continue
         t = (m.get("text") or "").strip()
         if t:
-            texts.append(t)
+            inline_texts.append(t)
 
-    n = len(texts)
+    n = len(inline_texts)
     if n == 0:
         print(json.dumps({"error": "no usable messages"}), file=sys.stderr)
         sys.exit(2)
@@ -118,7 +151,7 @@ def main():
     laughs = Counter()
     genz_hits = aging_hits = ellipsis_msgs = rexcl_msgs = emoji_end_msgs = 0
 
-    for t in texts:
+    for t in inline_texts:
         emo = extract_emoji(t)
         if emo:
             with_emoji += 1
@@ -154,6 +187,10 @@ def main():
         "emoji": {
             "pct_messages_with_emoji": pct(with_emoji),
             "emoji_per_message": round(total_emoji / n, 2),
+            "top_inline": [{"emoji": g, "count": c} for g, c in glyphs.most_common(8)],
+            "top_reactions": [{"emoji": g, "count": c} for g, c in reaction_emoji.most_common(8)],
+            # legacy field — kept for back-compat with any downstream consumer
+            # that hasn't migrated to top_inline yet.
             "top": [{"emoji": g, "count": c} for g, c in glyphs.most_common(8)],
         },
         "style": {
@@ -171,8 +208,10 @@ def main():
     }
 
     # Privacy guard: nothing emitted should be a multi-word message body.
+    # Check inline_texts (reaction bodies aren't included in output, only the
+    # first emoji is, so they're safe).
     blob = json.dumps(out, ensure_ascii=False)
-    for t in texts:
+    for t in inline_texts:
         if " " in t and t in blob:
             print(json.dumps({"error": "privacy guard tripped: a message body in output",
                               "body_length": len(t)}), file=sys.stderr)

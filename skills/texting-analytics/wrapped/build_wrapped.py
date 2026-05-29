@@ -121,11 +121,11 @@ def build_data(analysis, year, total_sent, show_people):
     top_people_by_chars = analysis.get("top_people_by_chars") if show_people else None
     if top_people:
         cards.append("people")
-    if top_people_by_chars:
-        # Second People card — same surface, ranked by depth (words) instead of
-        # count. Separates the bursty short-text relationships from the ones
-        # you actually wrote paragraphs to.
-        cards.append("people_depth")
+    top_people_l30 = analysis.get("top_people_l30") if show_people else None
+    if top_people_l30:
+        # Second People card — same surface, restricted to the LAST 30 DAYS.
+        # Pairs with the past-year ranking to show what's hot right now.
+        cards.append("people_l30")
     talk_listen = analysis.get("talk_listen") if show_people else None
     if talk_listen and talk_listen.get("you_words") and talk_listen.get("them_words"):
         # Third People-adjacent card — aggregate talker/listener ratio + per-
@@ -157,13 +157,8 @@ def build_data(analysis, year, total_sent, show_people):
         data["totalSent"] = int(total_sent)
     if top_people:
         data["topPeople"] = top_people
-    if top_people_by_chars:
-        # Convert chars → approximate words (chars ÷ 5) at build time so the
-        # card stays presentational.
-        data["topPeopleByDepth"] = [
-            {"name": p["name"], "words": int(round(p.get("chars", 0) / 5))}
-            for p in top_people_by_chars
-        ]
+    if top_people_l30:
+        data["topPeopleL30"] = top_people_l30
     if talk_listen and talk_listen.get("you_words") and talk_listen.get("them_words"):
         data["talkListen"] = talk_listen
     if emoji:

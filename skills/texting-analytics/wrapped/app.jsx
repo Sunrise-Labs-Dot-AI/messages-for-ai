@@ -39,7 +39,7 @@ const DATA = (typeof window !== 'undefined' && window.WRAPPED_DATA) || {
 
 // Full card arc — used to keep each card's designed palette even when some
 // cards are omitted (build_wrapped drops cards the analysis can't populate).
-const FULL_ARC = ['cover', 'volume', 'people', 'people_depth', 'talk_listen', 'latency', 'ballincourt', 'groups', 'emoji', 'age', 'archetype', 'share'];
+const FULL_ARC = ['cover', 'volume', 'people', 'people_l30', 'talk_listen', 'latency', 'ballincourt', 'groups', 'emoji', 'age', 'archetype', 'share'];
 
 // ── Hooks ───────────────────────────────────────────────────
 
@@ -290,19 +290,19 @@ function PeopleCard({ tone, treatment, active }) {
   );
 }
 
-// Card 2b: Top 10 by DEPTH (approx words). Same surface as PeopleCard but
-// reranks by word volume — separates bursty short-text relationships from
-// the people you actually wrote paragraphs to. Personal-only (omitted from
+// Card 2b: Past-30-day Top 10. Same surface as PeopleCard but bounded to the
+// last 30 days — pairs with the annual ranking to show what's hot right now
+// vs. who you've been talking to all year. Personal-only (omitted from
 // public share-all composite, same as PeopleCard).
-function PeopleDepthCard({ tone, treatment, active }) {
-  const people = (DATA.topPeopleByDepth || []).slice(0, 10);
-  const max = people.length ? people[0].words : 1;
+function PeopleL30Card({ tone, treatment, active }) {
+  const people = (DATA.topPeopleL30 || []).slice(0, 10);
+  const max = people.length ? people[0].count : 1;
   const isSerif = treatment.titleFont === 'serif';
   return (
     <CardShell
       tone={tone} treatment={treatment}
-      label="02b · how much you wrote"
-      footer="ranked by your words, not your pings.">
+      label="02b · the last 30 days"
+      footer="ranked by messages you sent this month.">
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <div style={{
           fontFamily: isSerif ? treatment.serif : treatment.sans,
@@ -312,11 +312,18 @@ function PeopleDepthCard({ tone, treatment, active }) {
           letterSpacing: isSerif ? '-0.025em' : '-0.04em',
           marginBottom: 18,
         }}>
-          By depth.
+          This month.
         </div>
+        {people.length === 0 ? (
+          <div style={{
+            fontFamily: isSerif ? treatment.serif : treatment.sans,
+            fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 500,
+            fontSize: 22, color: tone.soft, letterSpacing: '-0.01em',
+          }}>Quiet month — no 1:1 sends in the last 30 days.</div>
+        ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
           {people.map((p, i) => {
-            const pct = (p.words / max) * 100;
+            const pct = (p.count / max) * 100;
             return (
               <div key={p.name + i} style={{
                 opacity: active ? 1 : 0, transform: active ? 'translateX(0)' : 'translateX(-10px)',
@@ -331,7 +338,7 @@ function PeopleDepthCard({ tone, treatment, active }) {
                     flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                   }}>{p.name}</span>
                   <span style={{ fontFamily: treatment.mono, fontSize: 11, color: tone.soft, fontWeight: 500, flexShrink: 0 }}>
-                    {p.words.toLocaleString()} words
+                    {p.count.toLocaleString()} sent
                   </span>
                 </div>
                 <div style={{ position: 'relative', height: 3, background: 'currentColor', opacity: 0.28, marginLeft: 30, borderRadius: 2 }}>
@@ -346,6 +353,7 @@ function PeopleDepthCard({ tone, treatment, active }) {
             );
           })}
         </div>
+        )}
       </div>
     </CardShell>
   );
@@ -714,15 +722,25 @@ function ArchetypeCard({ tone, treatment, active }) {
 // (App's control bar), not on the card, so the shared image stays clean.
 function ShareCard({ tone, treatment, active }) {
   const isSerif = treatment.titleFont === 'serif';
-  // Richer recap — every headline number from the year, up to 6 tiles.
+  // Richer recap — one hero number per card in the deck. Names get redacted
+  // (just counts) since the recap is included in the public Share-all
+  // composite; the people cards themselves stay personal-only.
   const tiles = [];
   if (DATA.totalSent) tiles.push({ stat: fmt(DATA.totalSent), label: 'texts sent' });
+  if (DATA.topPeople && DATA.topPeople[0]) tiles.push({ stat: fmt(DATA.topPeople[0].count), label: 'top contact' });
+  if (DATA.topPeopleL30 && DATA.topPeopleL30[0]) tiles.push({ stat: fmt(DATA.topPeopleL30[0].count), label: 'top · last 30d' });
+  if (DATA.talkListen && DATA.talkListen.your_share_pct != null) {
+    tiles.push({ stat: `${Math.round(DATA.talkListen.your_share_pct)}%`, label: 'talker share' });
+  }
   tiles.push({ stat: `${fmt(DATA.median, 1)}m`, label: 'median reply' });
-  tiles.push({ stat: `${DATA.ballInCourt}%`, label: 'ball in court' });
+  tiles.push({ stat: `${DATA.ballInCourt}%`, label: 'last word' });
   tiles.push({ stat: `${Number(DATA.groupContribPct).toFixed(1)}%`, label: 'group share' });
-  if (DATA.emoji && DATA.emoji.top && DATA.emoji.top.length) tiles.push({ stat: DATA.emoji.top[0].emoji, label: 'top emoji' });
+  const emojiTop = (DATA.emoji && (DATA.emoji.top_inline || DATA.emoji.top)) || [];
+  if (emojiTop[0]) tiles.push({ stat: emojiTop[0].emoji, label: 'top emoji' });
   if (DATA.age && DATA.age.estimated_age != null) tiles.push({ stat: `${DATA.age.estimated_age}`, label: 'texting age' });
-  const recap = tiles.slice(0, 6);
+  // 9 max — covers every populated card; falls back gracefully if some
+  // analyses lack people / age / emoji blocks.
+  const recap = tiles.slice(0, 9);
   return (
     <CardShell
       tone={tone} treatment={treatment}
@@ -781,20 +799,39 @@ function RecapTile({ treatment, tone, stat, label }) {
   );
 }
 
-// Card 6: Emoji — aggregate emoji usage (from the emoji_stats pass). Omitted
-// unless analysis.json carries an `emoji` block.
+// Card 6: Emoji — split into INLINE emoji (typed in messages) vs REACTIONS
+// (tapbacks). A 👍 tapback is qualitatively different from a 👍 typed in line.
+// Falls back to the legacy single-list `top` field for older analysis.json.
+function EmojiRow({ row, isSerif, tone, treatment, active, baseDelay }) {
+  return (
+    <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end' }}>
+      {row.map((t, i) => (
+        <div key={i} style={{
+          textAlign: 'center',
+          opacity: active ? 1 : 0, transform: active ? 'translateY(0)' : 'translateY(10px)',
+          transition: `all 500ms cubic-bezier(.2,.7,.2,1) ${baseDelay + i * 70}ms`,
+        }}>
+          <div style={{ fontSize: i === 0 ? 38 : 30, lineHeight: 1 }}>{t.emoji}</div>
+          <div style={{ fontFamily: treatment.mono, fontSize: 10, color: tone.soft, marginTop: 5 }}>{t.count.toLocaleString()}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EmojiCard({ tone, treatment, active, instant }) {
-  const e = DATA.emoji || { pct_messages_with_emoji: 0, top: [] };
+  const e = DATA.emoji || { pct_messages_with_emoji: 0 };
   const pct = useCountUp(e.pct_messages_with_emoji, 1100, active, 180, instant);
-  const top = (e.top || []).slice(0, 5);
+  const inline = (e.top_inline || e.top || []).slice(0, 5);
+  const reactions = (e.top_reactions || []).slice(0, 5);
   const isSerif = treatment.numberFont === 'serif';
   const italic = isSerif && treatment.italicNumbers;
   return (
     <CardShell
       tone={tone} treatment={treatment}
       label="06 · your emoji"
-      footer="a picture's worth a thousand texts.">
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 20 }}>
+      footer="typed vs tapbacked.">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 16 }}>
         <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft }}>
           You drop an emoji in
         </div>
@@ -802,42 +839,35 @@ function EmojiCard({ tone, treatment, active, instant }) {
           <div style={{
             fontFamily: isSerif ? treatment.serif : treatment.sans,
             fontStyle: italic ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 700,
-            fontSize: 116, lineHeight: 0.85, letterSpacing: isSerif ? '-0.045em' : '-0.07em',
+            fontSize: 108, lineHeight: 0.85, letterSpacing: isSerif ? '-0.045em' : '-0.07em',
           }}>{fmt(pct, pct % 1 ? 1 : 0)}</div>
           <div style={{
             fontFamily: isSerif ? treatment.serif : treatment.sans,
             fontStyle: italic ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
-            fontSize: 44, letterSpacing: '-0.04em',
+            fontSize: 40, letterSpacing: '-0.04em',
           }}>%</div>
         </div>
-        <div style={{ fontFamily: treatment.mono, fontSize: 13, color: tone.soft, letterSpacing: '0.04em', marginTop: -6 }}>
-          of your texts.
+        <div style={{ fontFamily: treatment.mono, fontSize: 12, color: tone.soft, letterSpacing: '0.04em', marginTop: -4 }}>
+          of your inline messages.
         </div>
 
-        {top.length > 0 && (
-          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', marginTop: 6 }}>
-            {top.map((t, i) => (
-              <div key={i} style={{
-                textAlign: 'center',
-                opacity: active ? 1 : 0, transform: active ? 'translateY(0)' : 'translateY(10px)',
-                transition: `all 500ms cubic-bezier(.2,.7,.2,1) ${250 + i * 80}ms`,
-              }}>
-                <div style={{ fontSize: i === 0 ? 52 : 36, lineHeight: 1 }}>{t.emoji}</div>
-                <div style={{ fontFamily: treatment.mono, fontSize: 11, color: tone.soft, marginTop: 7 }}>{t.count.toLocaleString()}</div>
-              </div>
-            ))}
+        {inline.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontFamily: treatment.mono, fontSize: 10.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: tone.soft, marginBottom: 8, fontWeight: 600 }}>
+              Top 5 inline
+            </div>
+            <EmojiRow row={inline} isSerif={isSerif} tone={tone} treatment={treatment} active={active} baseDelay={250} />
           </div>
         )}
 
-        <div style={{
-          marginTop: 8,
-          fontFamily: isSerif ? treatment.serif : treatment.sans,
-          fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
-          fontSize: 24, lineHeight: 1.2, letterSpacing: 0,
-          wordSpacing: isSerif ? '0.05em' : 0, textWrap: 'balance',
-        }}>
-          {top[0] ? <>{top[0].emoji} is doing the heavy lifting.</> : 'A words-only minimalist.'}
-        </div>
+        {reactions.length > 0 && (
+          <div style={{ marginTop: 6 }}>
+            <div style={{ fontFamily: treatment.mono, fontSize: 10.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: tone.soft, marginBottom: 8, fontWeight: 600 }}>
+              Top 5 reactions
+            </div>
+            <EmojiRow row={reactions} isSerif={isSerif} tone={tone} treatment={treatment} active={active} baseDelay={450} />
+          </div>
+        )}
       </div>
     </CardShell>
   );
@@ -853,7 +883,7 @@ function AgeCard({ tone, treatment, active }) {
     <CardShell
       tone={tone} treatment={treatment}
       label="07 · your texting age"
-      footer="probabilistic & for fun — not a background check.">
+      footer="a playful read on your texting fingerprint.">
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 16 }}>
         <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft }}>
           You text like a
@@ -906,7 +936,7 @@ function AgeCard({ tone, treatment, active }) {
 // ── Carousel ────────────────────────────────────────────────
 
 const CARDS_BY_KEY = {
-  cover: CoverCard, volume: VolumeCard, people: PeopleCard, people_depth: PeopleDepthCard,
+  cover: CoverCard, volume: VolumeCard, people: PeopleCard, people_l30: PeopleL30Card,
   talk_listen: TalkerListenerCard,
   latency: LatencyCard, ballincourt: BallInCourtCard, groups: GroupsCard, emoji: EmojiCard,
   age: AgeCard, archetype: ArchetypeCard, share: ShareCard,
@@ -915,10 +945,10 @@ const CARDS_BY_KEY = {
 // Palette is decoupled from card order so adding/omitting cards never recolors
 // the others. Each key maps to an index into the treatment's palette array;
 // emoji + age reuse earlier slots (people/volume) to avoid extra palettes.
-// people_depth + talk_listen reuse people's palette so the three sister cards
+// people_l30 + talk_listen reuse people's palette so the three sister cards
 // visually rhyme.
 const PALETTE_OF = {
-  cover: 0, volume: 1, people: 2, people_depth: 2, talk_listen: 2,
+  cover: 0, volume: 1, people: 2, people_l30: 2, talk_listen: 2,
   latency: 3, ballincourt: 4,
   groups: 5, archetype: 6, share: 7, emoji: 2, age: 1,
 };
@@ -1101,9 +1131,9 @@ function App() {
     try {
       const shots = [];
       for (let i = 0; i < CARDS.length; i++) {
-        // The People-adjacent cards (count, depth, talker/listener) all show
+        // The People-adjacent cards (year, L30d, talker/listener) all show
         // contact names — exclude from a public composite.
-        if (CARD_KEYS[i] === 'people' || CARD_KEYS[i] === 'people_depth' || CARD_KEYS[i] === 'talk_listen') continue;
+        if (CARD_KEYS[i] === 'people' || CARD_KEYS[i] === 'people_l30' || CARD_KEYS[i] === 'talk_listen') continue;
         setIdx(i);
         setShareAllState(`${i + 1}/${CARDS.length}`);
         await new Promise((r) => setTimeout(r, 800));  // let the reveal settle

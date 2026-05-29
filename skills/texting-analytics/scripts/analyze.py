@@ -100,12 +100,16 @@ def latency_block(threads, events):
 def ball_block(threads, events, until_ms):
     """Ball-in-your-court: threads where YOU had the last word — i.e., you
     were the one who fired off the most recent shot, and it's now their move.
-    (Earlier versions counted the inverse — threads where THEY sent last and
-    you owe a reply — but per James's framing the card name takes the "balls
-    you served" reading: high % = you've done your part, low % = you owe
-    replies in most of your threads.)"""
+    SUBSTANTIVE only: a 👍 tapback isn't "ending the thread" — the message
+    BEFORE the tapback is what really sits at the end. (Earlier versions
+    counted the inverse — threads where THEY sent last and you owe a reply —
+    but per James's framing the card name takes the "balls you served"
+    reading: high % = you've done your part, low % = you owe replies in
+    most of your threads.)"""
     last = {}
     for e in events:
+        if e.get("kind") not in SUBSTANTIVE:
+            continue
         cur = last.get(e["thread_id"])
         if cur is None or e["ts_ms"] > cur["ts_ms"]:
             last[e["thread_id"]] = e
@@ -123,6 +127,10 @@ def ball_block(threads, events, until_ms):
 
 
 def group_block(threads, events, min_msgs=20, large_min=6):
+    """Group-thread contribution stats. Split SUBSTANTIVE messages (text +
+    media) from REACTIONS so the user_contribution_pct reads as "what share
+    of real messages did you send" — not inflated by tapback noise. Reaction
+    counts still tracked separately for the reaction-rate signal."""
     groups = {tid: t for tid, t in threads.items() if t["is_group"]}
     per = {}
     for e in events:
@@ -130,11 +138,22 @@ def group_block(threads, events, min_msgs=20, large_min=6):
             continue
         d = per.setdefault(e["thread_id"], dict(total=0, user=0, user_react=0, peer=0, peer_react=0))
         react = e["kind"] == "reaction"
-        d["total"] += 1
+        substantive = e["kind"] in SUBSTANTIVE
+        # Skip events that are neither substantive nor reactions (system
+        # notices, deletes, etc. — they shouldn't appear in any group stat).
+        if not (react or substantive):
+            continue
+        d["total"] += int(substantive)
         if e["from_me"]:
-            d["user"] += 1; d["user_react"] += int(react)
+            if substantive:
+                d["user"] += 1
+            if react:
+                d["user_react"] += 1
         else:
-            d["peer"] += 1; d["peer_react"] += int(react)
+            if substantive:
+                d["peer"] += 1
+            if react:
+                d["peer_react"] += 1
     # Keep only groups with real activity; 1-2 message "groups" are noise.
     per = {tid: d for tid, d in per.items() if d["total"] >= min_msgs}
     tot = sum(d["total"] for d in per.values())
@@ -149,9 +168,12 @@ def group_block(threads, events, min_msgs=20, large_min=6):
         bucket = size_bucket(pc, large_min)
         b = buckets.setdefault(bucket, dict(groups=0, total=0, user=0))
         b["groups"] += 1; b["total"] += d["total"]; b["user"] += d["user"]
-        if d["user"] == 0:
+        if d["user"] == 0 and d["user_react"] == 0:
             silent += 1
-        if d["user"] and d["user_react"] / d["user"] >= 0.5:
+        # "mostly reactions" — over half your activity in the group is
+        # tapbacks, not real messages.
+        u_total = d["user"] + d["user_react"]
+        if u_total and d["user_react"] / u_total >= 0.5:
             mostly += 1
         upct = round(100 * d["user"] / d["total"], 1) if d["total"] else 0
         # fair-share ratio: your share vs an even split (1/N). 1.0 = even, <1 = lurking.
@@ -161,7 +183,7 @@ def group_block(threads, events, min_msgs=20, large_min=6):
             "participant_count": pc, "size": bucket,
             "total": d["total"], "user_count": d["user"],
             "user_pct": upct, "fair_share_ratio": fair,
-            "user_reaction_pct": round(100 * d["user_react"] / d["user"], 1) if d["user"] else 0,
+            "user_reaction_pct": round(100 * d["user_react"] / (d["user"] + d["user_react"]), 1) if (d["user"] + d["user_react"]) else 0,
         })
     per_thread.sort(key=lambda x: x["user_pct"], reverse=True)
     per_thread = per_thread[:12]  # chart readability; aggregates below still cover all groups
@@ -173,8 +195,11 @@ def group_block(threads, events, min_msgs=20, large_min=6):
         "total_messages_in_groups": tot,
         "user_messages_in_groups": um,
         "user_contribution_pct": round(100 * um / tot, 1) if tot else 0,
-        "user_reaction_rate_pct": round(100 * ur / um, 1) if um else 0,
-        "peer_reaction_rate_pct": round(100 * pr / pm, 1) if pm else 0,
+        # Reaction rate = reactions / (substantive + reactions). Was previously
+        # reactions / substantive (could exceed 100 once reactions stopped
+        # being summed into the denominator).
+        "user_reaction_rate_pct": round(100 * ur / (um + ur), 1) if (um + ur) else 0,
+        "peer_reaction_rate_pct": round(100 * pr / (pm + pr), 1) if (pm + pr) else 0,
         "groups_where_user_silent": silent,
         "groups_mostly_reactions": mostly,
         "by_size": by_size,
@@ -269,6 +294,29 @@ def talk_listen_block(threads, events, person_limit=8):
     }
 
 
+def top_people_l30_block(threads, events, until_ms, limit=10):
+    """Same shape as top_people_block but restricted to the LAST 30 DAYS from
+    `until_ms`. Pairs with the past-year top_people to show what's gone hot/
+    cold most recently — Wrapped's people slice gains a 'right now' read,
+    not just an annual aggregate."""
+    since = until_ms - 30 * 86400 * 1000
+    counts = {}
+    for e in events:
+        if not e.get("from_me"):
+            continue
+        if e.get("kind") not in SUBSTANTIVE:
+            continue
+        if e["ts_ms"] < since:
+            continue
+        t = threads.get(e["thread_id"])
+        if not t or t["is_group"]:
+            continue
+        counts[e["thread_id"]] = counts.get(e["thread_id"], 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    return [{"name": threads.get(tid, {}).get("display_name") or tid, "count": c}
+            for tid, c in ranked]
+
+
 def top_people_by_chars_block(threads, events, limit=10):
     """Same 1:1 ranking but summed by character volume (text_len) of messages
     YOU sent — surfaces the people you actually wrote PARAGRAPHS to vs. the
@@ -326,6 +374,9 @@ def main():
         "ball_in_court": ball_block(threads, events_full, until_ms),
         "group_contribution": group_block(threads, events, large_min=a.large_min),
         "top_people": top_people_block(threads, events),
+        # L30d snapshot uses the windowed event stream too so businesses are
+        # already filtered; using events_full would re-include them.
+        "top_people_l30": top_people_l30_block(threads, events, until_ms),
         "top_people_by_chars": top_people_by_chars_block(threads, events),
         "talk_listen": talk_listen_block(threads, events),
         "filters": {

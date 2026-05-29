@@ -167,11 +167,24 @@ def main():
         confidence = "medium"
 
     # Drivers: the fired features, strongest weight first (top 3), human labels.
-    drivers = sorted(
-        (by_id[f] for f in fired if f in by_id),
-        key=lambda f: weight_values.get(f["weight"], 1), reverse=True,
-    )
-    driver_labels = [d["label"] for d in drivers[:3]]
+    # Drivers: the features that most SPECIFICALLY pulled this user toward
+    # their predicted band — not just whatever has the heaviest static weight.
+    # Score each fired feature by its weighted contribution to num_band minus
+    # the average contribution across all bands. Drop drivers that net-pull
+    # AWAY from num_band — they fired but confuse the "why" story (e.g. a
+    # signal that points elsewhere shouldn't appear as the reason we landed
+    # on Millennial). Top 3 by that contribution.
+    band_keys = list(bands)
+    def specificity(feat):
+        w = weight_values.get(feat["weight"], 1)
+        pts = feat["points"]
+        target = pts.get(num_band, 0)
+        avg = sum(pts.get(b, 0) for b in band_keys) / len(band_keys)
+        return (target - avg) * w
+    fired_feats = [by_id[f] for f in fired if f in by_id]
+    driver_labels = [d["label"] for d in
+                     sorted([f for f in fired_feats if specificity(f) > 0],
+                            key=specificity, reverse=True)[:3]]
 
     age = {
         "estimated_age": estimated_age,
