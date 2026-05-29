@@ -770,7 +770,8 @@ function ShareCard({ tone, treatment, active }) {
           marginTop: 8, marginBottom: 20,
           fontFamily: isSerif ? treatment.serif : treatment.sans,
           fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 500,
-          fontSize: 18, lineHeight: 1.2, color: tone.soft, letterSpacing: '-0.01em', textWrap: 'balance',
+          fontSize: 18, lineHeight: 1.2, color: tone.soft, letterSpacing: 0,
+          wordSpacing: isSerif ? '0.05em' : 0, textWrap: 'balance',
         }}>
           {DATA.archetype.verdict}
         </div>
@@ -800,7 +801,8 @@ function RecapTile({ treatment, tone, stat, label }) {
         fontFamily: isSerif ? treatment.serif : treatment.sans,
         fontStyle: treatment.italicNumbers ? 'italic' : 'normal',
         fontWeight: isSerif ? 400 : 700,
-        fontSize, lineHeight: 1.05, letterSpacing: '-0.03em',
+        fontSize, lineHeight: 1.05, letterSpacing: '-0.02em',
+        wordSpacing: treatment.italicNumbers ? '0.05em' : 0,
         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
       }}>{stat}</div>
       <div style={{ marginTop: 4, fontFamily: treatment.mono, fontSize: 10, color: tone.soft, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
@@ -914,7 +916,7 @@ function AgeCard({ tone, treatment, active }) {
         <div style={{
           fontFamily: isSerif ? treatment.serif : treatment.sans,
           fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
-          fontSize: 24, letterSpacing: '-0.01em',
+          fontSize: 24, letterSpacing: 0, wordSpacing: isSerif ? '0.05em' : 0,
         }}>{a.label} energy</div>
         {a.approx_age && (
           <div style={{ fontFamily: treatment.mono, fontSize: 12, color: tone.soft, letterSpacing: '0.06em' }}>
@@ -931,7 +933,8 @@ function AgeCard({ tone, treatment, active }) {
                 <div key={i} style={{
                   fontFamily: isSerif ? treatment.serif : treatment.sans,
                   fontStyle: isSerif ? 'italic' : 'normal', fontWeight: isSerif ? 400 : 600,
-                  fontSize: 19, lineHeight: 1.15, letterSpacing: '-0.01em',
+                  fontSize: 19, lineHeight: 1.15, letterSpacing: 0,
+                  wordSpacing: isSerif ? '0.05em' : 0,
                   opacity: active ? 1 : 0, transform: active ? 'translateX(0)' : 'translateX(-10px)',
                   transition: `all 500ms cubic-bezier(.2,.7,.2,1) ${200 + i * 90}ms`,
                 }}>{d}</div>
