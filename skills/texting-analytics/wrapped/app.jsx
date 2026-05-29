@@ -241,7 +241,7 @@ function PeopleCard({ tone, treatment, active }) {
     <CardShell
       tone={tone} treatment={treatment}
       label="02 · your inner circle"
-      footer="the people who got the most of you.">
+      footer="ranked by messages you sent.">
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <div style={{
           fontFamily: isSerif ? treatment.serif : treatment.sans,
@@ -270,7 +270,7 @@ function PeopleCard({ tone, treatment, active }) {
                     flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                   }}>{p.name}</span>
                   <span style={{ fontFamily: treatment.mono, fontSize: 11, color: tone.soft, fontWeight: 500, flexShrink: 0 }}>
-                    {p.count.toLocaleString()}
+                    {p.count.toLocaleString()} sent
                   </span>
                 </div>
                 <div style={{ position: 'relative', height: 3, background: 'currentColor', opacity: 0.28, marginLeft: 30, borderRadius: 2 }}>
@@ -302,7 +302,7 @@ function PeopleDepthCard({ tone, treatment, active }) {
     <CardShell
       tone={tone} treatment={treatment}
       label="02b · how much you wrote"
-      footer="ranked by words, not pings.">
+      footer="ranked by your words, not your pings.">
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <div style={{
           fontFamily: isSerif ? treatment.serif : treatment.sans,

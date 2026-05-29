@@ -177,12 +177,17 @@ def group_block(threads, events, min_msgs=20, large_min=6):
 
 
 def top_people_block(threads, events, limit=10):
-    """Most-texted 1:1 people by total message volume, across all platforms
-    (events are already merged). Name comes from the thread's display_name
-    (the MCP resolves real contact names in production; the harness may show a
-    handle). For the user's own view — keep it out of any shared composite."""
+    """1:1 people you SENT the most messages to, across all platforms (events
+    are already merged). Outbound only — counting both directions would double
+    every relationship and obscure asymmetries (a wife who replies as much as
+    you ranks the same as a chatty colleague who replies twice as much). Name
+    comes from the thread's display_name (MCP resolves real contact names in
+    production; the harness may show a handle). For the user's own view —
+    keep it out of any shared composite."""
     counts = {}
     for e in events:
+        if not e.get("from_me"):
+            continue
         t = threads.get(e["thread_id"])
         if not t or t["is_group"]:
             continue
@@ -193,12 +198,15 @@ def top_people_block(threads, events, limit=10):
 
 
 def top_people_by_chars_block(threads, events, limit=10):
-    """Same 1:1 ranking but summed by character volume (text_len) instead of
-    message count. Surfaces the people you actually wrote PARAGRAPHS to vs. the
-    rapid-fire short-text relationships. Metadata-only: we only have the per-
-    message text LENGTH, never the body."""
+    """Same 1:1 ranking but summed by character volume (text_len) of messages
+    YOU sent — surfaces the people you actually wrote PARAGRAPHS to vs. the
+    rapid-fire short-text relationships. Outbound only, same reasoning as
+    top_people_block. Metadata-only: we only have the per-message text LENGTH,
+    never the body."""
     chars = {}
     for e in events:
+        if not e.get("from_me"):
+            continue
         t = threads.get(e["thread_id"])
         if not t or t["is_group"]:
             continue
