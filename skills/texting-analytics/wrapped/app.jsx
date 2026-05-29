@@ -528,10 +528,10 @@ function BallInCourtCard({ tone, treatment, active, instant }) {
     <CardShell
       tone={tone} treatment={treatment}
       label="04 · ball in your court"
-      footer="the ball doesn't move itself.">
+      footer="where you ended the thread.">
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 26 }}>
         <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft }}>
-          Active threads waiting on you
+          Threads where you had the last word
         </div>
 
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}>
@@ -549,20 +549,23 @@ function BallInCourtCard({ tone, treatment, active, instant }) {
           }}>%</div>
         </div>
 
-        {/* Gauge: fill to the user's %, with a clear midpoint (50%) reference line. */}
+        {/* Gauge: fill to the user's %, with a clear midpoint (50%) reference
+            line. Background bar and fill use independent rgba opacities — a
+            single parent-level `opacity` would cascade to the fill child and
+            collapse the contrast (the bug that made the fill invisible). */}
         <div style={{ position: 'relative', marginTop: 18 }}>
-          <div style={{ position: 'relative', height: 14, borderRadius: 8, background: 'currentColor', opacity: 0.18, overflow: 'hidden' }}>
+          <div style={{ position: 'relative', height: 14, borderRadius: 8, background: tone.ink + '2e', overflow: 'hidden' }}>
             <div style={{
               position: 'absolute', left: 0, top: 0, bottom: 0,
               width: active ? `${Math.min(DATA.ballInCourt, 100)}%` : 0,
-              background: 'currentColor', borderRadius: 8,
+              background: tone.ink, borderRadius: 8,
               transition: 'width 1000ms cubic-bezier(.2,.7,.2,1) 200ms',
             }}/>
           </div>
           <div style={{ position: 'absolute', left: '50%', top: -7, bottom: -7, width: 2, background: tone.ink, opacity: 0.85 }} />
           <div style={{ position: 'absolute', left: '50%', top: -24, transform: 'translateX(-50%)', fontFamily: treatment.mono, fontSize: 9.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: tone.soft }}>even</div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontFamily: treatment.mono, fontSize: 10, letterSpacing: '0.06em', color: tone.soft }}>
-            <span>caught up</span><span>behind</span>
+            <span>they had it last</span><span>you had it last</span>
           </div>
         </div>
 
@@ -574,8 +577,8 @@ function BallInCourtCard({ tone, treatment, active, instant }) {
           wordSpacing: isSerif ? '0.05em' : 0, textWrap: 'balance',
         }}>
           {heavy
-            ? 'More than half your live threads are waiting on you to reply.'
-            : "You're keeping up — most of your threads aren't waiting on you."}
+            ? 'You sent the last message in most of your live threads.'
+            : "More often, the other side had the last word."}
         </div>
       </div>
     </CardShell>

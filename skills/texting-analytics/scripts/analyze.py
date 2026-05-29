@@ -98,6 +98,12 @@ def latency_block(threads, events):
 
 
 def ball_block(threads, events, until_ms):
+    """Ball-in-your-court: threads where YOU had the last word — i.e., you
+    were the one who fired off the most recent shot, and it's now their move.
+    (Earlier versions counted the inverse — threads where THEY sent last and
+    you owe a reply — but per James's framing the card name takes the "balls
+    you served" reading: high % = you've done your part, low % = you owe
+    replies in most of your threads.)"""
     last = {}
     for e in events:
         cur = last.get(e["thread_id"])
@@ -105,7 +111,7 @@ def ball_block(threads, events, until_ms):
             last[e["thread_id"]] = e
     recent = sorted(last.items(), key=lambda kv: kv[1]["ts_ms"], reverse=True)[:100]
     sampled = len(recent)
-    bic = sum(1 for _, e in recent if not e["from_me"])
+    bic = sum(1 for _, e in recent if e["from_me"])
     live = sum(1 for _, e in recent if (until_ms - e["ts_ms"]) <= 30 * 86400 * 1000)
     return {
         "total_threads_sampled": sampled,
