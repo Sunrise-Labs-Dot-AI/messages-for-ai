@@ -126,6 +126,11 @@ def build_data(analysis, year, total_sent, show_people):
         # count. Separates the bursty short-text relationships from the ones
         # you actually wrote paragraphs to.
         cards.append("people_depth")
+    talk_listen = analysis.get("talk_listen") if show_people else None
+    if talk_listen and talk_listen.get("you_words") and talk_listen.get("them_words"):
+        # Third People-adjacent card — aggregate talker/listener ratio + per-
+        # person outliers. Highlights surface names → personal-only.
+        cards.append("talk_listen")
     cards += ["latency", "ballincourt", "groups"]
     emoji = analysis.get("emoji")
     if emoji:
@@ -159,6 +164,8 @@ def build_data(analysis, year, total_sent, show_people):
             {"name": p["name"], "words": int(round(p.get("chars", 0) / 5))}
             for p in top_people_by_chars
         ]
+    if talk_listen and talk_listen.get("you_words") and talk_listen.get("them_words"):
+        data["talkListen"] = talk_listen
     if emoji:
         data["emoji"] = emoji
     if analysis.get("style"):

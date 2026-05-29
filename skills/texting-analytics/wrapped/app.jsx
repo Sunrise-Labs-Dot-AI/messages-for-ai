@@ -39,7 +39,7 @@ const DATA = (typeof window !== 'undefined' && window.WRAPPED_DATA) || {
 
 // Full card arc — used to keep each card's designed palette even when some
 // cards are omitted (build_wrapped drops cards the analysis can't populate).
-const FULL_ARC = ['cover', 'volume', 'people', 'people_depth', 'latency', 'ballincourt', 'groups', 'emoji', 'age', 'archetype', 'share'];
+const FULL_ARC = ['cover', 'volume', 'people', 'people_depth', 'talk_listen', 'latency', 'ballincourt', 'groups', 'emoji', 'age', 'archetype', 'share'];
 
 // ── Hooks ───────────────────────────────────────────────────
 
@@ -345,6 +345,102 @@ function PeopleDepthCard({ tone, treatment, active }) {
               </div>
             );
           })}
+        </div>
+      </div>
+    </CardShell>
+  );
+}
+
+// Card 2c: Talker or Listener. Compares total OUTBOUND words vs INBOUND
+// words across 1:1 threads. A big "X% talker" headline with a position on the
+// listener ↔ talker scale, plus three highlight relationships (most balanced,
+// you talk more, you listen more) so the aggregate gets context. Personal-
+// only (names in highlights) → excluded from public share-all composite.
+function TalkerListenerCard({ tone, treatment, active, instant }) {
+  const t = DATA.talkListen || {};
+  const pct = useCountUp(t.your_share_pct || 50, 1200, active, 200, instant);
+  const isSerif = treatment.numberFont === 'serif';
+  const italic = isSerif && treatment.italicNumbers;
+  const verdict =
+    (t.your_share_pct >= 55) ? 'talker' :
+    (t.your_share_pct <= 45) ? 'listener' : 'balanced';
+  const hi = t.highlights || {};
+  const row = (label, person) => person && (
+    <div style={{
+      paddingTop: 10, paddingBottom: 10,
+      borderTop: `1px solid ${tone.ink}`,
+    }}>
+      <div style={{
+        fontFamily: treatment.mono, fontSize: 10.5, letterSpacing: '0.1em',
+        textTransform: 'uppercase', color: tone.soft, fontWeight: 600,
+        marginBottom: 4,
+      }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+        <span style={{
+          fontFamily: isSerif ? treatment.serif : treatment.sans,
+          fontWeight: isSerif ? 500 : 600,
+          fontSize: 18, letterSpacing: '-0.01em',
+          flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>{person.name}</span>
+        <span style={{
+          fontFamily: treatment.mono, fontSize: 12, color: tone.soft,
+          fontWeight: 600, flexShrink: 0,
+        }}>{person.your_share_pct}% you</span>
+      </div>
+    </div>
+  );
+  return (
+    <CardShell
+      tone={tone} treatment={treatment}
+      label="02c · talker or listener"
+      footer="where you sit on the talker ↔ listener spectrum.">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 22 }}>
+        <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft }}>
+          Across all 1:1 threads, you are
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, whiteSpace: 'nowrap' }}>
+          <div style={{
+            fontFamily: isSerif ? treatment.serif : treatment.sans,
+            fontStyle: italic ? 'italic' : 'normal',
+            fontWeight: isSerif ? 400 : 700,
+            fontSize: 120, lineHeight: 0.85,
+            letterSpacing: isSerif ? '-0.045em' : '-0.07em',
+          }}>{fmt(pct, 0)}</div>
+          <div style={{
+            fontFamily: isSerif ? treatment.serif : treatment.sans,
+            fontStyle: italic ? 'italic' : 'normal',
+            fontWeight: isSerif ? 400 : 600, fontSize: 48, letterSpacing: '-0.04em',
+          }}>%</div>
+          <div style={{
+            marginLeft: 10,
+            fontFamily: isSerif ? treatment.serif : treatment.sans,
+            fontStyle: isSerif ? 'italic' : 'normal',
+            fontWeight: isSerif ? 400 : 600, fontSize: 36, letterSpacing: '-0.02em',
+          }}>{verdict}</div>
+        </div>
+
+        {/* Scale: listener ← balanced → talker, marker at user's % */}
+        <div style={{ position: 'relative', marginTop: 4 }}>
+          <div style={{ position: 'relative', height: 12, borderRadius: 8, background: 'currentColor', opacity: 0.16, overflow: 'visible' }}/>
+          <div style={{ position: 'absolute', left: '50%', top: -7, bottom: -7, width: 2, background: tone.ink, opacity: 0.55 }} />
+          <div style={{
+            position: 'absolute',
+            left: `calc(${active ? Math.min(98, Math.max(2, t.your_share_pct || 50)) : 50}% - 8px)`,
+            top: -3, width: 18, height: 18, borderRadius: 9,
+            background: tone.ink,
+            transition: 'left 1000ms cubic-bezier(.2,.7,.2,1) 200ms',
+            boxShadow: `0 0 0 3px ${tone.bg}`,
+          }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 14, fontFamily: treatment.mono, fontSize: 10.5, letterSpacing: '0.06em', color: tone.soft, textTransform: 'uppercase' }}>
+            <span>listener</span><span>balanced</span><span>talker</span>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 6 }}>
+          {row('Most balanced', hi.most_balanced)}
+          {row('You talk more', hi.most_you_talk)}
+          {row('You listen more', hi.most_you_listen)}
         </div>
       </div>
     </CardShell>
@@ -808,6 +904,7 @@ function AgeCard({ tone, treatment, active }) {
 
 const CARDS_BY_KEY = {
   cover: CoverCard, volume: VolumeCard, people: PeopleCard, people_depth: PeopleDepthCard,
+  talk_listen: TalkerListenerCard,
   latency: LatencyCard, ballincourt: BallInCourtCard, groups: GroupsCard, emoji: EmojiCard,
   age: AgeCard, archetype: ArchetypeCard, share: ShareCard,
 };
@@ -815,9 +912,11 @@ const CARDS_BY_KEY = {
 // Palette is decoupled from card order so adding/omitting cards never recolors
 // the others. Each key maps to an index into the treatment's palette array;
 // emoji + age reuse earlier slots (people/volume) to avoid extra palettes.
-// people_depth reuses people's palette so the two sister cards visually rhyme.
+// people_depth + talk_listen reuse people's palette so the three sister cards
+// visually rhyme.
 const PALETTE_OF = {
-  cover: 0, volume: 1, people: 2, people_depth: 2, latency: 3, ballincourt: 4,
+  cover: 0, volume: 1, people: 2, people_depth: 2, talk_listen: 2,
+  latency: 3, ballincourt: 4,
   groups: 5, archetype: 6, share: 7, emoji: 2, age: 1,
 };
 
@@ -999,8 +1098,9 @@ function App() {
     try {
       const shots = [];
       for (let i = 0; i < CARDS.length; i++) {
-        // Both People cards (count + depth) show contact names — exclude from a public composite.
-        if (CARD_KEYS[i] === 'people' || CARD_KEYS[i] === 'people_depth') continue;
+        // The People-adjacent cards (count, depth, talker/listener) all show
+        // contact names — exclude from a public composite.
+        if (CARD_KEYS[i] === 'people' || CARD_KEYS[i] === 'people_depth' || CARD_KEYS[i] === 'talk_listen') continue;
         setIdx(i);
         setShareAllState(`${i + 1}/${CARDS.length}`);
         await new Promise((r) => setTimeout(r, 800));  // let the reveal settle

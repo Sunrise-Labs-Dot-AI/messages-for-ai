@@ -197,6 +197,65 @@ def top_people_block(threads, events, limit=10):
             for tid, c in ranked]
 
 
+def talk_listen_block(threads, events, person_limit=8):
+    """Talker-or-listener: how do the user's outbound words compare to the
+    inbound words across 1:1 threads? Surfaces aggregate (do you talk or
+    listen more overall?) and per-relationship outliers (Most balanced /
+    You talk way more / You mostly listen). Words = chars/5; metadata only
+    (text LENGTH never the body)."""
+    sent, recv = {}, {}
+    for e in events:
+        t = threads.get(e["thread_id"])
+        if not t or t["is_group"]:
+            continue
+        n = e.get("text_len") or 0
+        if n <= 0:
+            continue
+        bucket = sent if e.get("from_me") else recv
+        bucket[e["thread_id"]] = bucket.get(e["thread_id"], 0) + n
+    # Per-thread snapshots — only count threads with both sides talking to
+    # avoid noise from one-shot promos or threads where one side never
+    # responded (often a misclassified business contact).
+    per_thread = []
+    for tid in set(list(sent) + list(recv)):
+        s, r = sent.get(tid, 0), recv.get(tid, 0)
+        if s + r < 200:  # both-sides minimum (~40 words exchanged total)
+            continue
+        if s == 0 or r == 0:
+            continue
+        per_thread.append({
+            "name": threads.get(tid, {}).get("display_name") or tid,
+            "you_words": int(round(s / 5)),
+            "them_words": int(round(r / 5)),
+            "your_share_pct": round(100 * s / (s + r), 1),
+        })
+    total_sent_words = int(round(sum(sent.values()) / 5))
+    total_recv_words = int(round(sum(recv.values()) / 5))
+    overall_pct = (round(100 * sum(sent.values()) / (sum(sent.values()) + sum(recv.values())), 1)
+                   if (sum(sent.values()) + sum(recv.values())) > 0 else 50.0)
+    # Sort by you_words desc to take the most informative top-N (heavy
+    # relationships drive the ranking; tiny threads with extreme ratios
+    # are filtered above).
+    per_thread.sort(key=lambda x: -(x["you_words"] + x["them_words"]))
+    top = per_thread[:person_limit]
+    # Highlight: most balanced (closest to 50%), most you-talk, most you-listen
+    def by_share(p): return p["your_share_pct"]
+    most_balanced = min(top, key=lambda p: abs(p["your_share_pct"] - 50)) if top else None
+    most_you_talk = max(top, key=by_share) if top else None
+    most_you_listen = min(top, key=by_share) if top else None
+    return {
+        "you_words": total_sent_words,
+        "them_words": total_recv_words,
+        "your_share_pct": overall_pct,
+        "per_thread": top,
+        "highlights": {
+            "most_balanced": most_balanced,
+            "most_you_talk": most_you_talk,
+            "most_you_listen": most_you_listen,
+        },
+    }
+
+
 def top_people_by_chars_block(threads, events, limit=10):
     """Same 1:1 ranking but summed by character volume (text_len) of messages
     YOU sent — surfaces the people you actually wrote PARAGRAPHS to vs. the
@@ -238,6 +297,7 @@ def main():
         "group_contribution": group_block(threads, events, large_min=a.large_min),
         "top_people": top_people_block(threads, events),
         "top_people_by_chars": top_people_by_chars_block(threads, events),
+        "talk_listen": talk_listen_block(threads, events),
         "filters": {"excluded_business_1to1_threads": len(biz)},
     }
     json.dump(out, open(a.output, "w"), indent=2)
