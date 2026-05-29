@@ -163,7 +163,7 @@ function CoverCard({ tone, treatment, active }) {
   return (
     <CardShell
       tone={tone} treatment={treatment}
-      label={`Annual report · ${DATA.year}`}
+      label={`Annual report · ${DATA.windowLabel || DATA.year}`}
       footer="swipe to begin →">
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', paddingBottom: 12 }}>
         <div style={{
@@ -180,8 +180,8 @@ function CoverCard({ tone, treatment, active }) {
           <div style={{
             opacity: active ? 1 : 0, transform: active ? 'translateY(0)' : 'translateY(20px)',
             transition: 'all 700ms cubic-bezier(.2,.7,.2,1) 460ms',
-            fontFamily: treatment.mono, fontSize: 22, letterSpacing: '0.05em', marginTop: 18, fontWeight: 500, fontStyle: 'normal',
-          }}>{DATA.year}</div>
+            fontFamily: treatment.mono, fontSize: 18, letterSpacing: '0.05em', marginTop: 18, fontWeight: 500, fontStyle: 'normal',
+          }}>{DATA.windowLabel || DATA.year}</div>
         </div>
       </div>
     </CardShell>
@@ -251,7 +251,7 @@ function PeopleCard({ tone, treatment, active }) {
           letterSpacing: isSerif ? '-0.025em' : '-0.04em',
           marginBottom: 18,
         }}>
-          Your top {people.length}.
+          Top {people.length} people, past year.
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
           {people.map((p, i) => {
@@ -312,7 +312,7 @@ function PeopleL30Card({ tone, treatment, active }) {
           letterSpacing: isSerif ? '-0.025em' : '-0.04em',
           marginBottom: 18,
         }}>
-          This month.
+          Top {people.length} people, past 30 days.
         </div>
         {people.length === 0 ? (
           <div style={{
@@ -393,7 +393,7 @@ function TalkerListenerCard({ tone, treatment, active, instant }) {
         <span style={{
           fontFamily: treatment.mono, fontSize: 12, color: tone.soft,
           fontWeight: 600, flexShrink: 0,
-        }}>{person.your_share_pct}% you</span>
+        }}>{person.your_share_pct}% your words</span>
       </div>
     </div>
   );
@@ -401,10 +401,10 @@ function TalkerListenerCard({ tone, treatment, active, instant }) {
     <CardShell
       tone={tone} treatment={treatment}
       label="02c · talker or listener"
-      footer="where you sit on the talker ↔ listener spectrum.">
+      footer="by word count, not message count.">
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 22 }}>
         <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft }}>
-          Across all 1:1 threads, you are
+          Of every word in your 1:1 threads, you wrote
         </div>
 
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, whiteSpace: 'nowrap' }}>
@@ -727,8 +727,14 @@ function ShareCard({ tone, treatment, active }) {
   // composite; the people cards themselves stay personal-only.
   const tiles = [];
   if (DATA.totalSent) tiles.push({ stat: fmt(DATA.totalSent), label: 'texts sent' });
-  if (DATA.topPeople && DATA.topPeople[0]) tiles.push({ stat: fmt(DATA.topPeople[0].count), label: 'top contact' });
-  if (DATA.topPeopleL30 && DATA.topPeopleL30[0]) tiles.push({ stat: fmt(DATA.topPeopleL30[0].count), label: 'top · last 30d' });
+  if (DATA.topPeople && DATA.topPeople[0]) {
+    const top = DATA.topPeople[0];
+    tiles.push({ stat: top.name, label: `top contact · ${fmt(top.count)}` });
+  }
+  if (DATA.topPeopleL30 && DATA.topPeopleL30[0]) {
+    const top = DATA.topPeopleL30[0];
+    tiles.push({ stat: top.name, label: `last 30d · ${fmt(top.count)}` });
+  }
   if (DATA.talkListen && DATA.talkListen.your_share_pct != null) {
     tiles.push({ stat: `${Math.round(DATA.talkListen.your_share_pct)}%`, label: 'talker share' });
   }
@@ -744,7 +750,7 @@ function ShareCard({ tone, treatment, active }) {
   return (
     <CardShell
       tone={tone} treatment={treatment}
-      label={`Wrapped · ${DATA.year}`}
+      label={`Wrapped · ${DATA.windowLabel || DATA.year}`}
       footer="sunriselabs.ai · messagesfor.ai">
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <div style={{ fontFamily: treatment.mono, fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: tone.soft, marginBottom: 10 }}>
@@ -781,16 +787,21 @@ function ShareCard({ tone, treatment, active }) {
 
 function RecapTile({ treatment, tone, stat, label }) {
   const isSerif = treatment.numberFont === 'serif';
+  // Auto-shrink long stats (contact names) so the grid stays even.
+  const s = String(stat);
+  const fontSize = s.length > 18 ? 16 : s.length > 12 ? 20 : s.length > 8 ? 24 : 28;
   return (
     <div style={{
       padding: '14px 14px 12px',
       border: `1px solid ${tone.ink}`,
+      minHeight: 70,
     }}>
       <div style={{
         fontFamily: isSerif ? treatment.serif : treatment.sans,
         fontStyle: treatment.italicNumbers ? 'italic' : 'normal',
         fontWeight: isSerif ? 400 : 700,
-        fontSize: 28, lineHeight: 1, letterSpacing: '-0.03em',
+        fontSize, lineHeight: 1.05, letterSpacing: '-0.03em',
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
       }}>{stat}</div>
       <div style={{ marginTop: 4, fontFamily: treatment.mono, fontSize: 10, color: tone.soft, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
         {label}
@@ -1252,7 +1263,7 @@ function App() {
         fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase',
         zIndex: 5,
       }}>
-        messages for ai · annual report {DATA.year}
+        messages for ai · {DATA.windowLabel || DATA.year}
       </div>
 
       <div style={{
@@ -1264,6 +1275,25 @@ function App() {
       }}>
         ← → · drag · tap edges
       </div>
+
+      {/* Window toggle — top-right page chrome. Only renders when build_wrapped
+          was given --toggle-href / --toggle-label (i.e. there's a sibling
+          wrapped HTML for the OTHER window — typically all-time vs past-year). */}
+      {typeof window !== 'undefined' && window.WRAPPED_TOGGLE && (
+        <a href={window.WRAPPED_TOGGLE.href} style={{
+          position: 'absolute', top: 22, right: 24, zIndex: 6,
+          height: 36, padding: '0 16px', borderRadius: 9999,
+          border: '1px solid rgba(255,255,255,0.25)',
+          background: 'rgba(255,255,255,0.08)',
+          color: '#fff', textDecoration: 'none',
+          backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
+          display: 'flex', alignItems: 'center', gap: 8,
+          fontFamily: 'ui-monospace, "JetBrains Mono", monospace',
+          fontSize: 11, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase',
+        }}>
+          ⇄ {window.WRAPPED_TOGGLE.label}
+        </a>
+      )}
 
       {/* The phone — a sized box (scaled dims) so the control bar flows BELOW
           the frame instead of overlapping it. The iPhone is dedicated to the

@@ -140,8 +140,27 @@ def build_data(analysis, year, total_sent, show_people):
         cards.append("age")
     cards += ["archetype", "share"]
 
+    # Window label: "May 2025 — May 2026" for a year-bounded analysis, "All
+    # time" if the analyze step ran with --window-days 0. Lets the wrapped
+    # show the actual data range instead of anchoring to a single calendar
+    # year (a Wrapped run in mid-2026 should say so).
+    import datetime as _dt
+    f = analysis.get("filters", {}) or {}
+    since_ms, until_ms = f.get("since_ts_ms"), f.get("until_ts_ms")
+    window_days = f.get("window_days")
+    if window_days == 0 or since_ms in (None, 0):
+        window_label = "All time"
+    elif until_ms:
+        start = _dt.datetime.fromtimestamp(since_ms / 1000)
+        end = _dt.datetime.fromtimestamp(until_ms / 1000)
+        window_label = f"{start.strftime('%b %Y')} — {end.strftime('%b %Y')}"
+    else:
+        window_label = str(year)
+
     data = {
         "year": year,
+        "windowLabel": window_label,
+        "windowDays": window_days if window_days is not None else 365,
         "median": round(median, 1),
         "mean": round(mean, 1),
         "fastPct": fast_pct,
@@ -209,6 +228,13 @@ def main():
     ap.add_argument("--no-people", action="store_true",
                     help="Suppress the Top People card (it shows contact NAMES — pass this "
                          "when generating a Wrapped meant for public sharing).")
+    ap.add_argument("--toggle-href", default=None,
+                    help="If set, include a toggle button (top-right of the page chrome) "
+                         "that navigates to this URL — used to jump between the past-year "
+                         "and all-time views of the same wrapped.")
+    ap.add_argument("--toggle-label", default=None,
+                    help="Label for the toggle button (e.g. 'All time' or 'Past year'). "
+                         "Required when --toggle-href is set.")
     args = ap.parse_args()
 
     try:
@@ -239,9 +265,13 @@ def main():
         sys.exit(2)
 
     data_js = json.dumps(data, ensure_ascii=False)
+    toggle_js = ""
+    if args.toggle_href and args.toggle_label:
+        toggle_js = (f"window.WRAPPED_TOGGLE = "
+                     f"{json.dumps({'href': args.toggle_href, 'label': args.toggle_label})};")
     parts = [
         HEAD.format(year=args.year),
-        f'<script>window.WRAPPED_DATA = {data_js}; window.WRAPPED_TREATMENT = {json.dumps(args.treatment)};</script>',
+        f'<script>window.WRAPPED_DATA = {data_js}; window.WRAPPED_TREATMENT = {json.dumps(args.treatment)}; {toggle_js}</script>',
         f'<script type="text/babel">\n{ios}\n</script>',
         f'<script type="text/babel">\n{treatments}\n</script>',
         f'<script type="text/babel">\n{app}\n</script>',
