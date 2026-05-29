@@ -44,15 +44,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def derive_worst_ghost(group):
     """Pick the most damning group thread: highest message count where the user
-    contributed least (ideally zero). Returns {name, messages, userSent} or None."""
-    threads = group.get("per_thread") or []
-    if not threads:
-        return None
-    # Prefer threads the user sent 0 to; among those, the largest. Else the
-    # largest thread with the lowest user share.
-    zero = [t for t in threads if t.get("user_count", 1) == 0]
-    pool = zero or threads
-    pick = max(pool, key=lambda t: (t.get("total", 0), -t.get("user_count", 0)))
+    contributed least (ideally zero). Returns {name, messages, userSent} or
+    None. Prefers the `worst_offender` block emitted by analyze.py (computed
+    over the FULL group set); falls back to scanning per_thread for older
+    analyses that didn't emit it (per_thread is truncated to top-12 by user
+    contribution, so silent groups can be missing — the fallback is best-
+    effort)."""
+    pick = group.get("worst_offender")
+    if not pick:
+        threads = group.get("per_thread") or []
+        if not threads:
+            return None
+        zero = [t for t in threads if t.get("user_count", 1) == 0]
+        pool = zero or threads
+        pick = max(pool, key=lambda t: (t.get("total", 0), -t.get("user_count", 0)))
     return {
         "name": pick.get("thread_label", "a group"),
         "messages": pick.get("total", 0),

@@ -185,6 +185,17 @@ def group_block(threads, events, min_msgs=20, large_min=6):
             "user_pct": upct, "fair_share_ratio": fair,
             "user_reaction_pct": round(100 * d["user_react"] / (d["user"] + d["user_react"]), 1) if (d["user"] + d["user_react"]) else 0,
         })
+    # Worst offender computed BEFORE per_thread is truncated to top-12 —
+    # otherwise silent groups (the most damning ones) get sorted to the
+    # bottom and never reach derive_worst_ghost. Prefer threads the user
+    # sent 0 to; among those, the largest. Else the largest thread with
+    # the lowest user share.
+    if per_thread:
+        zero = [t for t in per_thread if t.get("user_count", 1) == 0]
+        pool = zero or per_thread
+        worst_offender = max(pool, key=lambda t: (t.get("total", 0), -t.get("user_count", 0)))
+    else:
+        worst_offender = None
     per_thread.sort(key=lambda x: x["user_pct"], reverse=True)
     per_thread = per_thread[:12]  # chart readability; aggregates below still cover all groups
     by_size = {b: {"groups": v["groups"],
@@ -204,6 +215,7 @@ def group_block(threads, events, min_msgs=20, large_min=6):
         "groups_mostly_reactions": mostly,
         "by_size": by_size,
         "per_thread": per_thread,
+        "worst_offender": worst_offender,
     }
 
 
