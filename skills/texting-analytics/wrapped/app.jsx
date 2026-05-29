@@ -1152,7 +1152,19 @@ function App() {
         setShareAllState(`${i + 1}/${CARDS.length}`);
         await new Promise((r) => setTimeout(r, 800));  // let the reveal settle
         const el = captureRef.current;
-        if (el) shots.push(await window.html2canvas(el, { scale: 2, backgroundColor: null, useCORS: true, logging: false }));
+        if (!el) continue;
+        // Same clone-then-capture trick as handleShare to dodge the
+        // transformed-ancestor double-render in html2canvas.
+        const W = 402, H = 874;
+        const clone = el.cloneNode(true);
+        Object.assign(clone.style, { position: 'fixed', left: '-9999px', top: '0', width: W+'px', height: H+'px', transform: 'none', inset: '' });
+        document.body.appendChild(clone);
+        try {
+          await new Promise((r) => setTimeout(r, 50));
+          shots.push(await window.html2canvas(clone, { scale: 2, backgroundColor: null, useCORS: true, logging: false, width: W, height: H }));
+        } finally {
+          clone.remove();
+        }
       }
       if (!shots.length) return;
       const cols = shots.length <= 4 ? 2 : 3;
@@ -1200,9 +1212,34 @@ function App() {
       if (document.fonts && document.fonts.ready) {
         try { await document.fonts.ready; } catch (_) {}
       }
-      const canvas = await window.html2canvas(el, {
-        scale: 3, backgroundColor: null, useCORS: true, logging: false,
-      });
+      // html2canvas double-renders elements when their offset chain includes
+      // any CSS transforms (the iPhone is at scale(<1) and each card is at
+      // translate3d). The visible artifact is text/lines drawn twice with a
+      // small offset — what James saw as "the export is mangled."
+      // Workaround: clone the captured subtree into the document body (no
+      // transformed ancestors), capture the clone at the iPhone's native
+      // size, then remove. Live React tree is left alone.
+      const W = 402, H = 874;
+      const clone = el.cloneNode(true);
+      clone.style.position = 'fixed';
+      clone.style.left = '-9999px';
+      clone.style.top = '0';
+      clone.style.width = W + 'px';
+      clone.style.height = H + 'px';
+      clone.style.transform = 'none';
+      clone.style.inset = '';
+      document.body.appendChild(clone);
+      let canvas;
+      try {
+        // Layout pass before capture.
+        await new Promise((r) => setTimeout(r, 50));
+        canvas = await window.html2canvas(clone, {
+          scale: 3, backgroundColor: null, useCORS: true, logging: false,
+          width: W, height: H,
+        });
+      } finally {
+        clone.remove();
+      }
       const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
       if (!blob) { setShareState('idle'); return; }
       const file = new File([blob], `texting-wrapped-${DATA.year}.png`, { type: 'image/png' });
