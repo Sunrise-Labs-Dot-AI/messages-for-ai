@@ -21,6 +21,3 @@ __pycache__/
 
 # Vercel local config (site/)
 .vercel/
-
-# Codex creative parked on the creative-wrapped-directions branch
-skills/texting-analytics/creative-directions/

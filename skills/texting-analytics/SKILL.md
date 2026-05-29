@@ -89,6 +89,53 @@ python3 scripts/build_charts.py --input <output_folder>/analysis.json --output <
 
 This writes the four PNG charts. Then write `report.md` summarizing the findings, with the same voice and structure as the example below. Reference the four charts inline with relative paths.
 
+### Phase 4 (optional): Texting Wrapped — shareable story cards
+
+If the user asks for a "Texting Wrapped", shareable cards, a "story", or anything social-share-flavored (rather than the analytical report), generate the Wrapped instead of — or in addition to — the charts.
+
+```bash
+python3 wrapped/build_wrapped.py --analysis <output_folder>/analysis.json \
+    --treatment sunrise --output <output_folder>/wrapped.html
+```
+
+This reads the same `analysis.json` and emits one self-contained `wrapped.html`: a 7-card swipeable story in an iPhone frame (Cover → Latency → Groups → Archetype → Share, plus Volume/People when available), with count-up animations and a derived archetype payoff. The user opens it and swipes (← / →, drag, or tap edges), then screenshots cards to share.
+
+Flags:
+- `--treatment {sunrise,receipt,pager}` — the visual direction (default `sunrise`). `sunrise` = warm editorial gradients + serif; `receipt` = cream paper + monospace stats; `pager` = midnight + electric lime/magenta. To preview all three interactively, open `wrapped/index.html` (it has a treatment switcher).
+- `--total-sent N` — adds the hero Volume card. **Required to show it** — `analysis.json` doesn't carry a total-sent count yet, so the card is omitted without this.
+- `--include-people` — adds the Top People card. **Privacy gate:** this card shows contact NAMES, so it's omitted by default and only renders when you pass this flag AND `analysis.json` has a `top_people` array. Don't pass it without the user's explicit OK.
+
+The design lives in `wrapped/` (from a Claude Design handoff — see `wrapped/DESIGN-HANDOFF.md`). `build_wrapped.py` only injects data; the `.jsx` files are the source of truth for the look. Brand stamp (`sunriselabs.ai · messagesfor.ai`) is on the share card — don't remove it.
+
+**Emoji card (optional).** To include the emoji card, produce an `emoji` (and `style`) block and merge it into `analysis.json` before running `build_wrapped.py`. This is the ONE place the analytics reads message *content* — so it goes through `scripts/emoji_stats.py`, which emits **aggregates only** (counts, percentages, single glyphs, short slang tokens) and never a message body (guard-enforced, exit 5 on a leak):
+
+```bash
+# messages.json = the texts you already pulled: [{"text": "...", "from_me": true}, ...]
+python3 scripts/emoji_stats.py --input messages.json --outbound-only
+# merge its {emoji, style} output into analysis.json, then build_wrapped.py adds the card.
+```
+
+If `analysis.json` has no `emoji` block, the emoji card is simply omitted (like Volume/People).
+
+**Texting-age card (optional).** A playful, probabilistic age-band estimate from writing style. Once the `style` block exists (from `emoji_stats.py`), run `scripts/age_estimate.py` to add an `age` block:
+
+```bash
+python3 scripts/age_estimate.py --analysis analysis.json [--total-sent N]
+# merge its {age} output into analysis.json, then build_wrapped.py adds the card.
+```
+
+It scores observed style features against `data/age_rubric.json` (from the research package in `research/`). **Frame it as entertainment, never an identity claim** — it's a probabilistic prior with high individual variation, and unreliable on small samples. Omitted if there's no `age` block.
+
+### Aggregating iMessage + WhatsApp
+
+The Wrapped is **cross-platform by default**. Run each platform's adapter to produce its normalized export, then feed *both* to `analyze.py` in one call:
+
+```bash
+python3 scripts/analyze.py --input imessage.json whatsapp.json --output analysis.json
+```
+
+`analyze.py` merges the threads and events (thread IDs are platform-namespaced — `imessage:…` / `whatsapp:…` — so there are no collisions) and every metric, including `top_people`, is computed over the combined set. Same for the emoji/style pass — pass the messages you pulled from *both* MCPs. One Wrapped, both platforms.
+
 ## Voice and tone for the report
 
 PM-voice with self-aware humor. Lead with the headline. Numbers in the first paragraph. Don't bury the lede. The Bad Texter Analysis example in `examples/example-report.md` is the reference.

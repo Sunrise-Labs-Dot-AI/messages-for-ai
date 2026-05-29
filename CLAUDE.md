@@ -18,8 +18,21 @@ the approval gate, not protocol features.
   (Bun/TypeScript).
 - `site/` — marketing site (Vercel project `messages-for-ai-marketing-site`,
   domain `messagesfor.ai`).
-- `scripts/` — release + dev-install for the MCP binaries.
+- `scripts/` — release + dev-install for the MCP binaries. `release.sh` is the
+  one-command lockstep release orchestrator (see Build & dev loop);
+  `dev-link-skills.sh` symlinks `skills/*` into `.claude/skills/` for dev.
 - `menubar/scripts/` — dev-install + entitlements for the .app.
+- `skills/` — Claude Code **skills** (model-invoked how-to + Python/JSX):
+  `texting-analytics` (incl. `wrapped/` — the "Texting Wrapped" story-card
+  generator, `build_wrapped.py` + Claude-Design `.jsx`), `birthday-reminder`,
+  `texting-voice-skill-creator`. Surfaced to Claude via the `.claude-plugin/`
+  manifest (single-plugin self-marketplace) + dev symlinks under `.claude/skills/`.
+  **Privacy:** the analytics is metadata-only EXCEPT opt-in *aggregate* text
+  passes (`emoji_stats.py`, `age_estimate.py`) that emit counts only, never
+  message bodies (guard-enforced).
+- `.claude-plugin/` — `plugin.json` + `marketplace.json` (the Claude Code plugin).
+- `research/` — texting-behavior research package (benchmarks, age rubric,
+  sources, charts) backing Texting Wrapped.
 
 ## Build & dev loop
 
@@ -42,6 +55,19 @@ MCP unit tests:
 (cd mcps/imessage-drafts && bun test)
 (cd mcps/whatsapp-drafts && bun test)
 ```
+
+One-command release (lockstep .app + plugin; run from `main` after merging PRs — see `RELEASE.md`):
+
+```
+bash scripts/release.sh vX.Y.Z --dry-run   # preflight only, no changes
+bash scripts/release.sh vX.Y.Z             # bump versions → build+notarize .app+dmg → tag → gh release
+```
+
+It bumps `.claude-plugin/plugin.json` + both `mcps/*/package.json`, runs
+`build-release.sh` + `build-dmg.sh`, pushes the tag (which publishes the plugin),
+and uploads the `.zip` + stable-named `Messages-for-AI.dmg`. Merges into `main`
+use `gh pr merge --admin` (branch protection requires a review that can't be
+self-satisfied on a solo repo; CI status checks remain the real gate).
 
 Shipping a release (notarized, reserved for actual GitHub Releases):
 

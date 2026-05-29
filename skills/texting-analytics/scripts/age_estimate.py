@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""age_estimate.py — playful "texting age" estimate from style/emoji features.
+
+Consumes the aggregate `style` + `emoji` blocks (from emoji_stats.py) plus
+latency/volume, runs them through the weighted rubric in data/age_rubric.json,
+and emits an `age` block to merge into analysis.json.
+
+PROBABILISTIC, NOT DETERMINISTIC. This is an entertainment prior, not an
+identity claim — frame the card playfully (the rubric's own disclaimer). Reads
+only aggregates; no message bodies involved.
+
+Usage:
+  python3 age_estimate.py --analysis analysis.json [--total-sent N]
+
+Output (stdout): { "age": { band, label, range_label, approx_age, confidence,
+                            drivers, sample_size } }   merge into analysis.json.
+
+Exit codes: 0 ok · 2 input/rubric malformed
+"""
+
+import argparse
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RUBRIC_PATH = os.path.join(HERE, "..", "data", "age_rubric.json")
+
+# Minimum per-token slang count required to surface as a driver. The slang
+# regexes match generic English too (\blit\b → "lit a candle"), so a low
+# threshold name-checks tokens the user never actually used as slang.
+SLANG_TOKEN_MIN = 8
+
+
+def band_for_age(rubric, age, fallback):
+    """The single band whose age range contains `age`. Keeps the band consistent
+    with the headline number — no Gen-Z/Millennial bucketing."""
+    for bid, b in rubric["age_bands"].items():
+        rng = b["approx_age_2025"]
+        if rng.endswith("+"):
+            lo, hi = int(rng[:-1]), 200
+        else:
+            lo, hi = (int(x) for x in rng.split("-"))
+        if lo <= age <= hi:
+            return bid
+    return fallback
+
+
+def fired_features(analysis, total_sent):
+    """Map observed aggregates → the rubric feature ids we can actually detect.
+    We only fire features we can observe from style/emoji/latency/volume."""
+    style = analysis.get("style", {})
+    lat = analysis.get("latency", {})
+    fired = []
+
+    # Laughter — fire the single dominant laugh token.
+    dom = (style.get("dominant_laugh") or "").lower()
+    if dom in ("skull", "sob"):
+        fired.append("laugh_skull_or_sob")
+    elif dom == "joy":
+        fired.append("laugh_joy_nonironic")
+    elif dom == "lol":
+        fired.append("laugh_lol_nonironic")
+    elif dom in ("haha", "hehe"):
+        fired.append("laugh_haha")
+
+    # Capitalization.
+    low = style.get("pct_all_lowercase")
+    if low is not None:
+        if low >= 40:
+            fired.append("all_lowercase")
+        elif low <= 12:
+            fired.append("proper_caps")
+
+    # End-of-message period.
+    per = style.get("pct_end_period")
+    if per is not None:
+        if per >= 25:
+            fired.append("period_end_short")
+        elif per <= 12:
+            fired.append("no_period")
+
+    # Reply speed (from latency median minutes).
+    med = lat.get("median_minutes")
+    if med is not None:
+        if med <= 1:
+            fired.append("fast_replies")
+        elif med >= 60:
+            fired.append("slow_replies")
+
+    # Phrase / token counts. Earlier versions fired on the aggregate slang
+    # hits (genz_slang_hits / aging_slang_hits), but the regexes match
+    # generic English usage too — \blit\b catches "lit a candle" and
+    # \bextra\b catches "extra ketchup", so a 40yo dad lights up the
+    # "aging slang" feature without actually using any of the tokens as
+    # slang. Tighten: only fire when at least one INDIVIDUAL token clears
+    # a real frequency threshold. That also lets the driver label list
+    # only the user's actual tokens instead of the rubric's full set.
+    genz_bd = style.get("genz_slang_breakdown") or {}
+    aging_bd = style.get("aging_slang_breakdown") or {}
+    if any(v >= SLANG_TOKEN_MIN for v in genz_bd.values()):
+        fired.append("current_genz_slang")
+    if any(v >= SLANG_TOKEN_MIN for v in aging_bd.values()):
+        fired.append("aging_slang")
+    if (style.get("pct_ellipsis") or 0) >= 10:
+        fired.append("ellipsis_connector")
+    if (style.get("pct_repeated_exclaim") or 0) >= 8:
+        fired.append("repeated_exclaim")
+    if (style.get("pct_emoji_ending") or 0) >= 15:
+        fired.append("emoji_as_punctuation")
+
+    # Volume (needs a total-sent count, which analysis.json doesn't carry).
+    if total_sent:
+        if total_sent / 365.0 < 10:
+            fired.append("low_volume")
+
+    return fired
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Estimate a playful texting-age band.")
+    ap.add_argument("--analysis", required=True)
+    ap.add_argument("--total-sent", type=int, default=None)
+    args = ap.parse_args()
+
+    try:
+        with open(args.analysis) as f:
+            analysis = json.load(f)
+        with open(RUBRIC_PATH) as f:
+            rubric = json.load(f)
+    except FileNotFoundError as e:
+        print(json.dumps({"error": "file not found", "detail": str(e)}), file=sys.stderr)
+        sys.exit(2)
+    except json.JSONDecodeError as e:
+        print(json.dumps({"error": "invalid JSON", "detail": str(e)}), file=sys.stderr)
+        sys.exit(2)
+
+    weight_values = rubric["scoring_logic"]["weight_values"]
+    by_id = {f["id"]: f for f in rubric["features"]}
+    bands = list(rubric["age_bands"].keys())
+
+    fired = fired_features(analysis, args.total_sent)
+    if not fired:
+        print(json.dumps({"error": "no observable age features", "fired": []}), file=sys.stderr)
+        sys.exit(2)
+
+    totals = {b: 0.0 for b in bands}
+    sum_weights = 0.0
+    for fid in fired:
+        feat = by_id.get(fid)
+        if not feat:
+            continue
+        w = weight_values.get(feat["weight"], 1)
+        sum_weights += w
+        for b in bands:
+            totals[b] += feat["points"].get(b, 0) * w
+
+    scores = {b: (totals[b] / sum_weights if sum_weights else 0) for b in bands}
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    (top_id, top_s), (second_id, second_s) = ranked[0], ranked[1]
+
+    # A single whole-number age, even if it's a best-guess: blend the band
+    # midpoints weighted by their normalized scores.
+    MIDPOINTS = {"gen_z": 20, "millennial": 35, "gen_x": 51, "boomer_plus": 68}
+    score_sum = sum(scores.values()) or 1
+    estimated_age = round(sum(scores[b] * MIDPOINTS.get(b, 40) for b in bands) / score_sum)
+
+    label_of = lambda b: rubric["age_bands"][b]["label"]
+    # Single band, derived from the estimated NUMBER so the label and the number
+    # never disagree (and Gen Z / Millennial never get bucketed together).
+    num_band = band_for_age(rubric, estimated_age, top_id)
+    # Confidence reflects how decisive the score spread is.
+    if second_s == 0 or top_s >= 2 * second_s:
+        confidence = "high"
+    elif (top_s - second_s) / top_s <= 0.20:
+        confidence = "low"
+    else:
+        confidence = "medium"
+
+    # Drivers: the fired features, strongest weight first (top 3), human labels.
+    # Drivers: the features that most SPECIFICALLY pulled this user toward
+    # their predicted band — not just whatever has the heaviest static weight.
+    # Score each fired feature by its weighted contribution to num_band minus
+    # the average contribution across all bands. Drop drivers that net-pull
+    # AWAY from num_band — they fired but confuse the "why" story (e.g. a
+    # signal that points elsewhere shouldn't appear as the reason we landed
+    # on Millennial). Top 3 by that contribution.
+    band_keys = list(bands)
+    def specificity(feat):
+        w = weight_values.get(feat["weight"], 1)
+        pts = feat["points"]
+        target = pts.get(num_band, 0)
+        avg = sum(pts.get(b, 0) for b in band_keys) / len(band_keys)
+        return (target - avg) * w
+    fired_feats = [by_id[f] for f in fired if f in by_id]
+    # Render label per feature, with bespoke replacements for slang features:
+    # the rubric stores a categorical label like "Uses 'lit','tbh','ngl',
+    # 'lowkey'" but James reported he's never typed any of those — the regex
+    # matched generic English. List only the tokens the user actually used
+    # at the threshold so the driver is honest about WHICH terms fired.
+    def render_label(feat):
+        if feat["id"] == "aging_slang":
+            bd = analysis.get("style", {}).get("aging_slang_breakdown") or {}
+            used = [t for t, n in sorted(bd.items(), key=lambda kv: -kv[1])
+                    if n >= SLANG_TOKEN_MIN][:3]
+            if used:
+                return "Uses " + ", ".join("'" + t + "'" for t in used)
+        if feat["id"] == "current_genz_slang":
+            bd = analysis.get("style", {}).get("genz_slang_breakdown") or {}
+            used = [t for t, n in sorted(bd.items(), key=lambda kv: -kv[1])
+                    if n >= SLANG_TOKEN_MIN][:3]
+            if used:
+                return "Uses " + ", ".join("'" + t + "'" for t in used) + " actively"
+        return feat["label"]
+    driver_labels = [render_label(d) for d in
+                     sorted([f for f in fired_feats if specificity(f) > 0],
+                            key=specificity, reverse=True)[:3]]
+
+    age = {
+        "estimated_age": estimated_age,
+        "band": num_band,
+        "label": label_of(num_band),
+        "approx_age": rubric["age_bands"][num_band]["approx_age_2025"],
+        "confidence": confidence,
+        "drivers": driver_labels,
+        "sample_size": analysis.get("style", {}).get("sample_size"),
+    }
+    print(json.dumps({"age": age}, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

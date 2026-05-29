@@ -40,5 +40,43 @@
       {"thread_label": "Debbie Margolis family", "total": 50, "user_count": 1, "user_pct": 2, "user_reaction_pct": 100},
       {"thread_label": "Margo-verse", "total": 48, "user_count": 0, "user_pct": 0, "user_reaction_pct": 0}
     ]
+  },
+  "top_people": [
+    {"name": "Maya Chen", "count": 2847}, {"name": "Daniel Park", "count": 1962},
+    {"name": "Jordan Reyes", "count": 1403}, {"name": "Sophie Liu", "count": 982},
+    {"name": "Alex Whitman", "count": 711}, {"name": "Priya Nair", "count": 640},
+    {"name": "Sam Okafor", "count": 588}, {"name": "Lena Fischer", "count": 502},
+    {"name": "Marcus Bell", "count": 477}, {"name": "Nina Alvarez", "count": 401}
+  ],
+  "emoji": {
+    "pct_messages_with_emoji": 23,
+    "emoji_per_message": 0.41,
+    "top": [
+      {"emoji": "😂", "count": 612},
+      {"emoji": "❤️", "count": 388},
+      {"emoji": "🙏", "count": 201},
+      {"emoji": "🔥", "count": 144},
+      {"emoji": "😭", "count": 97}
+    ]
+  },
+  "style": {
+    "pct_end_period": 9,
+    "pct_all_lowercase": 61,
+    "laugh_tokens": {"lol": 240, "haha": 180, "joy": 612},
+    "dominant_laugh": "joy",
+    "sample_size": 4000
+  },
+  "age": {
+    "estimated_age": 33,
+    "band": "millennial",
+    "label": "Millennial",
+    "approx_age": "28-43",
+    "confidence": "low",
+    "drivers": [
+      "All-lowercase typing",
+      "Uses 😂 for laughter (non-ironic)",
+      "No period even on multi-sentence messages"
+    ],
+    "sample_size": 4000
   }
 }
