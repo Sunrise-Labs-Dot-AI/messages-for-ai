@@ -38,7 +38,7 @@
     {"id": "thumbsup_sincere", "label": "Uses 👍 sincerely (no irony)", "points": {"gen_z": 0, "millennial": 1, "gen_x": 3, "boomer_plus": 3}, "weight": "medium", "confidence": "medium", "source_key": "yougov_atlassian"},
     {"id": "thumbsup_ironic", "label": "Uses 👍 ironically/dismissively", "points": {"gen_z": 3, "millennial": 2, "gen_x": 0, "boomer_plus": 0}, "weight": "medium", "confidence": "medium", "source_key": "yougov_atlassian"},
     {"id": "current_genz_slang", "label": "Uses 'rizz','skibidi','no cap' actively", "points": {"gen_z": 5, "millennial": 1, "gen_x": 0, "boomer_plus": 0}, "weight": "high", "confidence": "medium", "source_key": "apa_2026"},
-    {"id": "aging_slang", "label": "Uses 'lit','tbh','ngl','lowkey'", "points": {"gen_z": 1, "millennial": 3, "gen_x": 1, "boomer_plus": 0}, "weight": "low", "confidence": "low", "source_key": "dictionary_2022"},
+    {"id": "aging_slang", "label": "Uses 'tbh','ngl','lowkey'", "points": {"gen_z": 1, "millennial": 4, "gen_x": 1, "boomer_plus": 0}, "weight": "medium", "confidence": "medium", "source_key": "dictionary_2022"},
     {"id": "signs_name", "label": "Signs texts with their name", "points": {"gen_z": 0, "millennial": 0, "gen_x": 2, "boomer_plus": 4}, "weight": "low", "confidence": "low", "source_key": "kineticmc_2021"},
     {"id": "emoji_as_punctuation", "label": "Uses emoji as sentence-final punctuation", "points": {"gen_z": 4, "millennial": 2, "gen_x": 1, "boomer_plus": 0}, "weight": "medium", "confidence": "medium", "source_key": "herring_emoji"},
     {"id": "low_volume", "label": "Sends fewer than 10 texts/day", "points": {"gen_z": 0, "millennial": 0, "gen_x": 2, "boomer_plus": 4}, "weight": "low", "confidence": "medium", "source_key": "pew_2011"},

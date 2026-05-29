@@ -51,10 +51,29 @@ TAPBACK_EMOJI = {
 
 # Slang phrase counts (whole-word / phrase matches). Generational signal that
 # sharpens the age estimate — counting tokens, never storing message bodies.
-GENZ_SLANG = [r"\brizz\b", r"\bskibidi\b", r"\bno cap\b", r"\bfr fr\b", r"\bbussin\b",
-              r"\bgyatt?\b", r"\bdelulu\b", r"\bmid\b", r"\bate\b", r"\bslay\b"]
-AGING_SLANG = [r"\blit\b", r"\btbh\b", r"\bngl\b", r"\blowkey\b", r"\bhighkey\b",
-               r"\bsus\b", r"\byeet\b", r"\bsalty\b", r"\bextra\b"]
+# Stored as (display_token, regex) so we can emit per-token breakdowns and the
+# age card can render a BESPOKE driver label ("Uses 'tbh', 'ngl'") instead of
+# the full categorical list ("Uses 'lit','tbh','ngl','lowkey'") — a 40yo dad
+# typing "lit a candle" or "extra ketchup" matches the regex but isn't using
+# the gen-z/millennial sense.
+GENZ_SLANG = [
+    ("rizz",    r"\brizz\b"),    ("skibidi", r"\bskibidi\b"),
+    ("no cap",  r"\bno cap\b"),  ("fr fr",   r"\bfr fr\b"),
+    ("bussin",  r"\bbussin\b"),  ("gyat",    r"\bgyatt?\b"),
+    ("delulu",  r"\bdelulu\b"),  ("slay",    r"\bslay\b"),
+    # NOTE: "mid" and "ate" were in this list but match generic English ("mid-
+    # century", past tense of eat) — they ran up scores for users who never
+    # use the slang sense. Dropped.
+]
+AGING_SLANG = [
+    ("tbh",     r"\btbh\b"),     ("ngl",     r"\bngl\b"),
+    ("lowkey",  r"\blowkey\b"),  ("highkey", r"\bhighkey\b"),
+    ("sus",     r"\bsus\b"),     ("yeet",    r"\byeet\b"),
+    # NOTE: "lit", "salty", "extra" were in this list but \blit\b matches
+    # "lit a candle"/"well-lit", \bsalty\b matches food, and \bextra\b is
+    # the most common — "extra cheese" alone can dominate the count. Dropped
+    # so a 40yo dad's takeout orders don't trip the age estimator.
+]
 
 
 def is_emoji_char(c):
@@ -149,7 +168,9 @@ def main():
     period = 0
     all_lower = 0
     laughs = Counter()
-    genz_hits = aging_hits = ellipsis_msgs = rexcl_msgs = emoji_end_msgs = 0
+    genz_per_token = Counter()
+    aging_per_token = Counter()
+    ellipsis_msgs = rexcl_msgs = emoji_end_msgs = 0
 
     for t in inline_texts:
         emo = extract_emoji(t)
@@ -169,9 +190,17 @@ def main():
         for ch in t:
             if ch in LAUGH_EMOJI:
                 laughs[LAUGH_EMOJI[ch]] += 1
-        # phrase / punctuation signals
-        genz_hits += sum(1 for p in GENZ_SLANG if re.search(p, lower))
-        aging_hits += sum(1 for p in AGING_SLANG if re.search(p, lower))
+        # phrase / punctuation signals — per-token counts so the age estimate
+        # can render BESPOKE driver labels ("Uses 'tbh', 'ngl'") instead of
+        # naming tokens the user never typed.
+        for tok, pat in GENZ_SLANG:
+            hits = len(re.findall(pat, lower))
+            if hits:
+                genz_per_token[tok] += hits
+        for tok, pat in AGING_SLANG:
+            hits = len(re.findall(pat, lower))
+            if hits:
+                aging_per_token[tok] += hits
         if "..." in t or "…" in t:
             ellipsis_msgs += 1
         if re.search(r"[!?]{2,}", t):
@@ -198,8 +227,10 @@ def main():
             "pct_all_lowercase": pct(all_lower),
             "laugh_tokens": dict(laughs.most_common(8)),
             "dominant_laugh": (laughs.most_common(1)[0][0] if laughs else None),
-            "genz_slang_hits": genz_hits,
-            "aging_slang_hits": aging_hits,
+            "genz_slang_hits": sum(genz_per_token.values()),
+            "aging_slang_hits": sum(aging_per_token.values()),
+            "genz_slang_breakdown": dict(genz_per_token),
+            "aging_slang_breakdown": dict(aging_per_token),
             "pct_ellipsis": pct(ellipsis_msgs),
             "pct_repeated_exclaim": pct(rexcl_msgs),
             "pct_emoji_ending": pct(emoji_end_msgs),

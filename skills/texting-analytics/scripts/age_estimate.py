@@ -26,6 +26,11 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUBRIC_PATH = os.path.join(HERE, "..", "data", "age_rubric.json")
 
+# Minimum per-token slang count required to surface as a driver. The slang
+# regexes match generic English too (\blit\b → "lit a candle"), so a low
+# threshold name-checks tokens the user never actually used as slang.
+SLANG_TOKEN_MIN = 8
+
 
 def band_for_age(rubric, age, fallback):
     """The single band whose age range contains `age`. Keeps the band consistent
@@ -83,13 +88,19 @@ def fired_features(analysis, total_sent):
         elif med >= 60:
             fired.append("slow_replies")
 
-    # Phrase / token counts (aggregate counts, not message bodies) — these come
-    # from emoji_stats.py's style block and sharpen the estimate.
-    genz = style.get("genz_slang_hits", 0)
-    aging = style.get("aging_slang_hits", 0)
-    if genz >= 3:
+    # Phrase / token counts. Earlier versions fired on the aggregate slang
+    # hits (genz_slang_hits / aging_slang_hits), but the regexes match
+    # generic English usage too — \blit\b catches "lit a candle" and
+    # \bextra\b catches "extra ketchup", so a 40yo dad lights up the
+    # "aging slang" feature without actually using any of the tokens as
+    # slang. Tighten: only fire when at least one INDIVIDUAL token clears
+    # a real frequency threshold. That also lets the driver label list
+    # only the user's actual tokens instead of the rubric's full set.
+    genz_bd = style.get("genz_slang_breakdown") or {}
+    aging_bd = style.get("aging_slang_breakdown") or {}
+    if any(v >= SLANG_TOKEN_MIN for v in genz_bd.values()):
         fired.append("current_genz_slang")
-    if aging >= 3:
+    if any(v >= SLANG_TOKEN_MIN for v in aging_bd.values()):
         fired.append("aging_slang")
     if (style.get("pct_ellipsis") or 0) >= 10:
         fired.append("ellipsis_connector")
@@ -182,7 +193,26 @@ def main():
         avg = sum(pts.get(b, 0) for b in band_keys) / len(band_keys)
         return (target - avg) * w
     fired_feats = [by_id[f] for f in fired if f in by_id]
-    driver_labels = [d["label"] for d in
+    # Render label per feature, with bespoke replacements for slang features:
+    # the rubric stores a categorical label like "Uses 'lit','tbh','ngl',
+    # 'lowkey'" but James reported he's never typed any of those — the regex
+    # matched generic English. List only the tokens the user actually used
+    # at the threshold so the driver is honest about WHICH terms fired.
+    def render_label(feat):
+        if feat["id"] == "aging_slang":
+            bd = analysis.get("style", {}).get("aging_slang_breakdown") or {}
+            used = [t for t, n in sorted(bd.items(), key=lambda kv: -kv[1])
+                    if n >= SLANG_TOKEN_MIN][:3]
+            if used:
+                return "Uses " + ", ".join("'" + t + "'" for t in used)
+        if feat["id"] == "current_genz_slang":
+            bd = analysis.get("style", {}).get("genz_slang_breakdown") or {}
+            used = [t for t, n in sorted(bd.items(), key=lambda kv: -kv[1])
+                    if n >= SLANG_TOKEN_MIN][:3]
+            if used:
+                return "Uses " + ", ".join("'" + t + "'" for t in used) + " actively"
+        return feat["label"]
+    driver_labels = [render_label(d) for d in
                      sorted([f for f in fired_feats if specificity(f) > 0],
                             key=specificity, reverse=True)[:3]]
 
